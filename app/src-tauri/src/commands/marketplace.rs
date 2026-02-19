@@ -168,18 +168,19 @@ pub async fn confirm_purchase(
         .unwrap()
         .as_secs() as i64;
 
-    // Get content_hash (BLAKE3, for iroh), publisher node ID, and filename from content table
-    let (content_hash_str, publisher_node_id_opt, filename_opt) = {
+    // Get content_hash (BLAKE3, for iroh), publisher node ID, relay URL, and filename from content table
+    let (content_hash_str, publisher_node_id_opt, publisher_relay_url_opt, filename_opt) = {
         let db = state.db.lock().await;
         db.conn()
             .query_row(
-                "SELECT content_hash, publisher_node_id, filename FROM content WHERE content_id = ?1",
+                "SELECT content_hash, publisher_node_id, publisher_relay_url, filename FROM content WHERE content_id = ?1",
                 rusqlite::params![&content_id],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, Option<String>>(1)?,
                         row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
                     ))
                 },
             )
@@ -242,8 +243,32 @@ pub async fn confirm_purchase(
             let node_id: iroh::NodeId = node_id_str
                 .parse()
                 .map_err(|e| format!("Invalid publisher node ID: {e}"))?;
-            let node_addr = iroh::NodeAddr::from(node_id);
-            info!("Downloading blob from publisher {}", node_id_str);
+
+            // Build NodeAddr with relay URL so iroh can actually connect to the publisher
+            let mut node_addr = iroh::NodeAddr::from(node_id);
+            if let Some(relay_url) = publisher_relay_url_opt
+                .as_deref()
+                .filter(|u| !u.is_empty())
+            {
+                if let Ok(url) = relay_url.parse() {
+                    node_addr = node_addr.with_relay_url(url);
+                    info!(
+                        "Downloading blob from publisher {} via relay {}",
+                        node_id_str, relay_url
+                    );
+                } else {
+                    info!(
+                        "Downloading blob from publisher {} (relay URL parse failed: {})",
+                        node_id_str, relay_url
+                    );
+                }
+            } else {
+                info!(
+                    "Downloading blob from publisher {} (no relay URL, relying on discovery)",
+                    node_id_str
+                );
+            }
+
             content_mgr
                 .download_from(&content_hash_bytes, node_addr)
                 .await

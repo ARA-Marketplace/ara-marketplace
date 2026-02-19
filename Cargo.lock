@@ -927,6 +927,7 @@ dependencies = [
  "ara-core",
  "ara-p2p",
  "bytes",
+ "futures-lite",
  "infer 0.16.0",
  "iroh",
  "iroh-gossip",

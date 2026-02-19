@@ -19,6 +19,8 @@ struct MetadataV1 {
     file_size: i64,
     #[serde(default)]
     node_id: String,
+    #[serde(default)]
+    relay_url: String,
 }
 
 #[derive(Serialize)]
@@ -175,6 +177,7 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                             filename: String::new(),
                             file_size: 0,
                             node_id: String::new(),
+                            relay_url: String::new(),
                         }
                     }
                 };
@@ -196,6 +199,7 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                     &meta.filename,
                     meta.file_size,
                     &meta.node_id,
+                    &meta.relay_url,
                     created_at,
                 ) {
                     Ok(n) if n > 0 => {
@@ -245,8 +249,9 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                      content_type = CASE WHEN ?5 != '' THEN ?5 ELSE content_type END,
                      filename = CASE WHEN ?6 != '' THEN ?6 ELSE filename END,
                      file_size_bytes = CASE WHEN ?7 > 0 THEN ?7 ELSE file_size_bytes END,
-                     publisher_node_id = CASE WHEN ?8 != '' THEN ?8 ELSE publisher_node_id END
-                     WHERE content_id = ?9",
+                     publisher_node_id = CASE WHEN ?8 != '' THEN ?8 ELSE publisher_node_id END,
+                     publisher_relay_url = CASE WHEN ?9 != '' THEN ?9 ELSE publisher_relay_url END
+                     WHERE content_id = ?10",
                     rusqlite::params![
                         &new_price_wei.to_string(),
                         new_metadata_uri,
@@ -256,6 +261,7 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                         &meta.filename,
                         meta.file_size,
                         &meta.node_id,
+                        &meta.relay_url,
                         &cid,
                     ],
                 );

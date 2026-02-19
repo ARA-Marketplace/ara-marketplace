@@ -1,18 +1,19 @@
-//! Background gossip actor for seeder announcements.
+//! Background gossip actor for seeder announcements and peer discovery.
 //!
 //! `GossipReceiver` from iroh-gossip is `!Sync`, which means it can't be stored
 //! in AppState behind `Arc<Mutex<>>` (Tauri requires Send futures). This actor
-//! confines all `!Sync` types to spawned background tasks, exposing only a
+//! confines all `!Sync` types to spawned background tasks, exposing only an
 //! `mpsc::Sender<GossipCmd>` (which IS Send+Sync) for Tauri commands to use.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use ara_p2p::content::ContentHash;
 use ara_p2p::discovery::{topic_for_content, GossipMessage};
 use bytes::Bytes;
 use iroh::NodeId;
-use iroh_gossip::net::{Gossip, GossipSender};
-use tokio::sync::mpsc;
+use iroh_gossip::net::{Event, GossipEvent, Gossip, GossipReceiver, GossipSender};
+use tokio::sync::{mpsc, Mutex};
 use tracing::{info, warn};
 
 /// Commands sent from Tauri commands to the gossip actor.
@@ -23,11 +24,16 @@ pub enum GossipCmd {
     LeaveSeeding { content_hash: ContentHash },
 }
 
+/// Known seeders discovered via gossip, keyed by content hash.
+/// Shared with the rest of the app (Send+Sync via Arc<Mutex>).
+pub type KnownSeeders = Arc<Mutex<HashMap<ContentHash, HashSet<NodeId>>>>;
+
 struct GossipActor {
     gossip: Gossip,
     node_id: NodeId,
     rx: mpsc::Receiver<GossipCmd>,
     active_topics: HashMap<ContentHash, GossipSender>,
+    known_seeders: KnownSeeders,
 }
 
 impl GossipActor {
@@ -76,11 +82,12 @@ impl GossipActor {
 
         let bootstrap: Vec<NodeId> = vec![];
         let topic = self.gossip.join(topic_id, bootstrap).await?;
-        let (sender, _receiver) = topic.split();
-        // We drop the receiver — we only need the sender for broadcasting.
-        // The sender keeps us in the gossip topic.
-        // Incoming message handling (for peer discovery) will be added when
-        // cross-node download is implemented.
+        let (sender, receiver) = topic.split();
+
+        // Spawn a background task to listen for incoming gossip messages
+        let known_seeders = self.known_seeders.clone();
+        let our_node_id = self.node_id;
+        tokio::spawn(Self::recv_loop(receiver, known_seeders, our_node_id));
 
         // Broadcast our seeder announcement
         sender.broadcast(encoded).await?;
@@ -88,6 +95,68 @@ impl GossipActor {
         info!("Announced seeding for {}", hash_hex);
         self.active_topics.insert(content_hash, sender);
         Ok(())
+    }
+
+    /// Background task that listens for incoming gossip messages on a topic.
+    async fn recv_loop(
+        mut receiver: GossipReceiver,
+        known_seeders: KnownSeeders,
+        our_node_id: NodeId,
+    ) {
+        use futures_lite::StreamExt;
+        while let Some(event) = receiver.next().await {
+            match event {
+                Ok(Event::Gossip(GossipEvent::Received(msg))) => {
+                    match serde_json::from_slice::<GossipMessage>(&msg.content) {
+                        Ok(GossipMessage::SeederAnnounce {
+                            content_hash,
+                            node_id_bytes,
+                        }) => {
+                            let peer_id = NodeId::from_bytes(&node_id_bytes);
+                            if let Ok(peer_id) = peer_id {
+                                if peer_id != our_node_id {
+                                    info!(
+                                        "Discovered seeder {} for content {}",
+                                        peer_id,
+                                        alloy::hex::encode(content_hash)
+                                    );
+                                    let mut seeders = known_seeders.lock().await;
+                                    seeders
+                                        .entry(content_hash)
+                                        .or_default()
+                                        .insert(peer_id);
+                                }
+                            }
+                        }
+                        Ok(GossipMessage::SeederLeave {
+                            content_hash,
+                            node_id_bytes,
+                        }) => {
+                            let peer_id = NodeId::from_bytes(&node_id_bytes);
+                            if let Ok(peer_id) = peer_id {
+                                info!(
+                                    "Seeder {} left for content {}",
+                                    peer_id,
+                                    alloy::hex::encode(content_hash)
+                                );
+                                let mut seeders = known_seeders.lock().await;
+                                if let Some(set) = seeders.get_mut(&content_hash) {
+                                    set.remove(&peer_id);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to parse gossip message: {e}");
+                        }
+                    }
+                }
+                Ok(_) => {} // Joined/NeighborUp/NeighborDown — ignore for now
+                Err(e) => {
+                    warn!("Gossip receive error: {e}");
+                    break;
+                }
+            }
+        }
     }
 
     async fn handle_leave(&mut self, content_hash: ContentHash) -> anyhow::Result<()> {
@@ -109,13 +178,22 @@ impl GossipActor {
             info!("Left gossip topic for {}", hash_hex);
         }
 
+        // Clean up known seeders for this content
+        let mut seeders = self.known_seeders.lock().await;
+        seeders.remove(&content_hash);
+
         Ok(())
     }
 }
 
 /// Spawn the gossip actor as a background task.
 /// Returns an `mpsc::Sender` for sending commands (Send+Sync safe).
-pub fn spawn(gossip: Gossip, node_id: NodeId) -> mpsc::Sender<GossipCmd> {
+/// Discovered seeders are written into the shared `known_seeders` map.
+pub fn spawn(
+    gossip: Gossip,
+    node_id: NodeId,
+    known_seeders: KnownSeeders,
+) -> mpsc::Sender<GossipCmd> {
     let (tx, rx) = mpsc::channel(64);
 
     let actor = GossipActor {
@@ -123,6 +201,7 @@ pub fn spawn(gossip: Gossip, node_id: NodeId) -> mpsc::Sender<GossipCmd> {
         node_id,
         rx,
         active_topics: HashMap::new(),
+        known_seeders,
     };
 
     tokio::spawn(actor.run());

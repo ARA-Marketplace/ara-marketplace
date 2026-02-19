@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::info;
 
-use crate::gossip_actor::{self, GossipCmd};
+use crate::gossip_actor::{self, GossipCmd, KnownSeeders};
 
 /// Application state shared across all Tauri commands.
 pub struct AppState {
@@ -16,6 +16,7 @@ pub struct AppState {
     pub iroh_node: Arc<Mutex<Option<IrohNode>>>,
     pub wallet_address: Arc<Mutex<Option<String>>>,
     pub gossip_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<GossipCmd>>>>,
+    pub known_seeders: KnownSeeders,
 }
 
 impl AppState {
@@ -26,6 +27,7 @@ impl AppState {
             iroh_node: Arc::new(Mutex::new(None)),
             wallet_address: Arc::new(Mutex::new(None)),
             gossip_tx: Arc::new(Mutex::new(None)),
+            known_seeders: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -52,7 +54,8 @@ impl AppState {
             if gossip_guard.is_none() {
                 let gossip = node.gossip().clone();
                 let node_id = node.node_id();
-                let tx = gossip_actor::spawn(gossip, node_id);
+                let tx =
+                    gossip_actor::spawn(gossip, node_id, self.known_seeders.clone());
                 *gossip_guard = Some(tx);
                 info!("Gossip actor spawned");
             }

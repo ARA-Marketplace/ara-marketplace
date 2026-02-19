@@ -58,12 +58,18 @@ pub async fn publish_content(
     // 2. Parse price
     let price_wei = parse_token_amount(&price_eth)?;
 
-    // 3. Start iroh node (lazy), extract BlobsClient + NodeId,
+    // 3. Start iroh node (lazy), extract BlobsClient + NodeId + relay URL,
     //    then drop the guard before doing async work
-    let (blobs_client, node_id_str) = {
+    let (blobs_client, node_id_str, relay_url_str) = {
         let guard = state.ensure_iroh().await?;
         let node = guard.as_ref().unwrap();
-        (node.blobs_client(), node.node_id().to_string())
+        let relay_url = node
+            .node_addr()
+            .await
+            .ok()
+            .and_then(|addr| addr.relay_url().map(|u| u.to_string()))
+            .unwrap_or_default();
+        (node.blobs_client(), node.node_id().to_string(), relay_url)
     };
 
     let file = Path::new(&file_path);
@@ -93,6 +99,7 @@ pub async fn publish_content(
                 .unwrap_or_default(),
             "file_size": std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0),
             "node_id": &node_id_str,
+            "relay_url": &relay_url_str,
         });
         serde_json::to_string(&meta).map_err(|e| format!("Failed to serialize metadata: {e}"))?
     };
@@ -128,8 +135,9 @@ pub async fn publish_content(
             .execute(
                 "INSERT INTO content
                  (content_id, content_hash, creator, metadata_uri, price_wei,
-                  title, description, content_type, file_size_bytes, active, created_at, filename, publisher_node_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12)",
+                  title, description, content_type, file_size_bytes, active, created_at,
+                  filename, publisher_node_id, publisher_relay_url)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12, ?13)",
                 rusqlite::params![
                     &content_hash_hex,
                     &content_hash_hex,
@@ -143,6 +151,7 @@ pub async fn publish_content(
                     created_at,
                     &filename,
                     &node_id_str,
+                    &relay_url_str,
                 ],
             )
             .map_err(|e| format!("DB insert failed: {e}"))?;
@@ -222,11 +231,17 @@ pub async fn confirm_publish(
         content_hash, tx_hash
     );
 
-    // Get publisher's node_id from iroh
-    let node_id_str = {
+    // Get publisher's node_id and relay URL from iroh
+    let (node_id_str, relay_url_str) = {
         let guard = state.ensure_iroh().await?;
         let node = guard.as_ref().unwrap();
-        node.node_id().to_string()
+        let relay_url = node
+            .node_addr()
+            .await
+            .ok()
+            .and_then(|addr| addr.relay_url().map(|u| u.to_string()))
+            .unwrap_or_default();
+        (node.node_id().to_string(), relay_url)
     };
 
     let content_hash_bytes = parse_content_hash_bytes(&content_hash)?;
@@ -253,9 +268,9 @@ pub async fn confirm_publish(
 
         // Update the pending row (active=0) for this content_hash to the on-chain contentId.
         conn.execute(
-            "UPDATE content SET content_id = ?1, active = 1, publisher_node_id = ?2
-             WHERE content_hash = ?3 AND active = 0",
-            rusqlite::params![&content_id_hex, &node_id_str, &content_hash],
+            "UPDATE content SET content_id = ?1, active = 1, publisher_node_id = ?2, publisher_relay_url = ?3
+             WHERE content_hash = ?4 AND active = 0",
+            rusqlite::params![&content_id_hex, &node_id_str, &relay_url_str, &content_hash],
         )
         .map_err(|e| format!("DB update failed: {e}"))?;
 
@@ -340,22 +355,22 @@ pub async fn update_content(
     drop(wallet);
 
     // 2. Verify ownership from local DB and fetch preserved fields
-    let (old_filename, old_file_size, old_node_id) = {
+    let (old_filename, old_file_size, old_node_id, old_relay_url) = {
         let db = state.db.lock().await;
         let conn = db.conn();
         conn.query_row(
-            "SELECT creator, COALESCE(filename,''), COALESCE(file_size_bytes,0), COALESCE(publisher_node_id,'') FROM content WHERE content_id = ?1",
+            "SELECT creator, COALESCE(filename,''), COALESCE(file_size_bytes,0), COALESCE(publisher_node_id,''), COALESCE(publisher_relay_url,'') FROM content WHERE content_id = ?1",
             rusqlite::params![&content_id],
             |row| {
                 let creator: String = row.get(0)?;
-                Ok((creator, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?))
+                Ok((creator, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?))
             },
         )
-        .map(|(creator, filename, file_size, node_id)| {
+        .map(|(creator, filename, file_size, node_id, relay_url)| {
             if creator.to_lowercase() != caller.to_lowercase() {
                 Err(format!("Only the creator ({}) can edit this content", creator))
             } else {
-                Ok((filename, file_size, node_id))
+                Ok((filename, file_size, node_id, relay_url))
             }
         })
         .map_err(|e| format!("Content not found: {e}"))?
@@ -374,6 +389,7 @@ pub async fn update_content(
             "filename": &old_filename,
             "file_size": old_file_size,
             "node_id": &old_node_id,
+            "relay_url": &old_relay_url,
         });
         serde_json::to_string(&meta).map_err(|e| format!("Failed to serialize metadata: {e}"))?
     };
@@ -419,11 +435,11 @@ pub async fn confirm_update_content(
     // Build the new metadata_uri JSON (preserve filename/file_size/node_id from DB)
     let db = state.db.lock().await;
     let conn = db.conn();
-    let (filename, file_size, node_id): (String, i64, String) = conn
+    let (filename, file_size, node_id, relay_url): (String, i64, String, String) = conn
         .query_row(
-            "SELECT COALESCE(filename,''), COALESCE(file_size_bytes,0), COALESCE(publisher_node_id,'') FROM content WHERE content_id = ?1",
+            "SELECT COALESCE(filename,''), COALESCE(file_size_bytes,0), COALESCE(publisher_node_id,''), COALESCE(publisher_relay_url,'') FROM content WHERE content_id = ?1",
             rusqlite::params![&content_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .map_err(|e| format!("Content not found: {e}"))?;
 
@@ -436,6 +452,7 @@ pub async fn confirm_update_content(
             "filename": &filename,
             "file_size": file_size,
             "node_id": &node_id,
+            "relay_url": &relay_url,
         });
         serde_json::to_string(&meta).map_err(|e| format!("Failed to serialize metadata: {e}"))?
     };

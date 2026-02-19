@@ -38,6 +38,7 @@ impl Database {
                 active INTEGER NOT NULL DEFAULT 1,
                 created_at INTEGER NOT NULL,
                 publisher_node_id TEXT,
+                publisher_relay_url TEXT,
                 filename TEXT
             );
 
@@ -84,6 +85,9 @@ impl Database {
             .execute("ALTER TABLE content ADD COLUMN filename TEXT", []);
         let _ = self
             .conn
+            .execute("ALTER TABLE content ADD COLUMN publisher_relay_url TEXT", []);
+        let _ = self
+            .conn
             .execute("ALTER TABLE purchases ADD COLUMN downloaded_path TEXT", []);
 
         Ok(())
@@ -128,14 +132,15 @@ impl Database {
         filename: &str,
         file_size: i64,
         publisher_node_id: &str,
+        publisher_relay_url: &str,
         created_at: i64,
     ) -> rusqlite::Result<usize> {
         self.conn.execute(
             "INSERT INTO content
              (content_id, content_hash, creator, metadata_uri, price_wei,
               title, description, content_type, file_size_bytes, active,
-              created_at, publisher_node_id, filename)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11, ?12)
+              created_at, publisher_node_id, publisher_relay_url, filename)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11, ?12, ?13)
              ON CONFLICT(content_id) DO UPDATE SET
                price_wei = excluded.price_wei,
                metadata_uri = excluded.metadata_uri,
@@ -145,11 +150,12 @@ impl Database {
                filename = CASE WHEN excluded.filename != '' THEN excluded.filename ELSE filename END,
                file_size_bytes = CASE WHEN excluded.file_size_bytes > 0 THEN excluded.file_size_bytes ELSE file_size_bytes END,
                publisher_node_id = CASE WHEN excluded.publisher_node_id != '' THEN excluded.publisher_node_id ELSE publisher_node_id END,
+               publisher_relay_url = CASE WHEN excluded.publisher_relay_url != '' THEN excluded.publisher_relay_url ELSE publisher_relay_url END,
                active = 1",
             rusqlite::params![
                 content_id, content_hash, creator, metadata_uri, price_wei,
                 title, description, content_type, file_size, created_at,
-                publisher_node_id, filename,
+                publisher_node_id, publisher_relay_url, filename,
             ],
         )
     }

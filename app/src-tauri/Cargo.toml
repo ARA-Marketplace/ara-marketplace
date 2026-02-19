@@ -20,6 +20,7 @@ alloy = { workspace = true }
 iroh = { workspace = true }
 iroh-gossip = { workspace = true }
 bytes = "1"
+futures-lite = "2"
 opener = "0.7"
 infer = "0.16"
 tauri = { version = "2", features = ["devtools"] }
