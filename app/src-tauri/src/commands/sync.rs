@@ -1,5 +1,5 @@
 use crate::state::AppState;
-use ara_chain::AraEvent;
+use ara_chain::{AraEvent, IndexedEvent};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use tracing::{info, warn};
@@ -26,6 +26,61 @@ pub struct SyncResult {
     pub new_content: u32,
     pub delisted_content: u32,
     pub synced_to_block: u64,
+}
+
+/// Fetch content events in chunks, adapting chunk size to RPC limits.
+/// Starts with a large chunk and halves on range errors.
+async fn fetch_events_chunked(
+    state: &AppState,
+    from_block: u64,
+    to_block: u64,
+) -> Result<Vec<IndexedEvent>, String> {
+    let chain = state
+        .chain_client()
+        .map_err(|e| format!("Chain client error: {e}"))?;
+
+    let mut all_events = Vec::new();
+    let mut cursor = from_block;
+    let mut chunk_size: u64 = 2000;
+
+    while cursor <= to_block {
+        let chunk_end = (cursor + chunk_size - 1).min(to_block);
+
+        match chain
+            .events
+            .fetch_content_events(cursor, Some(chunk_end))
+            .await
+        {
+            Ok(events) => {
+                all_events.extend(events);
+                cursor = chunk_end + 1;
+                // If we succeeded with a small chunk, try growing back
+                if chunk_size < 2000 {
+                    chunk_size = (chunk_size * 2).min(2000);
+                }
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                // RPC block range limit — shrink chunk and retry
+                if err_msg.contains("block range") || err_msg.contains("-32600") {
+                    if chunk_size <= 1 {
+                        return Err(format!(
+                            "RPC rejects even single-block queries at block {cursor}: {err_msg}"
+                        ));
+                    }
+                    chunk_size = (chunk_size / 2).max(1);
+                    info!(
+                        "RPC block range limit hit, reducing chunk to {} blocks",
+                        chunk_size
+                    );
+                    continue; // Retry same cursor with smaller chunk
+                }
+                return Err(format!("Event fetch failed at block {cursor}: {err_msg}"));
+            }
+        }
+    }
+
+    Ok(all_events)
 }
 
 /// Core sync logic — usable from both the Tauri command and app startup.
@@ -56,17 +111,14 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
         });
     }
 
+    let total_blocks = to_block - from_block + 1;
     info!(
-        "Syncing content events from block {} to {}",
-        from_block, to_block
+        "Syncing content events from block {} to {} ({} blocks)",
+        from_block, to_block, total_blocks
     );
 
-    // Fetch content events (published, updated, delisted)
-    let events = chain
-        .events
-        .fetch_content_events(from_block, Some(to_block))
-        .await
-        .map_err(|e| format!("Event fetch failed: {e}"))?;
+    // Fetch events in adaptive chunks (handles RPC range limits)
+    let events = fetch_events_chunked(state, from_block, to_block).await?;
 
     let mut new_count = 0u32;
     let mut delisted_count = 0u32;
