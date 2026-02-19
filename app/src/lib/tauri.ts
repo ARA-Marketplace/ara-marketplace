@@ -70,6 +70,26 @@ export async function searchContent(query: string): Promise<ContentDetail[]> {
   return invoke("search_content", { query });
 }
 
+export async function updateContent(params: {
+  contentId: string;
+  title: string;
+  description: string;
+  contentType: string;
+  priceEth: string;
+}): Promise<TransactionRequest[]> {
+  return invoke("update_content", params);
+}
+
+export async function confirmUpdateContent(params: {
+  contentId: string;
+  title: string;
+  description: string;
+  contentType: string;
+  priceEth: string;
+}): Promise<void> {
+  return invoke("confirm_update_content", params);
+}
+
 // Marketplace
 export interface PurchasePrepareResult {
   content_id: string;

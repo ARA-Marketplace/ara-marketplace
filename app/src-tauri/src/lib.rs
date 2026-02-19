@@ -25,6 +25,8 @@ pub fn run() {
             commands::content::confirm_publish,
             commands::content::get_content_detail,
             commands::content::search_content,
+            commands::content::update_content,
+            commands::content::confirm_update_content,
             commands::marketplace::purchase_content,
             commands::marketplace::confirm_purchase,
             commands::marketplace::get_library,

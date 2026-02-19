@@ -318,6 +318,138 @@ async fn extract_content_id_from_receipt(
     ))
 }
 
+/// Prepare an on-chain updateContent transaction to change metadata and/or price.
+/// The connected wallet must be the content creator.
+#[tauri::command]
+pub async fn update_content(
+    state: State<'_, AppState>,
+    content_id: String,
+    title: String,
+    description: String,
+    content_type: String,
+    price_eth: String,
+) -> Result<Vec<TransactionRequest>, String> {
+    info!(
+        "Updating content: id={}, title={}, price={}",
+        content_id, title, price_eth
+    );
+
+    // 1. Require wallet connected
+    let wallet = state.wallet_address.lock().await;
+    let caller = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    drop(wallet);
+
+    // 2. Verify ownership from local DB and fetch preserved fields
+    let (old_filename, old_file_size, old_node_id) = {
+        let db = state.db.lock().await;
+        let conn = db.conn();
+        conn.query_row(
+            "SELECT creator, COALESCE(filename,''), COALESCE(file_size_bytes,0), COALESCE(publisher_node_id,'') FROM content WHERE content_id = ?1",
+            rusqlite::params![&content_id],
+            |row| {
+                let creator: String = row.get(0)?;
+                Ok((creator, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?))
+            },
+        )
+        .map(|(creator, filename, file_size, node_id)| {
+            if creator.to_lowercase() != caller.to_lowercase() {
+                Err(format!("Only the creator ({}) can edit this content", creator))
+            } else {
+                Ok((filename, file_size, node_id))
+            }
+        })
+        .map_err(|e| format!("Content not found: {e}"))?
+    }?;
+
+    // 3. Parse price
+    let price_wei = parse_token_amount(&price_eth)?;
+
+    // 4. Build new metadata URI JSON
+    let metadata_uri = {
+        let meta = serde_json::json!({
+            "v": 1,
+            "title": &title,
+            "description": &description,
+            "content_type": &content_type,
+            "filename": &old_filename,
+            "file_size": old_file_size,
+            "node_id": &old_node_id,
+        });
+        serde_json::to_string(&meta).map_err(|e| format!("Failed to serialize metadata: {e}"))?
+    };
+
+    // 5. Build on-chain updateContent calldata
+    let registry_addr_str = &state.config.ethereum.registry_address;
+    let registry_addr: Address = registry_addr_str
+        .parse()
+        .map_err(|e| format!("Invalid registry address: {e}"))?;
+
+    let content_id_bytes = parse_content_hash_bytes(&content_id)?;
+    let content_id_fixed = FixedBytes::from(content_id_bytes);
+
+    let calldata = RegistryClient::<()>::update_content_calldata(
+        content_id_fixed,
+        price_wei,
+        metadata_uri,
+    );
+
+    Ok(vec![TransactionRequest {
+        to: format!("{registry_addr:#x}"),
+        data: hex_encode(&calldata),
+        value: "0x0".to_string(),
+        description: format!("Update \"{}\" to {} ETH", title, price_eth),
+    }])
+}
+
+/// Called by frontend after the updateContent transaction is confirmed.
+/// Updates the local DB with the new metadata.
+#[tauri::command]
+pub async fn confirm_update_content(
+    state: State<'_, AppState>,
+    content_id: String,
+    title: String,
+    description: String,
+    content_type: String,
+    price_eth: String,
+) -> Result<(), String> {
+    info!("Confirming content update: id={}", content_id);
+
+    let price_wei = parse_token_amount(&price_eth)?;
+
+    // Build the new metadata_uri JSON (preserve filename/file_size/node_id from DB)
+    let db = state.db.lock().await;
+    let conn = db.conn();
+    let (filename, file_size, node_id): (String, i64, String) = conn
+        .query_row(
+            "SELECT COALESCE(filename,''), COALESCE(file_size_bytes,0), COALESCE(publisher_node_id,'') FROM content WHERE content_id = ?1",
+            rusqlite::params![&content_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| format!("Content not found: {e}"))?;
+
+    let metadata_uri = {
+        let meta = serde_json::json!({
+            "v": 1,
+            "title": &title,
+            "description": &description,
+            "content_type": &content_type,
+            "filename": &filename,
+            "file_size": file_size,
+            "node_id": &node_id,
+        });
+        serde_json::to_string(&meta).map_err(|e| format!("Failed to serialize metadata: {e}"))?
+    };
+
+    conn.execute(
+        "UPDATE content SET title = ?1, description = ?2, content_type = ?3, price_wei = ?4, metadata_uri = ?5 WHERE content_id = ?6",
+        rusqlite::params![&title, &description, &content_type, price_wei.to_string(), &metadata_uri, &content_id],
+    )
+    .map_err(|e| format!("DB update failed: {e}"))?;
+
+    info!("Content {} updated successfully", content_id);
+    Ok(())
+}
+
 /// Parse a 0x-prefixed hex string into a 32-byte content hash.
 fn parse_content_hash_bytes(s: &str) -> Result<[u8; 32], String> {
     let hex_str = s.strip_prefix("0x").unwrap_or(s);
