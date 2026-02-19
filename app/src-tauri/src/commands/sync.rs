@@ -30,6 +30,7 @@ pub struct SyncResult {
 
 /// Fetch content events in chunks, adapting chunk size to RPC limits.
 /// Starts with a large chunk and halves on range errors.
+/// Retries with exponential backoff on 429 rate-limit responses.
 async fn fetch_events_chunked(
     state: &AppState,
     from_block: u64,
@@ -42,6 +43,8 @@ async fn fetch_events_chunked(
     let mut all_events = Vec::new();
     let mut cursor = from_block;
     let mut chunk_size: u64 = 2000;
+    let mut rate_limit_retries: u32 = 0;
+    const MAX_RATE_LIMIT_RETRIES: u32 = 5;
 
     while cursor <= to_block {
         let chunk_end = (cursor + chunk_size - 1).min(to_block);
@@ -54,6 +57,7 @@ async fn fetch_events_chunked(
             Ok(events) => {
                 all_events.extend(events);
                 cursor = chunk_end + 1;
+                rate_limit_retries = 0;
                 // If we succeeded with a small chunk, try growing back
                 if chunk_size < 2000 {
                     chunk_size = (chunk_size * 2).min(2000);
@@ -61,6 +65,25 @@ async fn fetch_events_chunked(
             }
             Err(e) => {
                 let err_msg = e.to_string();
+                // Rate limit (429) — back off and retry
+                if err_msg.contains("429") || err_msg.contains("compute units") {
+                    if rate_limit_retries >= MAX_RATE_LIMIT_RETRIES {
+                        return Err(format!(
+                            "RPC rate limit: gave up after {MAX_RATE_LIMIT_RETRIES} retries at block {cursor}"
+                        ));
+                    }
+                    rate_limit_retries += 1;
+                    let delay =
+                        std::time::Duration::from_millis(500 * 2u64.pow(rate_limit_retries));
+                    info!(
+                        "RPC rate limited, waiting {}ms before retry {}/{}",
+                        delay.as_millis(),
+                        rate_limit_retries,
+                        MAX_RATE_LIMIT_RETRIES
+                    );
+                    tokio::time::sleep(delay).await;
+                    continue; // Retry same cursor
+                }
                 // RPC block range limit — shrink chunk and retry
                 if err_msg.contains("block range") || err_msg.contains("-32600") {
                     if chunk_size <= 1 {
