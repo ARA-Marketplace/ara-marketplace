@@ -2,7 +2,7 @@ use crate::commands::sync::sync_content_impl;
 use crate::state::AppState;
 use ara_core::config::AppConfig;
 use ara_core::storage::Database;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tracing::{info, warn};
 
 pub fn init(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -72,10 +72,14 @@ pub fn init(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let state = app_handle.state::<AppState>();
         match sync_content_impl(&state).await {
-            Ok(r) => info!(
-                "Initial sync: {} new content, synced to block {}",
-                r.new_content, r.synced_to_block
-            ),
+            Ok(r) => {
+                info!(
+                    "Initial sync: {} new content, synced to block {}",
+                    r.new_content, r.synced_to_block
+                );
+                // Notify frontend so the Marketplace page can auto-refresh
+                let _ = app_handle.emit("content-synced", ());
+            }
             Err(e) => warn!("Initial sync failed (will retry on manual refresh): {e}"),
         }
     });

@@ -139,6 +139,12 @@ impl Database {
              ON CONFLICT(content_id) DO UPDATE SET
                price_wei = excluded.price_wei,
                metadata_uri = excluded.metadata_uri,
+               title = CASE WHEN excluded.title != '' THEN excluded.title ELSE title END,
+               description = CASE WHEN excluded.description != '' THEN excluded.description ELSE description END,
+               content_type = CASE WHEN excluded.content_type != '' THEN excluded.content_type ELSE content_type END,
+               filename = CASE WHEN excluded.filename != '' THEN excluded.filename ELSE filename END,
+               file_size_bytes = CASE WHEN excluded.file_size_bytes > 0 THEN excluded.file_size_bytes ELSE file_size_bytes END,
+               publisher_node_id = CASE WHEN excluded.publisher_node_id != '' THEN excluded.publisher_node_id ELSE publisher_node_id END,
                active = 1",
             rusqlite::params![
                 content_id, content_hash, creator, metadata_uri, price_wei,

@@ -1,5 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
+import { listen } from "@tauri-apps/api/event";
 import { searchContent, syncContent, type ContentDetail } from "../lib/tauri";
 
 function Marketplace() {
@@ -10,18 +11,28 @@ function Marketplace() {
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setLoading(true);
-      setError(null);
-      searchContent(searchQuery)
-        .then(setItems)
-        .catch((e) => setError(String(e)))
-        .finally(() => setLoading(false));
-    }, 300); // debounce search
+  const fetchContent = useCallback((query: string) => {
+    setLoading(true);
+    setError(null);
+    searchContent(query)
+      .then(setItems)
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, []);
 
+  // Debounced search on query change
+  useEffect(() => {
+    const timer = setTimeout(() => fetchContent(searchQuery), 300);
     return () => clearTimeout(timer);
-  }, [searchQuery]);
+  }, [searchQuery, fetchContent]);
+
+  // Auto-refresh when background sync completes
+  useEffect(() => {
+    const unlisten = listen("content-synced", () => {
+      fetchContent(searchQuery);
+    });
+    return () => { unlisten.then((f) => f()); };
+  }, [searchQuery, fetchContent]);
 
   const handleSync = async () => {
     setSyncing(true);
