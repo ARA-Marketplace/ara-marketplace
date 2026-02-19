@@ -92,6 +92,61 @@ impl Database {
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
+
+    /// Get a config value by key.
+    pub fn get_config(&self, key: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT value FROM config WHERE key = ?1",
+                rusqlite::params![key],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+
+    /// Set a config value (upsert).
+    pub fn set_config(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO config (key, value) VALUES (?1, ?2)",
+            rusqlite::params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Upsert a content row discovered from on-chain event sync.
+    /// On conflict, updates price and metadata but preserves local publisher data.
+    pub fn upsert_synced_content(
+        &self,
+        content_id: &str,
+        content_hash: &str,
+        creator: &str,
+        metadata_uri: &str,
+        price_wei: &str,
+        title: &str,
+        description: &str,
+        content_type: &str,
+        filename: &str,
+        file_size: i64,
+        publisher_node_id: &str,
+        created_at: i64,
+    ) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "INSERT INTO content
+             (content_id, content_hash, creator, metadata_uri, price_wei,
+              title, description, content_type, file_size_bytes, active,
+              created_at, publisher_node_id, filename)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11, ?12)
+             ON CONFLICT(content_id) DO UPDATE SET
+               price_wei = excluded.price_wei,
+               metadata_uri = excluded.metadata_uri,
+               active = 1",
+            rusqlite::params![
+                content_id, content_hash, creator, metadata_uri, price_wei,
+                title, description, content_type, file_size, created_at,
+                publisher_node_id, filename,
+            ],
+        )
+    }
 }
 
 #[cfg(test)]

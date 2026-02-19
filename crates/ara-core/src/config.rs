@@ -22,6 +22,8 @@ pub struct EthereumConfig {
     pub registry_address: String,
     /// Marketplace contract address
     pub marketplace_address: String,
+    /// Block number where contracts were deployed (floor for event sync)
+    pub deployment_block: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +54,7 @@ impl Default for AppConfig {
                 staking_address: "0x119554583bDB704CdA18f674054C2C7EF4C2A60c".to_string(),
                 registry_address: "0x2ECb7C21A99BcB52CD202a94484C935b31cB0Ea0".to_string(),
                 marketplace_address: "0xA4bBCCBFc6F7C12ad80c45C0aed386289636Bb6E".to_string(),
+                deployment_block: 10_293_374, // 0x9d107e — Sepolia deploy block (2026-02-19)
             },
             iroh: IrohConfig {
                 relay_urls: vec!["https://relay.iroh.network".to_string()],

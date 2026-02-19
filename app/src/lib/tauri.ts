@@ -170,3 +170,14 @@ export async function getStakeInfo(): Promise<StakeInfo> {
 export async function claimRewards(): Promise<TransactionRequest[]> {
   return invoke("claim_rewards");
 }
+
+// Sync — pull content listings from on-chain events
+export interface SyncResult {
+  new_content: number;
+  delisted_content: number;
+  synced_to_block: number;
+}
+
+export async function syncContent(): Promise<SyncResult> {
+  return invoke("sync_content");
+}

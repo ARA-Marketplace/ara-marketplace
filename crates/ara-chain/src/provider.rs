@@ -51,6 +51,11 @@ impl<P: Provider + Clone> AraChain<P> {
         Ok(balance)
     }
 
+    /// Get the latest block number.
+    pub async fn get_block_number(&self) -> Result<u64> {
+        Ok(self.provider.get_block_number().await?)
+    }
+
     /// Get the contract addresses this client was configured with.
     pub fn token_address(&self) -> Address {
         self.token.address()

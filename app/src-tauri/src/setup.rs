@@ -1,3 +1,4 @@
+use crate::commands::sync::sync_content_impl;
 use crate::state::AppState;
 use ara_core::config::AppConfig;
 use ara_core::storage::Database;
@@ -63,6 +64,21 @@ pub fn init(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState::new(config, db);
     app.manage(state);
+
+    // Sync content from chain in the background (non-blocking)
+    let app_handle = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        // Small delay to let the window render first
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let state = app_handle.state::<AppState>();
+        match sync_content_impl(&state).await {
+            Ok(r) => info!(
+                "Initial sync: {} new content, synced to block {}",
+                r.new_content, r.synced_to_block
+            ),
+            Err(e) => warn!("Initial sync failed (will retry on manual refresh): {e}"),
+        }
+    });
 
     info!("Ara Marketplace initialized successfully");
     Ok(())

@@ -38,6 +38,7 @@ pub fn run() {
             commands::staking::get_stake_info,
             commands::staking::claim_rewards,
             commands::tx::wait_for_transaction,
+            commands::sync::sync_content,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

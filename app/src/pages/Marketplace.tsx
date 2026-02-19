@@ -1,12 +1,14 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { searchContent, type ContentDetail } from "../lib/tauri";
+import { searchContent, syncContent, type ContentDetail } from "../lib/tauri";
 
 function Marketplace() {
   const [searchQuery, setSearchQuery] = useState("");
   const [items, setItems] = useState<ContentDetail[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -20,6 +22,28 @@ function Marketplace() {
 
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  const handleSync = async () => {
+    setSyncing(true);
+    setSyncMessage(null);
+    try {
+      const result = await syncContent();
+      setSyncMessage(
+        result.new_content > 0
+          ? `Synced ${result.new_content} new item${result.new_content === 1 ? "" : "s"}`
+          : "Up to date"
+      );
+      // Re-run search to show newly synced content
+      const results = await searchContent(searchQuery);
+      setItems(results);
+    } catch (e) {
+      setSyncMessage(`Sync failed: ${e}`);
+    } finally {
+      setSyncing(false);
+      // Clear message after a few seconds
+      setTimeout(() => setSyncMessage(null), 4000);
+    }
+  };
 
   const contentTypeIcon = (type: string) => {
     switch (type) {
@@ -48,7 +72,7 @@ function Marketplace() {
         </p>
       </div>
 
-      <div className="mb-6">
+      <div className="mb-6 flex items-center gap-3">
         <input
           type="text"
           placeholder="Search content..."
@@ -56,6 +80,16 @@ function Marketplace() {
           onChange={(e) => setSearchQuery(e.target.value)}
           className="w-full max-w-md px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-ara-500 focus:border-transparent"
         />
+        <button
+          onClick={handleSync}
+          disabled={syncing}
+          className="px-4 py-2 bg-ara-600 text-white rounded-lg hover:bg-ara-700 disabled:opacity-50 whitespace-nowrap"
+        >
+          {syncing ? "Syncing..." : "Refresh"}
+        </button>
+        {syncMessage && (
+          <span className="text-sm text-gray-500">{syncMessage}</span>
+        )}
       </div>
 
       {error && (

@@ -58,11 +58,12 @@ pub async fn publish_content(
     // 2. Parse price
     let price_wei = parse_token_amount(&price_eth)?;
 
-    // 3. Start iroh node (lazy), extract BlobsClient (Clone + Send + Sync),
+    // 3. Start iroh node (lazy), extract BlobsClient + NodeId,
     //    then drop the guard before doing async work
-    let blobs_client = {
+    let (blobs_client, node_id_str) = {
         let guard = state.ensure_iroh().await?;
-        guard.as_ref().unwrap().blobs_client()
+        let node = guard.as_ref().unwrap();
+        (node.blobs_client(), node.node_id().to_string())
     };
 
     let file = Path::new(&file_path);
@@ -79,8 +80,22 @@ pub async fn publish_content(
     let content_hash_hex = format!("0x{}", alloy::hex::encode(content_hash_bytes));
     info!("File imported, BLAKE3 hash: {}", content_hash_hex);
 
-    // 4. Build metadata URI (local storage for now)
-    let metadata_uri = format!("ara://local/{}", alloy::hex::encode(content_hash_bytes));
+    // 4. Build metadata URI as JSON (discoverable by other nodes via on-chain events)
+    let metadata_uri = {
+        let meta = serde_json::json!({
+            "v": 1,
+            "title": &title,
+            "description": &_description,
+            "content_type": &_content_type,
+            "filename": &Path::new(&file_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            "file_size": std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0),
+            "node_id": &node_id_str,
+        });
+        serde_json::to_string(&meta).map_err(|e| format!("Failed to serialize metadata: {e}"))?
+    };
 
     // 5. Get file size and original filename
     let file_size = std::fs::metadata(&file_path)
@@ -113,8 +128,8 @@ pub async fn publish_content(
             .execute(
                 "INSERT INTO content
                  (content_id, content_hash, creator, metadata_uri, price_wei,
-                  title, description, content_type, file_size_bytes, active, created_at, filename)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11)",
+                  title, description, content_type, file_size_bytes, active, created_at, filename, publisher_node_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12)",
                 rusqlite::params![
                     &content_hash_hex,
                     &content_hash_hex,
@@ -127,6 +142,7 @@ pub async fn publish_content(
                     file_size,
                     created_at,
                     &filename,
+                    &node_id_str,
                 ],
             )
             .map_err(|e| format!("DB insert failed: {e}"))?;
