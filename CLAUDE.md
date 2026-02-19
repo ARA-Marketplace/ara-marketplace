@@ -96,3 +96,4 @@ cd contracts && forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --br
 - **iroh shutdown race**: Always `drop(content_mgr)` before `node.shutdown()`. Need `tokio::time::sleep(100ms)` after `delete_blob` before shutdown.
 - **`test_two_node_transfer`**: Flaky integration test (iroh relay timing). Passes locally most of the time.
 - **Web3Modal `open` conflict**: `useWeb3Modal().open` must be renamed (e.g. `openModal`) to avoid shadowing `@tauri-apps/plugin-dialog`'s `open` for the file picker.
+- **iroh NodeAddr relay URL**: When building `NodeAddr` for cross-NAT downloads, always include the relay URL (stored as `publisher_relay_url` in the DB). A bare `NodeAddr::from(node_id)` without a relay URL will fail to connect across NATs.
