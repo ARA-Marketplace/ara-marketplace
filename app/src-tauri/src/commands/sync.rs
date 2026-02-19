@@ -220,10 +220,46 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                 new_metadata_uri,
             } => {
                 let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
+
+                // Parse updated metadata JSON to extract title, description, etc.
+                let meta: MetadataV1 = match serde_json::from_str(new_metadata_uri) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        warn!(
+                            "Failed to parse updated metadata_uri for {}: {} (raw: {:?})",
+                            cid, e, new_metadata_uri
+                        );
+                        // Still update price and raw metadata_uri even if parsing fails
+                        let _ = db.conn().execute(
+                            "UPDATE content SET price_wei = ?1, metadata_uri = ?2 WHERE content_id = ?3",
+                            rusqlite::params![&new_price_wei.to_string(), new_metadata_uri, &cid],
+                        );
+                        continue;
+                    }
+                };
+
                 let _ = db.conn().execute(
-                    "UPDATE content SET price_wei = ?1, metadata_uri = ?2 WHERE content_id = ?3",
-                    rusqlite::params![&new_price_wei.to_string(), new_metadata_uri, &cid],
+                    "UPDATE content SET price_wei = ?1, metadata_uri = ?2,
+                     title = CASE WHEN ?3 != '' THEN ?3 ELSE title END,
+                     description = CASE WHEN ?4 != '' THEN ?4 ELSE description END,
+                     content_type = CASE WHEN ?5 != '' THEN ?5 ELSE content_type END,
+                     filename = CASE WHEN ?6 != '' THEN ?6 ELSE filename END,
+                     file_size_bytes = CASE WHEN ?7 > 0 THEN ?7 ELSE file_size_bytes END,
+                     publisher_node_id = CASE WHEN ?8 != '' THEN ?8 ELSE publisher_node_id END
+                     WHERE content_id = ?9",
+                    rusqlite::params![
+                        &new_price_wei.to_string(),
+                        new_metadata_uri,
+                        &meta.title,
+                        &meta.description,
+                        &meta.content_type,
+                        &meta.filename,
+                        meta.file_size,
+                        &meta.node_id,
+                        &cid,
+                    ],
                 );
+                info!("Updated content metadata: {} ({})", meta.title, cid);
             }
             _ => {}
         }
