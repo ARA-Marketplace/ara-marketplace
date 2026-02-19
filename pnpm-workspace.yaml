@@ -1,0 +1,8 @@
+packages:
+  - app
+
+ignoredBuiltDependencies:
+  - bufferutil
+  - esbuild
+  - keccak
+  - utf-8-validate

@@ -1,0 +1,14 @@
+{
+  "name": "ara-marketplace",
+  "private": true,
+  "description": "Decentralized content marketplace — Stake ARA, Seed Content, Earn ETH",
+  "scripts": {
+    "dev": "pnpm --filter app dev",
+    "build": "pnpm --filter app build",
+    "tauri": "pnpm --filter app tauri",
+    "contracts:build": "cd contracts && forge build",
+    "contracts:test": "cd contracts && forge test -vvv",
+    "contracts:test:fork": "cd contracts && forge test --fork-url $ETH_RPC_URL -vvv",
+    "lint": "pnpm --filter app lint"
+  }
+}
