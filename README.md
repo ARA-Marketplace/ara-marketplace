@@ -37,13 +37,37 @@ Every transaction is recorded on Ethereum. Content is transferred peer-to-peer u
 
 ## Quick Start
 
-**Prerequisites:** Rust, Node.js, pnpm, [Foundry](https://getfoundry.sh/) (for contracts)
+### One-command setup
+
+The setup scripts install all prerequisites (Rust, Node.js, pnpm, Tauri CLI, system libraries) and project dependencies:
+
+**Ubuntu/Debian:**
+```bash
+git clone https://github.com/tmugavero/ara-marketplace.git
+cd ara-marketplace
+bash scripts/setup-ubuntu.sh
+```
+
+**macOS:**
+```bash
+git clone https://github.com/tmugavero/ara-marketplace.git
+cd ara-marketplace
+bash scripts/setup-macos.sh
+```
+
+**Windows** (run in Administrator PowerShell):
+```powershell
+git clone https://github.com/tmugavero/ara-marketplace.git
+cd ara-marketplace
+powershell -ExecutionPolicy Bypass -File scripts\setup-windows.ps1
+```
+
+### Run the app
 
 ```bash
-# Install dependencies
-pnpm install
+# Edit app/.env and add your WalletConnect project ID
+# (get one free at https://cloud.walletconnect.com)
 
-# Run in development mode
 pnpm dev
 ```
 
