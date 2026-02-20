@@ -10,6 +10,7 @@ use iroh_blobs::store::fs::Store as FsStore;
 use iroh_blobs::store::mem::Store as MemStore;
 use iroh_blobs::util::local_pool::LocalPool;
 use iroh_gossip::net::Gossip;
+use rand::RngCore;
 use tracing::info;
 
 /// Manages the iroh networking endpoint, blob storage, gossip, and protocol router.
@@ -36,7 +37,13 @@ impl IrohNode {
     pub async fn start(data_dir: &Path) -> Result<Self> {
         info!("Starting iroh node with data dir: {}", data_dir.display());
 
+        // Persist the node's identity key so the NodeId stays stable across restarts.
+        // Without this, every restart generates a new random key, making all stored
+        // publisher_node_id values stale and gossip bootstrap unreachable.
+        let secret_key = load_or_create_key(data_dir)?;
+
         let endpoint = Endpoint::builder()
+            .secret_key(secret_key)
             .discovery_n0()
             .bind()
             .await?;
@@ -165,4 +172,40 @@ impl IrohNodeMem {
         self.router.shutdown().await?;
         Ok(())
     }
+}
+
+/// Load an existing secret key from disk, or generate and save a new one.
+/// The key file is stored at `<data_dir>/node.key` (raw 32 bytes).
+fn load_or_create_key(data_dir: &Path) -> Result<iroh::key::SecretKey> {
+    let key_path = data_dir.join("node.key");
+    if key_path.exists() {
+        let bytes = std::fs::read(&key_path)?;
+        if bytes.len() == 32 {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            let key = iroh::key::SecretKey::from_bytes(&arr);
+            info!(
+                "Loaded node key from {} (NodeId: {})",
+                key_path.display(),
+                key.public()
+            );
+            return Ok(key);
+        }
+        // Corrupted key file — regenerate
+        info!("Key file corrupted ({} bytes), regenerating", bytes.len());
+    }
+
+    // Generate a new key using OS randomness
+    let mut key_bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut key_bytes);
+    let key = iroh::key::SecretKey::from_bytes(&key_bytes);
+
+    std::fs::create_dir_all(data_dir)?;
+    std::fs::write(&key_path, key.to_bytes())?;
+    info!(
+        "Generated new node key, saved to {} (NodeId: {})",
+        key_path.display(),
+        key.public()
+    );
+    Ok(key)
 }
