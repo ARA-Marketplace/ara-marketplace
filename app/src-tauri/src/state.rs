@@ -61,10 +61,12 @@ impl AppState {
                 *gossip_guard = Some(tx.clone());
                 info!("Gossip actor spawned");
 
-                // Resume seeding announcements for content that was active before restart
+                // Resume seeding announcements for content that was active before restart.
+                // Clone the endpoint so we can add relay URL hints before each gossip join.
+                let endpoint = node.endpoint().clone();
                 let db = self.db.clone();
                 tokio::spawn(async move {
-                    resume_active_seeding(db, tx).await;
+                    resume_active_seeding(db, tx, endpoint).await;
                 });
             }
             drop(gossip_guard);
@@ -113,15 +115,19 @@ fn parse_address(s: &str, name: &str) -> Result<Address, String> {
 }
 
 /// Re-announce seeding on gossip for all content that was actively seeded before app restart.
+/// Also explicitly adds each bootstrap peer's relay URL to the endpoint routing table so
+/// gossip can dial them even if we've never connected to them in this session.
 async fn resume_active_seeding(
     db: Arc<Mutex<Database>>,
     gossip_tx: tokio::sync::mpsc::Sender<GossipCmd>,
+    endpoint: iroh::Endpoint,
 ) {
-    let entries: Vec<([u8; 32], Vec<iroh::NodeId>)> = {
+    // ([u8;32], Vec<NodeId>, Option<relay_url_str>)
+    let entries: Vec<([u8; 32], Vec<iroh::NodeId>, Option<String>)> = {
         let db = db.lock().await;
         let conn = db.conn();
         let mut stmt = match conn.prepare(
-            "SELECT c.content_hash, c.publisher_node_id
+            "SELECT c.content_hash, c.publisher_node_id, c.publisher_relay_url
              FROM seeding s
              JOIN content c ON s.content_id = c.content_id
              WHERE s.active = 1 AND c.content_hash IS NOT NULL",
@@ -137,13 +143,14 @@ async fn resume_active_seeding(
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
             ))
         });
 
         let mut entries = Vec::new();
         if let Ok(rows) = rows {
             for row in rows.flatten() {
-                let (hash_hex, node_id_opt) = row;
+                let (hash_hex, node_id_opt, relay_url_opt) = row;
                 let hex_str = hash_hex.strip_prefix("0x").unwrap_or(&hash_hex);
                 if let Ok(bytes) = alloy::hex::decode(hex_str) {
                     if bytes.len() == 32 {
@@ -154,7 +161,7 @@ async fn resume_active_seeding(
                             .and_then(|s| s.parse::<iroh::NodeId>().ok())
                             .into_iter()
                             .collect();
-                        entries.push((hash, bootstrap));
+                        entries.push((hash, bootstrap, relay_url_opt.filter(|s| !s.is_empty())));
                     }
                 }
             }
@@ -167,7 +174,18 @@ async fn resume_active_seeding(
     }
 
     info!("Resuming gossip announcements for {} actively seeded items", entries.len());
-    for (content_hash, bootstrap) in entries {
+    for (content_hash, bootstrap, relay_url_opt) in entries {
+        // Pre-populate endpoint routing table with relay URL so gossip can dial bootstrap peers.
+        for &node_id in &bootstrap {
+            let mut addr = iroh::NodeAddr::from(node_id);
+            if let Some(relay_url_str) = relay_url_opt.as_deref() {
+                if let Ok(relay_url) = relay_url_str.parse() {
+                    addr = addr.with_relay_url(relay_url);
+                }
+            }
+            let _ = endpoint.add_node_addr(addr);
+        }
+
         if let Err(e) = gossip_tx
             .send(GossipCmd::AnnounceSeeding {
                 content_hash,

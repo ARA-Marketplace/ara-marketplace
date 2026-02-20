@@ -224,11 +224,11 @@ pub async fn confirm_purchase(
     let temp_filename = format!("{}.bin", hash_prefix);
     let output_path = downloads_dir.join(known_filename.as_deref().unwrap_or(&temp_filename));
 
-    // Get blobs client and current node ID (drop iroh guard before any async work)
-    let (blobs_client, our_node_id_str) = {
+    // Get blobs client, node ID, and endpoint (drop iroh guard before any async work)
+    let (blobs_client, our_node_id_str, endpoint) = {
         let guard = state.ensure_iroh().await?;
         let node = guard.as_ref().unwrap();
-        (node.blobs_client(), node.node_id().to_string())
+        (node.blobs_client(), node.node_id().to_string(), node.endpoint().clone())
     };
     let content_mgr = ContentManager::new(blobs_client);
 
@@ -343,6 +343,19 @@ pub async fn confirm_purchase(
         .and_then(|s| s.parse::<iroh::NodeId>().ok())
         .into_iter()
         .collect();
+
+    // Explicitly add the publisher's relay URL to the endpoint routing table so gossip
+    // can dial them for bootstrap. iroh blob download_with_opts may not populate the
+    // shared routing table, so we do it explicitly here.
+    for &bootstrap_id in &bootstrap {
+        let mut addr = iroh::NodeAddr::from(bootstrap_id);
+        if let Some(relay_url_str) = publisher_relay_url_opt.as_deref().filter(|u| !u.is_empty()) {
+            if let Ok(relay_url) = relay_url_str.parse() {
+                addr = addr.with_relay_url(relay_url);
+            }
+        }
+        let _ = endpoint.add_node_addr(addr);
+    }
 
     state
         .send_gossip(GossipCmd::AnnounceSeeding {

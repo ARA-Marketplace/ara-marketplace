@@ -41,18 +41,21 @@ pub async fn start_seeding(
             .map_err(|e| format!("DB update failed: {e}"))?;
     }
 
-    // Ensure iroh is running (lazy start) so gossip actor is available
-    let _ = state.ensure_iroh().await?;
+    // Ensure iroh is running (lazy start); also capture endpoint for relay hints
+    let endpoint_opt: Option<iroh::Endpoint> = {
+        let guard = state.ensure_iroh().await?;
+        guard.as_ref().map(|n| n.endpoint().clone())
+    };
 
-    // Look up the BLAKE3 content_hash and publisher_node_id from the content table.
+    // Look up BLAKE3 content_hash, publisher node ID, and relay URL from the content table.
     // The gossip topic MUST use the BLAKE3 hash (not the keccak256 content_id).
-    let (content_hash_hex, publisher_node_id_opt): (String, Option<String>) = {
+    let (content_hash_hex, publisher_node_id_opt, publisher_relay_url_opt): (String, Option<String>, Option<String>) = {
         let db = state.db.lock().await;
         db.conn()
             .query_row(
-                "SELECT content_hash, publisher_node_id FROM content WHERE content_id = ?1",
+                "SELECT content_hash, publisher_node_id, publisher_relay_url FROM content WHERE content_id = ?1",
                 rusqlite::params![&content_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(|e| format!("Content not found: {e}"))?
     };
@@ -66,6 +69,21 @@ pub async fn start_seeding(
         .and_then(|s| s.parse::<iroh::NodeId>().ok())
         .into_iter()
         .collect();
+
+    // Explicitly add publisher's relay URL to the endpoint routing table so gossip can
+    // dial them for bootstrap (the seeding toggle may run long after the initial download,
+    // so the routing table might not have a cached entry).
+    if let Some(endpoint) = &endpoint_opt {
+        for &bootstrap_id in &bootstrap {
+            let mut addr = iroh::NodeAddr::from(bootstrap_id);
+            if let Some(relay_url_str) = publisher_relay_url_opt.as_deref().filter(|u| !u.is_empty()) {
+                if let Ok(relay_url) = relay_url_str.parse() {
+                    addr = addr.with_relay_url(relay_url);
+                }
+            }
+            let _ = endpoint.add_node_addr(addr);
+        }
+    }
 
     state
         .send_gossip(GossipCmd::AnnounceSeeding {
