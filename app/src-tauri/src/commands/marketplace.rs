@@ -172,7 +172,7 @@ pub async fn confirm_purchase(
     // Get content_hash (BLAKE3, for iroh), publisher node ID, relay URL, and filename from content table
     let (content_hash_str, publisher_node_id_opt, publisher_relay_url_opt, filename_opt) = {
         let db = state.db.lock().await;
-        db.conn()
+        let row = db.conn()
             .query_row(
                 "SELECT content_hash, publisher_node_id, publisher_relay_url, filename FROM content WHERE content_id = ?1",
                 rusqlite::params![&content_id],
@@ -185,7 +185,9 @@ pub async fn confirm_purchase(
                     ))
                 },
             )
-            .map_err(|e| format!("Content not found: {e}"))?
+            .map_err(|e| format!("Content not found: {e}"))?;
+        // Filter empty strings — legacy content may store "" instead of NULL
+        (row.0, row.1.filter(|s| !s.is_empty()), row.2.filter(|s| !s.is_empty()), row.3)
     };
 
     // Insert into purchases table
