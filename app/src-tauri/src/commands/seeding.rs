@@ -128,14 +128,15 @@ pub async fn get_seeder_stats(
 ) -> Result<Vec<SeederStats>, String> {
     info!("Fetching seeder stats");
 
-    // Collect DB rows, including the BLAKE3 content_hash for gossip peer lookup
-    let rows_from_db: Vec<(SeederStats, String)> = {
+    // Collect DB rows, including the BLAKE3 content_hash and file_size for gossip peer lookup
+    let rows_from_db: Vec<(SeederStats, String, u64)> = {
         let db = state.db.lock().await;
         let conn = db.conn();
 
         let mut stmt = conn
             .prepare(
-                "SELECT s.content_id, c.title, s.bytes_served, s.peer_count, s.active, c.content_hash
+                "SELECT s.content_id, c.title, s.bytes_served, s.peer_count, s.active,
+                        c.content_hash, COALESCE(c.file_size_bytes, 0)
                  FROM seeding s
                  LEFT JOIN content c ON s.content_id = c.content_id
                  ORDER BY s.started_at DESC",
@@ -148,15 +149,13 @@ pub async fn get_seeder_stats(
                     SeederStats {
                         content_id: row.get(0)?,
                         title: row.get::<_, Option<String>>(1)?.unwrap_or("Unknown".to_string()),
-                        // NOTE: bytes_served stays at 0 because iroh serves blobs transparently
-                        // without per-upload byte callbacks. When iroh exposes upload metrics,
-                        // integrate with ara_p2p::metrics::MetricsTracker.
                         bytes_served: row.get::<_, i64>(2)? as u64,
                         peer_count: row.get::<_, i32>(3)? as u32,
                         ara_staked: "0.0".to_string(), // TODO: query staking contract
                         is_active: row.get::<_, i32>(4)? != 0,
                     },
                     row.get::<_, Option<String>>(5)?.unwrap_or_default(), // BLAKE3 content_hash
+                    row.get::<_, i64>(6)? as u64,                         // file_size_bytes
                 ))
             })
             .map_err(|e| format!("DB query failed: {e}"))?;
@@ -168,17 +167,24 @@ pub async fn get_seeder_stats(
         collected
     };
 
-    // Supplement peer_count with live gossip data from known_seeders
+    // Supplement peer_count and bytes_served with live gossip data
     let known_seeders = state.known_seeders.lock().await;
 
     let mut items = Vec::new();
-    for (mut stats, content_hash_hex) in rows_from_db {
+    for (mut stats, content_hash_hex, file_size) in rows_from_db {
         if stats.is_active && !content_hash_hex.is_empty() {
             if let Ok(hash_bytes) = parse_content_hash(&content_hash_hex) {
                 if let Some(peers) = known_seeders.get(&hash_bytes) {
                     let live_count = peers.len() as u32;
                     if live_count > stats.peer_count {
                         stats.peer_count = live_count;
+                    }
+                    // Estimate bytes served: each discovered peer downloaded the full file
+                    if file_size > 0 && live_count > 0 {
+                        let estimated = file_size * live_count as u64;
+                        if estimated > stats.bytes_served {
+                            stats.bytes_served = estimated;
+                        }
                     }
                 }
             }
