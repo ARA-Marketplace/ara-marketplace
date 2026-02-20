@@ -58,6 +58,13 @@ struct GossipActor {
 impl GossipActor {
     async fn run(mut self) {
         info!("Gossip actor started");
+        // Fire first re-announce 60 s after start, then every 60 s.
+        // Serves as a heartbeat: peers that miss the initial broadcast will
+        // receive the next periodic announcement once gossip bootstrap succeeds.
+        let mut reannounce_interval = tokio::time::interval_at(
+            tokio::time::Instant::now() + tokio::time::Duration::from_secs(60),
+            tokio::time::Duration::from_secs(60),
+        );
         loop {
             tokio::select! {
                 cmd = self.rx.recv() => {
@@ -88,9 +95,37 @@ impl GossipActor {
                         None => {} // all recv_loop senders dropped — fine
                     }
                 }
+                _ = reannounce_interval.tick() => {
+                    self.periodic_reannounce().await;
+                }
             }
         }
         info!("Gossip actor stopped (channel closed)");
+    }
+
+    /// Periodically re-broadcast SeederAnnounce to all active topics.
+    /// This acts as a heartbeat so peers that missed the initial broadcast
+    /// (e.g. because gossip bootstrap was still connecting) will eventually
+    /// discover us once the gossip overlay is established.
+    async fn periodic_reannounce(&self) {
+        let hashes: Vec<ContentHash> = self.active_topics.keys().cloned().collect();
+        if hashes.is_empty() {
+            return;
+        }
+        info!("Periodic re-announce for {} active gossip topics", hashes.len());
+        for content_hash in hashes {
+            if let Some(sender) = self.active_topics.get(&content_hash) {
+                let msg = GossipMessage::SeederAnnounce {
+                    content_hash,
+                    node_id_bytes: *self.node_id.as_bytes(),
+                };
+                if let Ok(encoded) = self.encode_msg(&msg) {
+                    if let Err(e) = sender.broadcast(encoded).await {
+                        warn!("Periodic re-announce failed for {}: {e}", alloy::hex::encode(content_hash));
+                    }
+                }
+            }
+        }
     }
 
     fn encode_msg(&self, msg: &GossipMessage) -> anyhow::Result<Bytes> {
@@ -212,10 +247,26 @@ impl GossipActor {
                 }
                 Ok(Event::Gossip(GossipEvent::NeighborUp(peer_id))) => {
                     info!("Neighbor up: {} on topic {}", peer_id, hash_hex);
+                    // Add to known_seeders immediately on gossip connection —
+                    // don't wait for a SeederAnnounce message, which can be
+                    // missed if it was broadcast before bootstrap connected.
+                    {
+                        let mut seeders = known_seeders.lock().await;
+                        seeders.entry(content_hash).or_default().insert(peer_id);
+                    }
                     let _ = event_tx.send(RecvEvent::NeighborUp { content_hash });
+                    let _ = event_tx.send(RecvEvent::PeerChanged);
                 }
                 Ok(Event::Gossip(GossipEvent::NeighborDown(peer_id))) => {
                     info!("Neighbor down: {} on topic {}", peer_id, hash_hex);
+                    // Remove from known_seeders when the gossip connection drops.
+                    {
+                        let mut seeders = known_seeders.lock().await;
+                        if let Some(set) = seeders.get_mut(&content_hash) {
+                            set.remove(&peer_id);
+                        }
+                    }
+                    let _ = event_tx.send(RecvEvent::PeerChanged);
                 }
                 Ok(_) => {} // Joined — ignore
                 Err(e) => {
