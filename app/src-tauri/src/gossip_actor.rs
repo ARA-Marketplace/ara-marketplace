@@ -13,6 +13,7 @@ use ara_p2p::discovery::{topic_for_content, GossipMessage};
 use bytes::Bytes;
 use iroh::NodeId;
 use iroh_gossip::net::{Event, GossipEvent, Gossip, GossipReceiver, GossipSender};
+use tauri::Emitter;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{info, warn};
 
@@ -30,6 +31,15 @@ pub enum GossipCmd {
     LeaveSeeding { content_hash: ContentHash },
 }
 
+/// Internal events sent from per-topic recv_loop tasks back to the actor.
+enum RecvEvent {
+    /// A new neighbor joined the gossip overlay for this content.
+    /// The actor should re-broadcast our SeederAnnounce so they discover us.
+    NeighborUp { content_hash: ContentHash },
+    /// A seeder was discovered or left — UI stats may have changed.
+    PeerChanged,
+}
+
 /// Known seeders discovered via gossip, keyed by content hash.
 /// Shared with the rest of the app (Send+Sync via Arc<Mutex>).
 pub type KnownSeeders = Arc<Mutex<HashMap<ContentHash, HashSet<NodeId>>>>;
@@ -38,23 +48,44 @@ struct GossipActor {
     gossip: Gossip,
     node_id: NodeId,
     rx: mpsc::Receiver<GossipCmd>,
+    event_rx: mpsc::UnboundedReceiver<RecvEvent>,
+    event_tx: mpsc::UnboundedSender<RecvEvent>,
     active_topics: HashMap<ContentHash, GossipSender>,
     known_seeders: KnownSeeders,
+    app_handle: tauri::AppHandle,
 }
 
 impl GossipActor {
     async fn run(mut self) {
         info!("Gossip actor started");
-        while let Some(cmd) = self.rx.recv().await {
-            match cmd {
-                GossipCmd::AnnounceSeeding { content_hash, bootstrap } => {
-                    if let Err(e) = self.handle_announce(content_hash, bootstrap).await {
-                        warn!("Gossip announce failed: {e}");
+        loop {
+            tokio::select! {
+                cmd = self.rx.recv() => {
+                    match cmd {
+                        Some(GossipCmd::AnnounceSeeding { content_hash, bootstrap }) => {
+                            if let Err(e) = self.handle_announce(content_hash, bootstrap).await {
+                                warn!("Gossip announce failed: {e}");
+                            }
+                        }
+                        Some(GossipCmd::LeaveSeeding { content_hash }) => {
+                            if let Err(e) = self.handle_leave(content_hash).await {
+                                warn!("Gossip leave failed: {e}");
+                            }
+                        }
+                        None => break, // command channel closed
                     }
                 }
-                GossipCmd::LeaveSeeding { content_hash } => {
-                    if let Err(e) = self.handle_leave(content_hash).await {
-                        warn!("Gossip leave failed: {e}");
+                evt = self.event_rx.recv() => {
+                    match evt {
+                        Some(RecvEvent::NeighborUp { content_hash }) => {
+                            if let Err(e) = self.handle_neighbor_up(content_hash).await {
+                                warn!("Re-announce on NeighborUp failed: {e}");
+                            }
+                        }
+                        Some(RecvEvent::PeerChanged) => {
+                            let _ = self.app_handle.emit("seeder-stats-updated", ());
+                        }
+                        None => {} // all recv_loop senders dropped — fine
                     }
                 }
             }
@@ -64,6 +95,22 @@ impl GossipActor {
 
     fn encode_msg(&self, msg: &GossipMessage) -> anyhow::Result<Bytes> {
         Ok(Bytes::from(serde_json::to_vec(msg)?))
+    }
+
+    /// Re-broadcast our SeederAnnounce when a new neighbor joins the topic.
+    async fn handle_neighbor_up(&self, content_hash: ContentHash) -> anyhow::Result<()> {
+        let hash_hex = alloy::hex::encode(content_hash);
+
+        if let Some(sender) = self.active_topics.get(&content_hash) {
+            let msg = GossipMessage::SeederAnnounce {
+                content_hash,
+                node_id_bytes: *self.node_id.as_bytes(),
+            };
+            let encoded = self.encode_msg(&msg)?;
+            info!("Re-announcing seeding on NeighborUp for {}", hash_hex);
+            sender.broadcast(encoded).await?;
+        }
+        Ok(())
     }
 
     async fn handle_announce(&mut self, content_hash: ContentHash, bootstrap: Vec<NodeId>) -> anyhow::Result<()> {
@@ -92,7 +139,8 @@ impl GossipActor {
         // Spawn a background task to listen for incoming gossip messages
         let known_seeders = self.known_seeders.clone();
         let our_node_id = self.node_id;
-        tokio::spawn(Self::recv_loop(receiver, known_seeders, our_node_id));
+        let event_tx = self.event_tx.clone();
+        tokio::spawn(Self::recv_loop(receiver, known_seeders, our_node_id, content_hash, event_tx));
 
         // Broadcast our seeder announcement
         sender.broadcast(encoded).await?;
@@ -107,8 +155,11 @@ impl GossipActor {
         mut receiver: GossipReceiver,
         known_seeders: KnownSeeders,
         our_node_id: NodeId,
+        content_hash: ContentHash,
+        event_tx: mpsc::UnboundedSender<RecvEvent>,
     ) {
         use futures_lite::StreamExt;
+        let hash_hex = alloy::hex::encode(content_hash);
         while let Some(event) = receiver.next().await {
             match event {
                 Ok(Event::Gossip(GossipEvent::Received(msg))) => {
@@ -130,6 +181,8 @@ impl GossipActor {
                                         .entry(content_hash)
                                         .or_default()
                                         .insert(peer_id);
+                                    drop(seeders);
+                                    let _ = event_tx.send(RecvEvent::PeerChanged);
                                 }
                             }
                         }
@@ -148,6 +201,8 @@ impl GossipActor {
                                 if let Some(set) = seeders.get_mut(&content_hash) {
                                     set.remove(&peer_id);
                                 }
+                                drop(seeders);
+                                let _ = event_tx.send(RecvEvent::PeerChanged);
                             }
                         }
                         Err(e) => {
@@ -155,7 +210,14 @@ impl GossipActor {
                         }
                     }
                 }
-                Ok(_) => {} // Joined/NeighborUp/NeighborDown — ignore for now
+                Ok(Event::Gossip(GossipEvent::NeighborUp(peer_id))) => {
+                    info!("Neighbor up: {} on topic {}", peer_id, hash_hex);
+                    let _ = event_tx.send(RecvEvent::NeighborUp { content_hash });
+                }
+                Ok(Event::Gossip(GossipEvent::NeighborDown(peer_id))) => {
+                    info!("Neighbor down: {} on topic {}", peer_id, hash_hex);
+                }
+                Ok(_) => {} // Joined — ignore
                 Err(e) => {
                     warn!("Gossip receive error: {e}");
                     break;
@@ -198,15 +260,20 @@ pub fn spawn(
     gossip: Gossip,
     node_id: NodeId,
     known_seeders: KnownSeeders,
+    app_handle: tauri::AppHandle,
 ) -> mpsc::Sender<GossipCmd> {
     let (tx, rx) = mpsc::channel(64);
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
 
     let actor = GossipActor {
         gossip,
         node_id,
         rx,
+        event_rx,
+        event_tx,
         active_topics: HashMap::new(),
         known_seeders,
+        app_handle,
     };
 
     tokio::spawn(actor.run());

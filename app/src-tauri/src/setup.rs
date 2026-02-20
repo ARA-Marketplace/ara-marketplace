@@ -62,11 +62,11 @@ pub fn init(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // These are leftovers from publishes that were never signed in MetaMask.
     cleanup_stale_rows(db.conn());
 
-    let state = AppState::new(config, db);
+    let app_handle = app.handle().clone();
+    let state = AppState::new(config, db, app_handle.clone());
     app.manage(state);
 
-    // Sync content from chain in the background (non-blocking)
-    let app_handle = app.handle().clone();
+    // Sync content from chain in the background, then start iroh + resume seeding
     tauri::async_runtime::spawn(async move {
         // Small delay to let the window render first
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -81,6 +81,12 @@ pub fn init(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = app_handle.emit("content-synced", ());
             }
             Err(e) => warn!("Initial sync failed (will retry on manual refresh): {e}"),
+        }
+
+        // Eagerly start iroh so gossip resumes seeding announcements immediately.
+        // This also makes the node discoverable to peers right away.
+        if let Err(e) = state.ensure_iroh().await.map(drop) {
+            warn!("Eager iroh start failed (will retry lazily): {e}");
         }
     });
 

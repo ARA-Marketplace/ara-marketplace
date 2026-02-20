@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { getSeederStats, type SeederStats } from "../lib/tauri";
 import { useWeb3ModalAccount } from "@web3modal/ethers/react";
 
@@ -8,6 +9,13 @@ function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const fetchStats = useCallback(() => {
+    getSeederStats()
+      .then(setStats)
+      .catch((e) => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, []);
+
   useEffect(() => {
     if (!isConnected) {
       setStats([]);
@@ -15,17 +23,18 @@ function Dashboard() {
       return;
     }
 
-    const fetchStats = () => {
-      getSeederStats()
-        .then(setStats)
-        .catch((e) => setError(String(e)))
-        .finally(() => setLoading(false));
-    };
-
     fetchStats();
     const interval = setInterval(fetchStats, 10000);
     return () => clearInterval(interval);
-  }, [isConnected]);
+  }, [isConnected, fetchStats]);
+
+  // Real-time updates: re-fetch when gossip discovers peer changes
+  useEffect(() => {
+    const unlisten = listen("seeder-stats-updated", () => {
+      if (isConnected) fetchStats();
+    });
+    return () => { unlisten.then((f) => f()); };
+  }, [isConnected, fetchStats]);
 
   const activeCount = stats.filter((s) => s.is_active).length;
   const totalBytesServed = stats.reduce((sum, s) => sum + s.bytes_served, 0);

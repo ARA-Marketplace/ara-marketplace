@@ -5,7 +5,7 @@ use ara_core::storage::Database;
 use ara_p2p::node::IrohNode;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::gossip_actor::{self, GossipCmd, KnownSeeders};
 
@@ -17,10 +17,11 @@ pub struct AppState {
     pub wallet_address: Arc<Mutex<Option<String>>>,
     pub gossip_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<GossipCmd>>>>,
     pub known_seeders: KnownSeeders,
+    pub app_handle: tauri::AppHandle,
 }
 
 impl AppState {
-    pub fn new(config: AppConfig, db: Database) -> Self {
+    pub fn new(config: AppConfig, db: Database, app_handle: tauri::AppHandle) -> Self {
         Self {
             config,
             db: Arc::new(Mutex::new(db)),
@@ -28,6 +29,7 @@ impl AppState {
             wallet_address: Arc::new(Mutex::new(None)),
             gossip_tx: Arc::new(Mutex::new(None)),
             known_seeders: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            app_handle,
         }
     }
 
@@ -55,9 +57,15 @@ impl AppState {
                 let gossip = node.gossip().clone();
                 let node_id = node.node_id();
                 let tx =
-                    gossip_actor::spawn(gossip, node_id, self.known_seeders.clone());
-                *gossip_guard = Some(tx);
+                    gossip_actor::spawn(gossip, node_id, self.known_seeders.clone(), self.app_handle.clone());
+                *gossip_guard = Some(tx.clone());
                 info!("Gossip actor spawned");
+
+                // Resume seeding announcements for content that was active before restart
+                let db = self.db.clone();
+                tokio::spawn(async move {
+                    resume_active_seeding(db, tx).await;
+                });
             }
             drop(gossip_guard);
 
@@ -102,4 +110,72 @@ fn parse_address(s: &str, name: &str) -> Result<Address, String> {
     }
     s.parse::<Address>()
         .map_err(|e| format!("Invalid {name} address '{s}': {e}"))
+}
+
+/// Re-announce seeding on gossip for all content that was actively seeded before app restart.
+async fn resume_active_seeding(
+    db: Arc<Mutex<Database>>,
+    gossip_tx: tokio::sync::mpsc::Sender<GossipCmd>,
+) {
+    let entries: Vec<([u8; 32], Vec<iroh::NodeId>)> = {
+        let db = db.lock().await;
+        let conn = db.conn();
+        let mut stmt = match conn.prepare(
+            "SELECT c.content_hash, c.publisher_node_id
+             FROM seeding s
+             JOIN content c ON s.content_id = c.content_id
+             WHERE s.active = 1 AND c.content_hash IS NOT NULL",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to query active seeding for resume: {e}");
+                return;
+            }
+        };
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
+        });
+
+        let mut entries = Vec::new();
+        if let Ok(rows) = rows {
+            for row in rows.flatten() {
+                let (hash_hex, node_id_opt) = row;
+                let hex_str = hash_hex.strip_prefix("0x").unwrap_or(&hash_hex);
+                if let Ok(bytes) = alloy::hex::decode(hex_str) {
+                    if bytes.len() == 32 {
+                        let mut hash = [0u8; 32];
+                        hash.copy_from_slice(&bytes);
+                        let bootstrap: Vec<iroh::NodeId> = node_id_opt
+                            .filter(|s| !s.is_empty())
+                            .and_then(|s| s.parse::<iroh::NodeId>().ok())
+                            .into_iter()
+                            .collect();
+                        entries.push((hash, bootstrap));
+                    }
+                }
+            }
+        }
+        entries
+    };
+
+    if entries.is_empty() {
+        return;
+    }
+
+    info!("Resuming gossip announcements for {} actively seeded items", entries.len());
+    for (content_hash, bootstrap) in entries {
+        if let Err(e) = gossip_tx
+            .send(GossipCmd::AnnounceSeeding {
+                content_hash,
+                bootstrap,
+            })
+            .await
+        {
+            warn!("Failed to resume seeding announcement: {e}");
+        }
+    }
 }

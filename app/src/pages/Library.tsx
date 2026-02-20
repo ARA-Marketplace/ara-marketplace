@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
+import { listen } from "@tauri-apps/api/event";
 import {
   getLibrary,
   startSeeding,
@@ -36,6 +37,14 @@ function Library() {
   useEffect(() => {
     fetchLibrary();
   }, [fetchLibrary]);
+
+  // Auto-refresh when background sync discovers new content
+  useEffect(() => {
+    const unlisten = listen("content-synced", () => {
+      if (isConnected) fetchLibrary();
+    });
+    return () => { unlisten.then((f) => f()); };
+  }, [isConnected, fetchLibrary]);
 
   const toggleSeeding = async (item: LibraryItem) => {
     setTogglingId(item.content_id);
