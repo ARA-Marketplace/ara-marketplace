@@ -468,6 +468,142 @@ pub async fn confirm_update_content(
     Ok(())
 }
 
+/// Return all content published by the connected wallet (for the "My Content" panel).
+#[tauri::command]
+pub async fn get_my_content(state: State<'_, AppState>) -> Result<Vec<ContentDetail>, String> {
+    let wallet = state.wallet_address.lock().await;
+    let creator = wallet.as_ref().ok_or("No wallet connected")?.to_lowercase();
+    drop(wallet);
+
+    let db = state.db.lock().await;
+    let conn = db.conn();
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT content_id, content_hash, creator, title, description,
+                    content_type, price_wei, active, file_size_bytes
+             FROM content WHERE LOWER(creator) = ?1
+             ORDER BY created_at DESC",
+        )
+        .map_err(|e| format!("DB query failed: {e}"))?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![&creator], |row| {
+            let price_wei_str: String = row.get(6)?;
+            let price_wei = price_wei_str
+                .parse::<alloy::primitives::U256>()
+                .unwrap_or(alloy::primitives::U256::ZERO);
+
+            Ok(ContentDetail {
+                content_id: row.get(0)?,
+                content_hash: row.get(1)?,
+                creator: row.get(2)?,
+                title: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                description: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                content_type: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                price_eth: format_wei(price_wei),
+                active: row.get::<_, i32>(7)? != 0,
+                seeder_count: 0,
+                purchase_count: 0,
+            })
+        })
+        .map_err(|e| format!("DB query failed: {e}"))?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row.map_err(|e| format!("Row parse error: {e}"))?);
+    }
+    Ok(results)
+}
+
+/// Build a delistContent transaction for the connected wallet to sign.
+#[tauri::command]
+pub async fn delist_content(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<Vec<TransactionRequest>, String> {
+    info!("Preparing delist for content: {}", content_id);
+
+    let wallet = state.wallet_address.lock().await;
+    let caller = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    drop(wallet);
+
+    // Verify ownership in local DB
+    {
+        let db = state.db.lock().await;
+        let creator: String = db.conn()
+            .query_row(
+                "SELECT creator FROM content WHERE content_id = ?1",
+                rusqlite::params![&content_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Content not found: {e}"))?;
+        if creator.to_lowercase() != caller.to_lowercase() {
+            return Err(format!("Only the creator ({}) can delist this content", creator));
+        }
+    }
+
+    let registry_addr_str = &state.config.ethereum.registry_address;
+    let registry_addr: Address = if registry_addr_str.is_empty() {
+        Address::ZERO
+    } else {
+        registry_addr_str.parse().map_err(|e| format!("Invalid registry address: {e}"))?
+    };
+
+    if registry_addr == Address::ZERO {
+        return Ok(vec![]);
+    }
+
+    let content_id_bytes = parse_content_hash_bytes(&content_id)?;
+    let content_id_fixed = FixedBytes::from(content_id_bytes);
+    let calldata = RegistryClient::<()>::delist_content_calldata(content_id_fixed);
+
+    Ok(vec![TransactionRequest {
+        to: format!("{registry_addr:#x}"),
+        data: hex_encode(&calldata),
+        value: "0x0".to_string(),
+        description: "Delist content from Ara Marketplace".to_string(),
+    }])
+}
+
+/// Called after the delist transaction is confirmed (or immediately for local-only).
+/// Marks the content inactive in the local DB and stops seeding/gossip.
+#[tauri::command]
+pub async fn confirm_delist(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<(), String> {
+    info!("Confirming delist: {}", content_id);
+
+    let content_hash_hex: String = {
+        let db = state.db.lock().await;
+        db.conn()
+            .query_row(
+                "SELECT content_hash FROM content WHERE content_id = ?1",
+                rusqlite::params![&content_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Content not found: {e}"))?
+    };
+
+    {
+        let db = state.db.lock().await;
+        db.conn()
+            .execute("UPDATE content SET active = 0 WHERE content_id = ?1", rusqlite::params![&content_id])
+            .map_err(|e| format!("DB update failed: {e}"))?;
+        db.conn()
+            .execute("UPDATE seeding SET active = 0 WHERE content_id = ?1", rusqlite::params![&content_id])
+            .ok();
+    }
+
+    if let Ok(content_hash) = parse_content_hash_bytes(&content_hash_hex) {
+        let _ = state.send_gossip(GossipCmd::LeaveSeeding { content_hash }).await;
+    }
+
+    info!("Content {} delisted successfully", content_id);
+    Ok(())
+}
+
 /// Parse a 0x-prefixed hex string into a 32-byte content hash.
 fn parse_content_hash_bytes(s: &str) -> Result<[u8; 32], String> {
     let hex_str = s.strip_prefix("0x").unwrap_or(s);

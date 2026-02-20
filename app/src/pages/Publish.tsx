@@ -1,7 +1,14 @@
-import { useState, useCallback, type DragEvent } from "react";
+import { useState, useCallback, useEffect, type DragEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { open } from "@tauri-apps/plugin-dialog";
-import { publishContent, confirmPublish } from "../lib/tauri";
+import {
+  publishContent,
+  confirmPublish,
+  getMyContent,
+  delistContent,
+  confirmDelist,
+  type ContentDetail,
+} from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
 import {
   useWeb3Modal,
@@ -34,6 +41,36 @@ function Publish() {
   const [step, setStep] = useState<PublishStep>("form");
   const [error, setError] = useState<string | null>(null);
   const [resultHash, setResultHash] = useState<string | null>(null);
+
+  // My Content panel
+  const [myContent, setMyContent] = useState<ContentDetail[]>([]);
+  const [delistingId, setDelistingId] = useState<string | null>(null);
+  const [delistError, setDelistError] = useState<string | null>(null);
+
+  const fetchMyContent = useCallback(() => {
+    if (!isConnected) { setMyContent([]); return; }
+    getMyContent().then(setMyContent).catch(() => {});
+  }, [isConnected]);
+
+  useEffect(() => { fetchMyContent(); }, [fetchMyContent]);
+
+  const handleDelist = async (item: ContentDetail) => {
+    setDelistingId(item.content_id);
+    setDelistError(null);
+    try {
+      const txs = await delistContent(item.content_id);
+      if (txs.length > 0) {
+        if (!walletProvider) throw new Error("Wallet not connected");
+        await signAndSendTransactions(walletProvider, txs);
+      }
+      await confirmDelist(item.content_id);
+      fetchMyContent();
+    } catch (e) {
+      setDelistError(String(e));
+    } finally {
+      setDelistingId(null);
+    }
+  };
 
   const selectFile = async () => {
     const selected = await open({
@@ -283,6 +320,52 @@ function Publish() {
           </button>
         )}
       </div>
+      {isConnected && myContent.length > 0 && (
+        <div className="mt-12">
+          <h2 className="text-xl font-bold text-gray-900 mb-4">My Published Content</h2>
+          {delistError && (
+            <div className="p-3 mb-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+              {delistError}
+            </div>
+          )}
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <table className="w-full">
+              <thead className="bg-gray-50 border-b border-gray-200">
+                <tr>
+                  <th className="text-left px-4 py-3 text-sm font-medium text-gray-500">Title</th>
+                  <th className="text-right px-4 py-3 text-sm font-medium text-gray-500">Price</th>
+                  <th className="text-right px-4 py-3 text-sm font-medium text-gray-500">Status</th>
+                  <th className="text-right px-4 py-3 text-sm font-medium text-gray-500"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {myContent.map((item) => (
+                  <tr key={item.content_id}>
+                    <td className="px-4 py-3 text-sm text-gray-900">{item.title || "Untitled"}</td>
+                    <td className="px-4 py-3 text-sm text-gray-600 text-right">{item.price_eth} ETH</td>
+                    <td className="px-4 py-3 text-right">
+                      <span className={`text-xs px-2 py-1 rounded-full ${item.active ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+                        {item.active ? "Active" : "Delisted"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {item.active && (
+                        <button
+                          onClick={() => handleDelist(item)}
+                          disabled={delistingId === item.content_id}
+                          className="text-sm px-3 py-1.5 rounded-full font-medium transition-colors bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50"
+                        >
+                          {delistingId === item.content_id ? "Delisting..." : "Delist"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

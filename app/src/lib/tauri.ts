@@ -90,6 +90,18 @@ export async function confirmUpdateContent(params: {
   return invoke("confirm_update_content", params);
 }
 
+export async function getMyContent(): Promise<ContentDetail[]> {
+  return invoke("get_my_content");
+}
+
+export async function delistContent(contentId: string): Promise<TransactionRequest[]> {
+  return invoke("delist_content", { contentId });
+}
+
+export async function confirmDelist(contentId: string): Promise<void> {
+  return invoke("confirm_delist", { contentId });
+}
+
 // Marketplace
 export interface PurchasePrepareResult {
   content_id: string;
