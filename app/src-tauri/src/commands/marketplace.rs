@@ -286,10 +286,15 @@ pub async fn confirm_purchase(
     }
 
     // Export blob to downloads directory
-    content_mgr
-        .export_blob(&content_hash_bytes, &output_path)
-        .await
-        .map_err(|e| format!("Export to file failed: {e}"))?;
+    // Skip if the file already exists (e.g. re-confirming a previous purchase)
+    if output_path.exists() {
+        info!("File already exists at {}, skipping export", output_path.display());
+    } else {
+        content_mgr
+            .export_blob(&content_hash_bytes, &output_path)
+            .await
+            .map_err(|e| format!("Export to file failed: {e}"))?;
+    }
 
     // If filename had no real extension, detect file type from magic bytes and rename
     let output_path = if known_filename.is_none() {
