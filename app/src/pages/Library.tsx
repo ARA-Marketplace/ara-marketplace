@@ -5,6 +5,7 @@ import {
   startSeeding,
   stopSeeding,
   openDownloadedContent,
+  openContentFolder,
   type LibraryItem,
 } from "../lib/tauri";
 import { useWeb3ModalAccount } from "@web3modal/ethers/react";
@@ -62,6 +63,15 @@ function Library() {
       setError(String(e));
     } finally {
       setOpeningId(null);
+    }
+  };
+
+  const openFolder = async (item: LibraryItem) => {
+    setError(null);
+    try {
+      await openContentFolder(item.content_id);
+    } catch (e) {
+      setError(String(e));
     }
   };
 
@@ -160,13 +170,21 @@ function Library() {
               </div>
               <div className="flex items-center gap-2">
                 {item.download_path ? (
-                  <button
-                    onClick={() => openFile(item)}
-                    disabled={openingId === item.content_id}
-                    className="text-sm px-3 py-1.5 rounded-full font-medium transition-colors bg-blue-100 text-blue-700 hover:bg-blue-200 disabled:opacity-50"
-                  >
-                    {openingId === item.content_id ? "Opening..." : "Open File"}
-                  </button>
+                  <>
+                    <button
+                      onClick={() => openFile(item)}
+                      disabled={openingId === item.content_id}
+                      className="text-sm px-3 py-1.5 rounded-full font-medium transition-colors bg-blue-100 text-blue-700 hover:bg-blue-200 disabled:opacity-50"
+                    >
+                      {openingId === item.content_id ? "Opening..." : "Open File"}
+                    </button>
+                    <button
+                      onClick={() => openFolder(item)}
+                      className="text-sm px-3 py-1.5 rounded-full font-medium transition-colors bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    >
+                      Open Folder
+                    </button>
+                  </>
                 ) : (
                   <span className="text-xs text-gray-400 px-3 py-1.5">
                     Not downloaded

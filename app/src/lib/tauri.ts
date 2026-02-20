@@ -129,6 +129,10 @@ export async function openDownloadedContent(contentId: string): Promise<string> 
   return invoke("open_downloaded_content", { contentId });
 }
 
+export async function openContentFolder(contentId: string): Promise<string> {
+  return invoke("open_content_folder", { contentId });
+}
+
 // Seeding
 export async function startSeeding(contentId: string): Promise<void> {
   return invoke("start_seeding", { contentId });

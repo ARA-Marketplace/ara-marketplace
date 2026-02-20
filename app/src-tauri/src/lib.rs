@@ -39,6 +39,7 @@ pub fn run() {
             commands::marketplace::confirm_purchase,
             commands::marketplace::get_library,
             commands::marketplace::open_downloaded_content,
+            commands::marketplace::open_content_folder,
             commands::seeding::start_seeding,
             commands::seeding::stop_seeding,
             commands::seeding::get_seeder_stats,

@@ -425,6 +425,36 @@ pub async fn open_downloaded_content(
     Ok(path)
 }
 
+/// Open the folder containing a downloaded content file in the OS file explorer.
+/// Returns the folder path that was opened.
+#[tauri::command]
+pub async fn open_content_folder(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<String, String> {
+    let wallet = state.wallet_address.lock().await;
+    let buyer = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    drop(wallet);
+
+    let db = state.db.lock().await;
+    let downloaded_path: Option<String> = db
+        .conn()
+        .query_row(
+            "SELECT downloaded_path FROM purchases WHERE content_id = ?1 AND buyer = ?2",
+            rusqlite::params![&content_id, &buyer],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Purchase not found: {e}"))?;
+    drop(db);
+
+    let path = downloaded_path.ok_or("Content not yet downloaded")?;
+    let folder = Path::new(&path)
+        .parent()
+        .ok_or("Could not determine parent folder")?;
+    opener::open(folder).map_err(|e| format!("Failed to open folder: {e}"))?;
+    Ok(folder.to_string_lossy().into_owned())
+}
+
 /// Read the first 16 bytes of a file to detect its MIME type, then rename with
 /// the correct extension. Falls back to the original path if detection fails.
 fn detect_and_rename(path: std::path::PathBuf, hash_prefix: &str) -> std::path::PathBuf {
