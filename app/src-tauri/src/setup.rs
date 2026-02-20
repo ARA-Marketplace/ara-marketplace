@@ -67,6 +67,7 @@ pub fn init(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(state);
 
     // Sync content from chain in the background, then start iroh + resume seeding
+    let app_handle_sync = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         // Small delay to let the window render first
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -87,6 +88,28 @@ pub fn init(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         // This also makes the node discoverable to peers right away.
         if let Err(e) = state.ensure_iroh().await.map(drop) {
             warn!("Eager iroh start failed (will retry lazily): {e}");
+        }
+    });
+
+    // Periodic background sync: poll the chain every 30s for new content events.
+    // Emits "content-synced" so the Marketplace page auto-refreshes.
+    tauri::async_runtime::spawn(async move {
+        // Wait for initial sync to finish first
+        tokio::time::sleep(std::time::Duration::from_secs(35)).await;
+        let state = app_handle_sync.state::<AppState>();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            match sync_content_impl(&state).await {
+                Ok(r) if r.new_content > 0 || r.delisted_content > 0 => {
+                    info!(
+                        "Periodic sync: {} new, {} delisted, block {}",
+                        r.new_content, r.delisted_content, r.synced_to_block
+                    );
+                    let _ = app_handle_sync.emit("content-synced", ());
+                }
+                Err(e) => warn!("Periodic sync failed: {e}"),
+                _ => {} // No new content, skip logging
+            }
         }
     });
 
