@@ -19,7 +19,13 @@ use tracing::{info, warn};
 /// Commands sent from Tauri commands to the gossip actor.
 pub enum GossipCmd {
     /// Join the gossip topic for this content and broadcast a SeederAnnounce.
-    AnnounceSeeding { content_hash: ContentHash },
+    /// `bootstrap` should contain known peers (e.g. the publisher's NodeId) to
+    /// seed the gossip overlay; without at least one bootstrap peer, nodes on
+    /// the same topic cannot discover each other.
+    AnnounceSeeding {
+        content_hash: ContentHash,
+        bootstrap: Vec<NodeId>,
+    },
     /// Broadcast a SeederLeave and drop the topic subscription.
     LeaveSeeding { content_hash: ContentHash },
 }
@@ -41,8 +47,8 @@ impl GossipActor {
         info!("Gossip actor started");
         while let Some(cmd) = self.rx.recv().await {
             match cmd {
-                GossipCmd::AnnounceSeeding { content_hash } => {
-                    if let Err(e) = self.handle_announce(content_hash).await {
+                GossipCmd::AnnounceSeeding { content_hash, bootstrap } => {
+                    if let Err(e) = self.handle_announce(content_hash, bootstrap).await {
                         warn!("Gossip announce failed: {e}");
                     }
                 }
@@ -60,7 +66,7 @@ impl GossipActor {
         Ok(Bytes::from(serde_json::to_vec(msg)?))
     }
 
-    async fn handle_announce(&mut self, content_hash: ContentHash) -> anyhow::Result<()> {
+    async fn handle_announce(&mut self, content_hash: ContentHash, bootstrap: Vec<NodeId>) -> anyhow::Result<()> {
         let hash_hex = alloy::hex::encode(content_hash);
 
         let msg = GossipMessage::SeederAnnounce {
@@ -78,9 +84,8 @@ impl GossipActor {
 
         // Join the gossip topic for this content
         let topic_id = topic_for_content(&content_hash);
-        info!("Joining gossip topic for {} (topic: {})", hash_hex, topic_id);
+        info!("Joining gossip topic for {} (topic: {}, bootstrap peers: {})", hash_hex, topic_id, bootstrap.len());
 
-        let bootstrap: Vec<NodeId> = vec![];
         let topic = self.gossip.join(topic_id, bootstrap).await?;
         let (sender, receiver) = topic.split();
 

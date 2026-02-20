@@ -1,4 +1,5 @@
 use crate::commands::types::{format_wei, hex_encode, TransactionRequest};
+use crate::gossip_actor::GossipCmd;
 use crate::state::AppState;
 use alloy::primitives::{Address, FixedBytes, U256};
 use ara_chain::marketplace::MarketplaceClient;
@@ -309,6 +310,41 @@ pub async fn confirm_purchase(
             )
             .map_err(|e| format!("DB update failed: {e}"))?;
     }
+
+    // --- Auto-start seeding after download ---
+    // The buyer now has the blob; announce on gossip so other buyers can download from us too.
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let db = state.db.lock().await;
+        db.conn()
+            .execute(
+                "INSERT OR REPLACE INTO seeding (content_id, active, bytes_served, peer_count, started_at)
+                 VALUES (?1, 1, 0, 0, ?2)",
+                rusqlite::params![&content_id, now],
+            )
+            .map_err(|e| format!("Seeding DB insert failed: {e}"))?;
+    }
+
+    // Build bootstrap: use the publisher's NodeId (we just downloaded from them)
+    let bootstrap: Vec<iroh::NodeId> = publisher_node_id_opt
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<iroh::NodeId>().ok())
+        .into_iter()
+        .collect();
+
+    state
+        .send_gossip(GossipCmd::AnnounceSeeding {
+            content_hash: content_hash_bytes,
+            bootstrap,
+        })
+        .await?;
+
+    info!("Auto-started seeding for {} after purchase", content_id);
 
     Ok(())
 }

@@ -283,10 +283,11 @@ pub async fn confirm_publish(
         .map_err(|e| format!("Seeding DB insert failed: {e}"))?;
     }
 
-    // Announce seeding on gossip
+    // Announce seeding on gossip (publisher is first seeder — no bootstrap peers)
     state
         .send_gossip(GossipCmd::AnnounceSeeding {
             content_hash: content_hash_bytes,
+            bootstrap: vec![],
         })
         .await?;
 
