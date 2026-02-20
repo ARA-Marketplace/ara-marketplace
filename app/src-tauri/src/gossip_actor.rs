@@ -12,7 +12,7 @@ use ara_p2p::content::ContentHash;
 use ara_p2p::discovery::{topic_for_content, GossipMessage};
 use bytes::Bytes;
 use iroh::NodeId;
-use iroh_gossip::net::{Event, GossipEvent, Gossip, GossipReceiver, GossipSender};
+use iroh_gossip::net::{Event, GossipEvent, Gossip, GossipReceiver, GossipSender, JoinOptions};
 use tauri::Emitter;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{info, warn};
@@ -168,7 +168,7 @@ impl GossipActor {
         let topic_id = topic_for_content(&content_hash);
         info!("Joining gossip topic for {} (topic: {}, bootstrap peers: {})", hash_hex, topic_id, bootstrap.len());
 
-        let topic = self.gossip.join(topic_id, bootstrap).await?;
+        let topic = self.gossip.join_with_opts(topic_id, JoinOptions::with_bootstrap(bootstrap));
         let (sender, receiver) = topic.split();
 
         // Spawn a background task to listen for incoming gossip messages
@@ -268,7 +268,23 @@ impl GossipActor {
                     }
                     let _ = event_tx.send(RecvEvent::PeerChanged);
                 }
-                Ok(_) => {} // Joined — ignore
+                Ok(Event::Gossip(GossipEvent::Joined(peers))) => {
+                    info!("Joined gossip topic {} with {} initial peers", hash_hex, peers.len());
+                    {
+                        let mut seeders = known_seeders.lock().await;
+                        for peer_id in &peers {
+                            if *peer_id != our_node_id {
+                                seeders.entry(content_hash).or_default().insert(*peer_id);
+                            }
+                        }
+                    }
+                    if !peers.is_empty() {
+                        let _ = event_tx.send(RecvEvent::PeerChanged);
+                        // Re-announce so the newly connected peer discovers us immediately
+                        let _ = event_tx.send(RecvEvent::NeighborUp { content_hash });
+                    }
+                }
+                Ok(_) => {} // Other events — ignore
                 Err(e) => {
                     warn!("Gossip receive error: {e}");
                     break;
