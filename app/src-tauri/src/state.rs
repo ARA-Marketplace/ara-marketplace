@@ -47,10 +47,10 @@ impl AppState {
             std::fs::create_dir_all(data_dir)
                 .map_err(|e| format!("Failed to create iroh data dir: {e}"))?;
             info!("Starting iroh P2P node at {:?}...", data_dir);
-            let transfer_sender = Arc::new(BlobTransferSender {
-                db: self.db.clone(),
-                app_handle: self.app_handle.clone(),
-            });
+            let transfer_sender = Arc::new(BlobTransferSender::new(
+                self.db.clone(),
+                self.app_handle.clone(),
+            ));
             let node = IrohNode::start(data_dir, Some(transfer_sender))
                 .await
                 .map_err(|e| format!("Failed to start iroh node: {e}"))?;
