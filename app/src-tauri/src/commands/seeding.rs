@@ -146,15 +146,15 @@ pub async fn get_seeder_stats(
 ) -> Result<Vec<SeederStats>, String> {
     info!("Fetching seeder stats");
 
-    // Collect DB rows, including the BLAKE3 content_hash and file_size for gossip peer lookup
-    let rows_from_db: Vec<(SeederStats, String, u64)> = {
+    // Collect DB rows, including the BLAKE3 content_hash for gossip peer lookup
+    let rows_from_db: Vec<(SeederStats, String)> = {
         let db = state.db.lock().await;
         let conn = db.conn();
 
         let mut stmt = conn
             .prepare(
                 "SELECT s.content_id, c.title, s.bytes_served, s.peer_count, s.active,
-                        c.content_hash, COALESCE(c.file_size_bytes, 0)
+                        c.content_hash
                  FROM seeding s
                  LEFT JOIN content c ON s.content_id = c.content_id
                  ORDER BY s.started_at DESC",
@@ -173,7 +173,6 @@ pub async fn get_seeder_stats(
                         is_active: row.get::<_, i32>(4)? != 0,
                     },
                     row.get::<_, Option<String>>(5)?.unwrap_or_default(), // BLAKE3 content_hash
-                    row.get::<_, i64>(6)? as u64,                         // file_size_bytes
                 ))
             })
             .map_err(|e| format!("DB query failed: {e}"))?;
@@ -185,11 +184,11 @@ pub async fn get_seeder_stats(
         collected
     };
 
-    // Supplement peer_count and bytes_served with live gossip data
+    // Supplement peer_count with live gossip data (number of co-seeders on the gossip overlay)
     let known_seeders = state.known_seeders.lock().await;
 
     let mut items = Vec::new();
-    for (mut stats, content_hash_hex, file_size) in rows_from_db {
+    for (mut stats, content_hash_hex) in rows_from_db {
         if stats.is_active && !content_hash_hex.is_empty() {
             if let Ok(hash_bytes) = parse_content_hash(&content_hash_hex) {
                 if let Some(peers) = known_seeders.get(&hash_bytes) {
@@ -197,13 +196,9 @@ pub async fn get_seeder_stats(
                     if live_count > stats.peer_count {
                         stats.peer_count = live_count;
                     }
-                    // Estimate bytes served: each discovered peer downloaded the full file
-                    if file_size > 0 && live_count > 0 {
-                        let estimated = file_size * live_count as u64;
-                        if estimated > stats.bytes_served {
-                            stats.bytes_served = estimated;
-                        }
-                    }
+                    // bytes_served is NOT estimated from peer count — gossip peers are
+                    // co-seeders, not downloaders. bytes_served will be 0 until we wire
+                    // up actual iroh blob transfer events.
                 }
             }
         }
