@@ -4,15 +4,50 @@ mod setup;
 mod state;
 
 use tauri::Manager;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,iroh=warn,iroh_net=warn")),
-        )
-        .init();
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,iroh=warn,iroh_net=warn"));
+
+    // Write logs to %LOCALAPPDATA%\one.ara.marketplace\logs\ara-marketplace.log
+    // In release builds, this is the only way to see logs (no console window).
+    let log_dir = std::env::var("LOCALAPPDATA")
+        .map(|p| {
+            std::path::PathBuf::from(p)
+                .join("one.ara.marketplace")
+                .join("logs")
+        })
+        .unwrap_or_else(|_| std::env::temp_dir().join("ara-marketplace-logs"));
+    let _ = std::fs::create_dir_all(&log_dir);
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "ara-marketplace.log");
+    let (non_blocking_file, guard) = tracing_appender::non_blocking(file_appender);
+    // Leak the guard so the background writer thread lives for the app's lifetime.
+    std::mem::forget(guard);
+
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking_file)
+        .with_ansi(false); // No ANSI escape codes in log files
+
+    #[cfg(debug_assertions)]
+    {
+        // Debug builds: log to both stdout (terminal) and file
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer())
+            .with(file_layer)
+            .init();
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        // Release builds: log to file only (no console on Windows)
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(file_layer)
+            .init();
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
