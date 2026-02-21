@@ -1,3 +1,4 @@
+mod blob_events;
 mod commands;
 mod gossip_actor;
 mod setup;

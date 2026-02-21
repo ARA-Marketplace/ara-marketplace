@@ -5,6 +5,7 @@ use anyhow::Result;
 use iroh::protocol::Router;
 use iroh::Endpoint;
 use iroh_blobs::net_protocol::Blobs;
+use iroh_blobs::provider::{CustomEventSender, EventSender};
 use iroh_blobs::rpc::client::blobs::MemClient as BlobsClient;
 use iroh_blobs::store::fs::Store as FsStore;
 use iroh_blobs::store::mem::Store as MemStore;
@@ -34,7 +35,12 @@ pub struct IrohNodeMem {
 
 impl IrohNode {
     /// Create and start a new iroh node with persistent storage.
-    pub async fn start(data_dir: &Path) -> Result<Self> {
+    /// `event_sender` receives blob transfer events (e.g. `TransferBlobCompleted`)
+    /// and can be used to track bytes served to remote peers.
+    pub async fn start(
+        data_dir: &Path,
+        event_sender: Option<Arc<dyn CustomEventSender>>,
+    ) -> Result<Self> {
         info!("Starting iroh node with data dir: {}", data_dir.display());
 
         // Persist the node's identity key so the NodeId stays stable across restarts.
@@ -52,6 +58,7 @@ impl IrohNode {
 
         let blobs = Blobs::persistent(data_dir.join("blobs"))
             .await?
+            .events(EventSender::new(event_sender))
             .build(local_pool.handle(), &endpoint);
 
         let addr = endpoint.node_addr().await?;

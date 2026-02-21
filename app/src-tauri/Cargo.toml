@@ -18,6 +18,7 @@ ara-p2p = { workspace = true }
 ara-chain = { workspace = true }
 alloy = { workspace = true }
 iroh = { workspace = true }
+iroh-blobs = { workspace = true }
 iroh-gossip = { workspace = true }
 bytes = "1"
 futures-lite = "2"

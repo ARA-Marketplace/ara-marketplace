@@ -930,6 +930,7 @@ dependencies = [
  "futures-lite",
  "infer 0.16.0",
  "iroh",
+ "iroh-blobs",
  "iroh-gossip",
  "opener",
  "rusqlite",
