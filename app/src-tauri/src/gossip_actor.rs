@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use ara_core::storage::Database;
 use ara_p2p::content::ContentHash;
 use ara_p2p::discovery::{topic_for_content, GossipMessage};
 use bytes::Bytes;
@@ -38,6 +39,9 @@ enum RecvEvent {
     NeighborUp { content_hash: ContentHash },
     /// A seeder was discovered or left — UI stats may have changed.
     PeerChanged,
+    /// A new seeder NodeId was discovered and should be persisted to the DB
+    /// so it can be used as a bootstrap peer after restart.
+    SeederPersist { content_hash: ContentHash, node_id: NodeId },
 }
 
 /// Known seeders discovered via gossip, keyed by content hash.
@@ -53,6 +57,7 @@ struct GossipActor {
     active_topics: HashMap<ContentHash, GossipSender>,
     known_seeders: KnownSeeders,
     app_handle: tauri::AppHandle,
+    db: Arc<Mutex<Database>>,
 }
 
 impl GossipActor {
@@ -91,6 +96,18 @@ impl GossipActor {
                         }
                         Some(RecvEvent::PeerChanged) => {
                             let _ = self.app_handle.emit("seeder-stats-updated", ());
+                        }
+                        Some(RecvEvent::SeederPersist { content_hash, node_id }) => {
+                            let hash_hex = format!("0x{}", alloy::hex::encode(content_hash));
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as i64;
+                            let db = self.db.lock().await;
+                            let _ = db.conn().execute(
+                                "INSERT OR IGNORE INTO content_seeders (content_hash, node_id, discovered_at) VALUES (?1, ?2, ?3)",
+                                rusqlite::params![hash_hex, node_id.to_string(), now],
+                            );
                         }
                         None => {} // all recv_loop senders dropped — fine
                     }
@@ -212,12 +229,16 @@ impl GossipActor {
                                         alloy::hex::encode(content_hash)
                                     );
                                     let mut seeders = known_seeders.lock().await;
-                                    seeders
+                                    let is_new = seeders
                                         .entry(content_hash)
                                         .or_default()
                                         .insert(peer_id);
                                     drop(seeders);
                                     let _ = event_tx.send(RecvEvent::PeerChanged);
+                                    // Persist new seeders so they survive restart
+                                    if is_new {
+                                        let _ = event_tx.send(RecvEvent::SeederPersist { content_hash, node_id: peer_id });
+                                    }
                                 }
                             }
                         }
@@ -250,12 +271,16 @@ impl GossipActor {
                     // Add to known_seeders immediately on gossip connection —
                     // don't wait for a SeederAnnounce message, which can be
                     // missed if it was broadcast before bootstrap connected.
-                    {
+                    let is_new = {
                         let mut seeders = known_seeders.lock().await;
-                        seeders.entry(content_hash).or_default().insert(peer_id);
-                    }
+                        seeders.entry(content_hash).or_default().insert(peer_id)
+                    };
                     let _ = event_tx.send(RecvEvent::NeighborUp { content_hash });
                     let _ = event_tx.send(RecvEvent::PeerChanged);
+                    // Persist so this peer can be used as bootstrap after restart
+                    if is_new {
+                        let _ = event_tx.send(RecvEvent::SeederPersist { content_hash, node_id: peer_id });
+                    }
                 }
                 Ok(Event::Gossip(GossipEvent::NeighborDown(peer_id))) => {
                     info!("Neighbor down: {} on topic {}", peer_id, hash_hex);
@@ -322,12 +347,14 @@ impl GossipActor {
 
 /// Spawn the gossip actor as a background task.
 /// Returns an `mpsc::Sender` for sending commands (Send+Sync safe).
-/// Discovered seeders are written into the shared `known_seeders` map.
+/// Discovered seeders are written into the shared `known_seeders` map and
+/// persisted to the DB so they survive restarts.
 pub fn spawn(
     gossip: Gossip,
     node_id: NodeId,
     known_seeders: KnownSeeders,
     app_handle: tauri::AppHandle,
+    db: Arc<Mutex<Database>>,
 ) -> mpsc::Sender<GossipCmd> {
     let (tx, rx) = mpsc::channel(64);
     let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -341,6 +368,7 @@ pub fn spawn(
         active_topics: HashMap::new(),
         known_seeders,
         app_handle,
+        db,
     };
 
     tokio::spawn(actor.run());

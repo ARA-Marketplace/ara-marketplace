@@ -57,7 +57,7 @@ impl AppState {
                 let gossip = node.gossip().clone();
                 let node_id = node.node_id();
                 let tx =
-                    gossip_actor::spawn(gossip, node_id, self.known_seeders.clone(), self.app_handle.clone());
+                    gossip_actor::spawn(gossip, node_id, self.known_seeders.clone(), self.app_handle.clone(), self.db.clone());
                 *gossip_guard = Some(tx.clone());
                 info!("Gossip actor spawned");
 
@@ -122,6 +122,8 @@ async fn resume_active_seeding(
     gossip_tx: tokio::sync::mpsc::Sender<GossipCmd>,
     endpoint: iroh::Endpoint,
 ) {
+    let our_node_id = endpoint.node_id();
+
     // ([u8;32], Vec<NodeId>, Option<relay_url_str>)
     let entries: Vec<([u8; 32], Vec<iroh::NodeId>, Option<String>)> = {
         let db = db.lock().await;
@@ -156,11 +158,41 @@ async fn resume_active_seeding(
                     if bytes.len() == 32 {
                         let mut hash = [0u8; 32];
                         hash.copy_from_slice(&bytes);
-                        let bootstrap: Vec<iroh::NodeId> = node_id_opt
+
+                        // Start with the publisher's NodeId as bootstrap — filter self to avoid
+                        // the "Connecting to ourself is not supported" warning when the publisher
+                        // is this node (e.g. seeding content we published ourselves).
+                        let mut bootstrap: Vec<iroh::NodeId> = node_id_opt
                             .filter(|s| !s.is_empty())
                             .and_then(|s| s.parse::<iroh::NodeId>().ok())
+                            .filter(|&id| id != our_node_id)
                             .into_iter()
                             .collect();
+
+                        // Also include previously discovered seeders from the DB.
+                        // These survive restarts, enabling reconnection even when the
+                        // publisher's NodeId is our own or is unreachable.
+                        let stored_seeders: Vec<iroh::NodeId> = {
+                            let mut seeder_stmt = conn
+                                .prepare("SELECT node_id FROM content_seeders WHERE content_hash = ?1")
+                                .unwrap();
+                            let seeder_rows = seeder_stmt
+                                .query_map(rusqlite::params![format!("0x{}", alloy::hex::encode(hash))], |r| {
+                                    r.get::<_, String>(0)
+                                })
+                                .unwrap();
+                            seeder_rows
+                                .flatten()
+                                .filter_map(|s| s.parse::<iroh::NodeId>().ok())
+                                .filter(|&id| id != our_node_id)
+                                .collect()
+                        };
+                        for id in stored_seeders {
+                            if !bootstrap.contains(&id) {
+                                bootstrap.push(id);
+                            }
+                        }
+
                         entries.push((hash, bootstrap, relay_url_opt.filter(|s| !s.is_empty())));
                     }
                 }

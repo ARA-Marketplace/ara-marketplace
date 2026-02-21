@@ -73,6 +73,13 @@ impl Database {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS content_seeders (
+                content_hash TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                discovered_at INTEGER NOT NULL,
+                PRIMARY KEY (content_hash, node_id)
+            );
             ",
         )?;
 
@@ -89,6 +96,7 @@ impl Database {
         let _ = self
             .conn
             .execute("ALTER TABLE purchases ADD COLUMN downloaded_path TEXT", []);
+        // content_seeders is a new table — CREATE TABLE IF NOT EXISTS handles existing DBs
 
         Ok(())
     }
