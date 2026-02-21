@@ -248,7 +248,31 @@ pub async fn confirm_publish(
 
     // Extract contentId: from on-chain event if real tx, or use blake3 hash for local-only
     let content_id_hex = if tx_hash != "0x0" {
-        extract_content_id_from_receipt(&state, &tx_hash).await?
+        match extract_content_id_from_receipt(&state, &tx_hash).await {
+            Ok(id) => id,
+            Err(receipt_err) => {
+                // RPC may be down or tx not yet indexed. Check if the periodic sync already
+                // populated the content row (it runs every 30s in the background).
+                info!("Receipt extraction failed ({receipt_err}), checking DB for synced content_id");
+                let synced_id: Option<String> = {
+                    let db = state.db.lock().await;
+                    db.conn()
+                        .query_row(
+                            "SELECT content_id FROM content WHERE content_hash = ?1 AND active = 1",
+                            rusqlite::params![&content_hash],
+                            |row| row.get(0),
+                        )
+                        .ok()
+                };
+                match synced_id {
+                    Some(id) => {
+                        info!("Using synced content_id from DB: {}", id);
+                        id
+                    }
+                    None => return Err(format!("Failed to confirm publish: {receipt_err}")),
+                }
+            }
+        }
     } else {
         // Local-only mode: use blake3 hash as content_id
         content_hash.clone()
@@ -267,20 +291,41 @@ pub async fn confirm_publish(
         let conn = db.conn();
 
         // Update the pending row (active=0) for this content_hash to the on-chain contentId.
-        conn.execute(
+        // If sync already ran and created the active=1 row with this content_id, the UPDATE
+        // will hit a UNIQUE constraint. In that case, just delete the now-redundant temp row.
+        match conn.execute(
             "UPDATE content SET content_id = ?1, active = 1, publisher_node_id = ?2, publisher_relay_url = ?3
              WHERE content_hash = ?4 AND active = 0",
             rusqlite::params![&content_id_hex, &node_id_str, &relay_url_str, &content_hash],
-        )
-        .map_err(|e| format!("DB update failed: {e}"))?;
+        ) {
+            Ok(_) => {} // Updated temp row, or no active=0 row existed — both fine
+            Err(e) if e.to_string().contains("UNIQUE") => {
+                // Sync already inserted the active=1 row with content_id=keccak256.
+                // Delete the stale temp row (blake3 content_id, active=0).
+                conn.execute(
+                    "DELETE FROM content WHERE content_hash = ?1 AND active = 0",
+                    rusqlite::params![&content_hash],
+                )
+                .ok();
+                info!("Cleaned up temp content row (sync had already created active row)");
+            }
+            Err(e) => return Err(format!("DB update failed: {e}")),
+        }
 
-        // Auto-start seeding (publisher always seeds their own content)
+        // Auto-start seeding (publisher always seeds their own content).
+        // INSERT OR IGNORE preserves existing bytes_served if this is called a second time.
         conn.execute(
-            "INSERT OR REPLACE INTO seeding (content_id, active, bytes_served, peer_count, started_at)
+            "INSERT OR IGNORE INTO seeding (content_id, active, bytes_served, peer_count, started_at)
              VALUES (?1, 1, 0, 0, ?2)",
             rusqlite::params![&content_id_hex, now],
         )
         .map_err(|e| format!("Seeding DB insert failed: {e}"))?;
+        // Ensure seeding is marked active (in case it was previously stopped)
+        conn.execute(
+            "UPDATE seeding SET active = 1 WHERE content_id = ?1",
+            rusqlite::params![&content_id_hex],
+        )
+        .ok();
     }
 
     // Announce seeding on gossip (publisher is first seeder — no bootstrap peers)

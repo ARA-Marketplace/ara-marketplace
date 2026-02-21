@@ -79,21 +79,66 @@ impl CustomEventSender for BlobTransferSender {
                         let hash_hex = format!("0x{}", alloy::hex::encode(hash_bytes));
                         info!("Blob transfer completed: {} ({} bytes sent)", hash_hex, bytes_sent);
 
-                        let updated = {
+                        // Use IN (not =) so multiple content rows with the same content_hash
+                        // (temp active=0 + synced active=1) don't cause "sub-select returns
+                        // more than 1 row" errors.
+                        let update_result = {
                             let db = db.lock().await;
                             db.conn().execute(
                                 "UPDATE seeding SET bytes_served = bytes_served + ?1
-                                 WHERE content_id = (SELECT content_id FROM content WHERE content_hash = ?2)",
+                                 WHERE content_id IN (SELECT content_id FROM content WHERE content_hash = ?2)",
                                 rusqlite::params![bytes_sent as i64, &hash_hex],
                             )
                         };
 
-                        match updated {
+                        match update_result {
                             Ok(n) if n > 0 => {
                                 let _ = app_handle.emit("seeder-stats-updated", ());
                             }
                             Ok(_) => {
-                                // Hash not in content table — could be iroh internal metadata blob
+                                // No seeding row found. This happens when confirm_publish was
+                                // skipped or failed (e.g. sync raced ahead, causing a UNIQUE
+                                // conflict in confirm_publish). Auto-create a seeding entry if
+                                // the content is already active (synced from chain).
+                                let auto_created = {
+                                    let db = db.lock().await;
+                                    let conn = db.conn();
+                                    let content_id_opt: Option<String> = conn.query_row(
+                                        "SELECT content_id FROM content WHERE content_hash = ?1 AND active = 1",
+                                        rusqlite::params![&hash_hex],
+                                        |row| row.get(0),
+                                    ).ok();
+                                    if let Some(content_id) = content_id_opt {
+                                        let now = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap()
+                                            .as_secs() as i64;
+                                        // Create seeding entry if not present
+                                        let _ = conn.execute(
+                                            "INSERT OR IGNORE INTO seeding
+                                             (content_id, active, bytes_served, peer_count, started_at)
+                                             VALUES (?1, 1, 0, 0, ?2)",
+                                            rusqlite::params![&content_id, now],
+                                        );
+                                        // Credit the bytes
+                                        let _ = conn.execute(
+                                            "UPDATE seeding SET bytes_served = bytes_served + ?1
+                                             WHERE content_id = ?2",
+                                            rusqlite::params![bytes_sent as i64, &content_id],
+                                        );
+                                        info!(
+                                            "Auto-created seeding entry for {} (content_id={})",
+                                            hash_hex, content_id
+                                        );
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                };
+                                if auto_created {
+                                    let _ = app_handle.emit("seeder-stats-updated", ());
+                                }
+                                // else: iroh internal metadata blob — ignore silently
                             }
                             Err(e) => {
                                 warn!("Failed to update bytes_served for {}: {e}", hash_hex);
