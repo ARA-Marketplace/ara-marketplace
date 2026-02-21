@@ -12,6 +12,18 @@ use std::path::Path;
 use tauri::State;
 use tracing::info;
 
+/// Content the connected wallet has published (creator = wallet).
+/// Includes live seeding status for the Library Published tab.
+#[derive(Serialize, Deserialize)]
+pub struct PublishedItem {
+    pub content_id: String,
+    pub title: String,
+    pub content_type: String,
+    pub price_eth: String,
+    pub is_seeding: bool,
+    pub file_size_bytes: i64,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ContentDetail {
     pub content_id: String,
@@ -647,6 +659,79 @@ pub async fn confirm_delist(
 
     info!("Content {} delisted successfully", content_id);
     Ok(())
+}
+
+/// Return all active content published by the connected wallet, with seeding status.
+/// Also auto-creates seeding entries for published items that are missing one — the
+/// publisher is always expected to seed their own content.
+#[tauri::command]
+pub async fn get_published_content(
+    state: State<'_, AppState>,
+) -> Result<Vec<PublishedItem>, String> {
+    let wallet = state.wallet_address.lock().await;
+    let creator = wallet.as_ref().ok_or("No wallet connected")?.to_lowercase();
+    drop(wallet);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let db = state.db.lock().await;
+    let conn = db.conn();
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.content_id, c.title, c.content_type, c.price_wei,
+                    COALESCE(s.active, 0) as is_seeding,
+                    COALESCE(c.file_size_bytes, 0)
+             FROM content c
+             LEFT JOIN seeding s ON c.content_id = s.content_id
+             WHERE LOWER(c.creator) = ?1 AND c.active = 1
+             ORDER BY c.created_at DESC",
+        )
+        .map_err(|e| format!("DB query failed: {e}"))?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![&creator], |row| {
+            let price_wei_str: String = row.get(3)?;
+            let price_wei = price_wei_str
+                .parse::<alloy::primitives::U256>()
+                .unwrap_or(alloy::primitives::U256::ZERO);
+            Ok(PublishedItem {
+                content_id: row.get(0)?,
+                title: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                content_type: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                price_eth: format_wei(price_wei),
+                is_seeding: row.get::<_, i32>(4)? != 0,
+                file_size_bytes: row.get(5)?,
+            })
+        })
+        .map_err(|e| format!("DB query failed: {e}"))?;
+
+    let mut items: Vec<PublishedItem> = Vec::new();
+    for row in rows {
+        items.push(row.map_err(|e| format!("Row parse error: {e}"))?);
+    }
+
+    // Auto-create seeding entries for published items that are missing one.
+    // Publishers always seed their own content — the blob is already in iroh's store.
+    for item in &mut items {
+        if !item.is_seeding {
+            let inserted = conn.execute(
+                "INSERT OR IGNORE INTO seeding (content_id, active, bytes_served, peer_count, started_at)
+                 VALUES (?1, 1, 0, 0, ?2)",
+                rusqlite::params![&item.content_id, now],
+            );
+            if inserted.map(|n| n > 0).unwrap_or(false) {
+                info!("Auto-created seeding entry for published content {}", item.content_id);
+                item.is_seeding = true;
+            }
+        }
+    }
+
+    info!("Published content: {} items", items.len());
+    Ok(items)
 }
 
 /// Parse a 0x-prefixed hex string into a 32-byte content hash.

@@ -94,6 +94,19 @@ export async function getMyContent(): Promise<ContentDetail[]> {
   return invoke("get_my_content");
 }
 
+export interface PublishedItem {
+  content_id: string;
+  title: string;
+  content_type: string;
+  price_eth: string;
+  is_seeding: boolean;
+  file_size_bytes: number;
+}
+
+export async function getPublishedContent(): Promise<PublishedItem[]> {
+  return invoke("get_published_content");
+}
+
 export async function delistContent(contentId: string): Promise<TransactionRequest[]> {
   return invoke("delist_content", { contentId });
 }

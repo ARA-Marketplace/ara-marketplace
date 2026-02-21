@@ -72,6 +72,7 @@ pub fn run() {
             commands::content::update_content,
             commands::content::confirm_update_content,
             commands::content::get_my_content,
+            commands::content::get_published_content,
             commands::content::delist_content,
             commands::content::confirm_delist,
             commands::marketplace::purchase_content,
