@@ -46,6 +46,20 @@ impl<P: Provider + Clone> MarketplaceClient<P> {
         Ok(result)
     }
 
+    /// Get the timestamp of the last purchase for a content item.
+    pub async fn last_purchase_time(&self, content_id: FixedBytes<32>) -> Result<U256> {
+        let contract = IMarketplace::new(self.address, &self.provider);
+        let result = contract.lastPurchaseTime(content_id).call().await?;
+        Ok(result)
+    }
+
+    /// Get the distribution window duration in seconds.
+    pub async fn distribution_window(&self) -> Result<U256> {
+        let contract = IMarketplace::new(self.address, &self.provider);
+        let result = contract.distributionWindow().call().await?;
+        Ok(result)
+    }
+
     /// Get the marketplace contract address.
     pub fn address(&self) -> Address {
         self.address
@@ -79,6 +93,20 @@ impl<P> MarketplaceClient<P> {
             contentId: content_id,
             seeders,
             weights,
+        }
+        .abi_encode()
+    }
+
+    /// Encode calldata for `publicDistributeWithProofs(contentId, bundles)`.
+    /// Bundles contain buyer-signed EIP-712 receipts for each seeder.
+    /// This is the trustless fallback when the creator hasn't distributed within the window.
+    pub fn public_distribute_calldata(
+        content_id: FixedBytes<32>,
+        bundles: Vec<IMarketplace::SeederBundle>,
+    ) -> Vec<u8> {
+        IMarketplace::publicDistributeWithProofsCall {
+            contentId: content_id,
+            bundles,
         }
         .abi_encode()
     }

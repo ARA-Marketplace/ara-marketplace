@@ -23,6 +23,33 @@ pub enum GossipMessage {
         content_hash: ContentHash,
         node_id_bytes: [u8; 32],
     },
+    /// Buyer-signed proof that they received content from a specific seeder.
+    /// The buyer signs EIP-712 DeliveryReceipt(contentId, seederEthAddress, timestamp)
+    /// with their Ethereum wallet. Seeders and creators collect these to use as
+    /// weights for reward distribution.
+    DeliveryReceipt {
+        /// On-chain keccak256 content ID (bytes32)
+        content_id: [u8; 32],
+        /// Seeder's Ethereum address (20 bytes)
+        seeder_eth_address: [u8; 20],
+        /// Buyer's Ethereum address (20 bytes) — for routing/deduplication
+        buyer_eth_address: [u8; 20],
+        /// 65-byte EIP-712 ECDSA signature (r || s || v) — Vec to satisfy serde bounds
+        signature: Vec<u8>,
+        /// Unix timestamp when the receipt was signed
+        timestamp: u64,
+    },
+    /// Links a seeder's iroh NodeId to their Ethereum address.
+    /// The seeder signs their eth_address with their iroh Ed25519 key so that
+    /// creators can map NodeId → ETH address for reward distribution.
+    SeederIdentity {
+        /// Seeder's iroh NodeId (32 bytes, Ed25519 public key)
+        node_id: [u8; 32],
+        /// Seeder's Ethereum address (20 bytes)
+        eth_address: [u8; 20],
+        /// Ed25519 signature — Vec to satisfy serde bounds
+        signature: Vec<u8>,
+    },
 }
 
 /// Derive a gossip topic from a content hash.
@@ -134,6 +161,53 @@ impl DiscoveryService {
         let encoded = serde_json::to_vec(&msg)?;
         handle.sender.broadcast(Bytes::from(encoded)).await?;
 
+        Ok(())
+    }
+
+    /// Broadcast a delivery receipt on the gossip topic for the given content hash.
+    /// Call this after a buyer signs their receipt so that the seeder and creator collect it.
+    pub async fn broadcast_delivery_receipt(
+        &self,
+        content_hash: &ContentHash,
+        content_id: [u8; 32],
+        seeder_eth_address: [u8; 20],
+        buyer_eth_address: [u8; 20],
+        signature: Vec<u8>,
+        timestamp: u64,
+    ) -> Result<()> {
+        let handle = self
+            .topics
+            .get(content_hash)
+            .ok_or_else(|| anyhow::anyhow!("not subscribed to topic for {}", hex::encode(content_hash)))?;
+
+        let msg = GossipMessage::DeliveryReceipt {
+            content_id,
+            seeder_eth_address,
+            buyer_eth_address,
+            signature,
+            timestamp,
+        };
+        let encoded = serde_json::to_vec(&msg)?;
+        handle.sender.broadcast(Bytes::from(encoded)).await?;
+        Ok(())
+    }
+
+    /// Broadcast a SeederIdentity message on all active content topics.
+    /// Seeders call this on startup to let creators map NodeId → ETH address for reward calculation.
+    pub async fn broadcast_seeder_identity(
+        &self,
+        node_id: [u8; 32],
+        eth_address: [u8; 20],
+        signature: Vec<u8>,
+    ) -> Result<()> {
+        let msg = GossipMessage::SeederIdentity { node_id, eth_address, signature };
+        let encoded = serde_json::to_vec(&msg)?;
+        let bytes = Bytes::from(encoded);
+
+        for handle in self.topics.values() {
+            // Best-effort: ignore errors on individual topics
+            let _ = handle.sender.broadcast(bytes.clone()).await;
+        }
         Ok(())
     }
 

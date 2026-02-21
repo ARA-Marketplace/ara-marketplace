@@ -48,12 +48,25 @@ sol! {
 
     #[sol(rpc)]
     interface IMarketplace {
+        struct SignedReceipt {
+            uint256 timestamp;
+            bytes signature;
+        }
+
+        struct SeederBundle {
+            address seeder;
+            SignedReceipt[] receipts;
+        }
+
         function purchase(bytes32 contentId) external payable;
         function distributeRewards(bytes32 contentId, address[] seeders, uint256[] weights) external;
+        function publicDistributeWithProofs(bytes32 contentId, SeederBundle[] bundles) external;
         function claimRewards() external;
         function hasPurchased(bytes32 contentId, address buyer) external view returns (bool);
         function rewardPool(bytes32 contentId) external view returns (uint256);
         function claimableRewards(address seeder) external view returns (uint256);
+        function lastPurchaseTime(bytes32 contentId) external view returns (uint256);
+        function distributionWindow() external view returns (uint256);
 
         event ContentPurchased(bytes32 indexed contentId, address indexed buyer, uint256 pricePaid, uint256 creatorPayment, uint256 poolContribution);
         event RewardsDistributed(bytes32 indexed contentId, address[] seeders, uint256[] amounts, uint256 totalAmount);

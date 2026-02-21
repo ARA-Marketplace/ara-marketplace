@@ -496,6 +496,121 @@ fn detect_and_rename(path: std::path::PathBuf, hash_prefix: &str) -> std::path::
     path
 }
 
+/// Store a buyer-signed delivery receipt and broadcast it on the gossip network.
+/// Called after the buyer signs the EIP-712 receipt in the frontend.
+#[tauri::command]
+pub async fn broadcast_delivery_receipt(
+    state: State<'_, AppState>,
+    content_id: String,
+    seeder_eth_address: String,
+    buyer_eth_address: String,
+    signature: String,
+    timestamp: u64,
+) -> Result<(), String> {
+    info!(
+        "Broadcasting delivery receipt: content={}, seeder={}, buyer={}",
+        content_id, seeder_eth_address, buyer_eth_address
+    );
+
+    // Store in DB
+    {
+        let db = state.db.lock().await;
+        db.insert_delivery_receipt(
+            &content_id,
+            &seeder_eth_address,
+            &buyer_eth_address,
+            &signature,
+            timestamp as i64,
+        )
+        .map_err(|e| format!("DB insert failed: {e}"))?;
+    }
+
+    // Look up BLAKE3 content hash (gossip topic key) from content table
+    let content_hash_str: Option<String> = {
+        let db = state.db.lock().await;
+        db.conn()
+            .query_row(
+                "SELECT content_hash FROM content WHERE content_id = ?1",
+                rusqlite::params![&content_id],
+                |row| row.get(0),
+            )
+            .ok()
+    };
+
+    let Some(hash_str) = content_hash_str else {
+        // Content not in local DB — still recorded, just can't broadcast right now
+        return Ok(());
+    };
+
+    let content_hash = parse_content_hash_bytes(&hash_str)?;
+    let content_id_bytes = parse_32byte_hex(&content_id, "content ID")?;
+    let seeder_bytes = parse_20byte_hex(&seeder_eth_address, "seeder address")?;
+    let buyer_bytes = parse_20byte_hex(&buyer_eth_address, "buyer address")?;
+    let sig_bytes = parse_65byte_hex(&signature, "signature")?;
+
+    state
+        .send_gossip(crate::gossip_actor::GossipCmd::BroadcastDeliveryReceipt {
+            content_hash,
+            content_id: content_id_bytes,
+            seeder_eth_address: seeder_bytes,
+            buyer_eth_address: buyer_bytes,
+            signature: sig_bytes,
+            timestamp,
+        })
+        .await?;
+
+    info!("Delivery receipt stored and broadcast for {}", content_id);
+    Ok(())
+}
+
+/// Return the configured marketplace contract address (needed by the frontend for EIP-712 domain).
+#[tauri::command]
+pub async fn get_marketplace_address(
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    Ok(state.config.ethereum.marketplace_address.clone())
+}
+
+/// Get the count of delivery receipts for a content item.
+#[tauri::command]
+pub async fn get_receipt_count(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<u64, String> {
+    let db = state.db.lock().await;
+    let count: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM delivery_receipts WHERE content_id = ?1",
+            rusqlite::params![&content_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    Ok(count as u64)
+}
+
+/// Get the reward pool balance in ETH (decimal string) for a content item.
+#[tauri::command]
+pub async fn get_reward_pool(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<String, String> {
+    let content_id_bytes: FixedBytes<32> = content_id
+        .strip_prefix("0x")
+        .unwrap_or(&content_id)
+        .parse()
+        .map_err(|e| format!("Invalid content ID: {e}"))?;
+
+    let chain = state.chain_client()?;
+    let pool = chain
+        .marketplace
+        .reward_pool(content_id_bytes)
+        .await
+        .unwrap_or(U256::ZERO);
+
+    Ok(crate::commands::types::format_wei(pool))
+}
+
 fn parse_content_hash_bytes(s: &str) -> Result<[u8; 32], String> {
     let hex_str = s.strip_prefix("0x").unwrap_or(s);
     let bytes =
@@ -506,4 +621,35 @@ fn parse_content_hash_bytes(s: &str) -> Result<[u8; 32], String> {
     let mut hash = [0u8; 32];
     hash.copy_from_slice(&bytes);
     Ok(hash)
+}
+
+fn parse_32byte_hex(s: &str, label: &str) -> Result<[u8; 32], String> {
+    let hex_str = s.strip_prefix("0x").unwrap_or(s);
+    let bytes = alloy::hex::decode(hex_str).map_err(|e| format!("Invalid {label}: {e}"))?;
+    if bytes.len() != 32 {
+        return Err(format!("{label} must be 32 bytes, got {}", bytes.len()));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+fn parse_20byte_hex(s: &str, label: &str) -> Result<[u8; 20], String> {
+    let hex_str = s.strip_prefix("0x").unwrap_or(s);
+    let bytes = alloy::hex::decode(hex_str).map_err(|e| format!("Invalid {label}: {e}"))?;
+    if bytes.len() != 20 {
+        return Err(format!("{label} must be 20 bytes, got {}", bytes.len()));
+    }
+    let mut out = [0u8; 20];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+fn parse_65byte_hex(s: &str, label: &str) -> Result<Vec<u8>, String> {
+    let hex_str = s.strip_prefix("0x").unwrap_or(s);
+    let bytes = alloy::hex::decode(hex_str).map_err(|e| format!("Invalid {label}: {e}"))?;
+    if bytes.len() != 65 {
+        return Err(format!("{label} must be 65 bytes, got {}", bytes.len()));
+    }
+    Ok(bytes)
 }

@@ -1,6 +1,7 @@
 use crate::commands::types::{format_wei, hex_encode, parse_token_amount, TransactionRequest};
 use crate::state::AppState;
-use alloy::primitives::{Address, FixedBytes, U256};
+use alloy::primitives::{Address, Bytes, FixedBytes, U256, keccak256};
+use ara_chain::contracts::IMarketplace;
 use ara_chain::marketplace::MarketplaceClient;
 use ara_chain::staking::StakingClient;
 use ara_chain::token::TokenClient;
@@ -203,6 +204,326 @@ pub async fn claim_rewards(
         value: "0x0".to_string(),
         description: "Claim ETH rewards".to_string(),
     }])
+}
+
+/// Build a `distributeRewards()` transaction for the content creator (fast path).
+/// Reads locally collected delivery receipts from the DB, verifies each EIP-712
+/// signature against on-chain buyers, and builds proportional weights.
+/// Only the content creator (or global reporter) can sign this transaction.
+#[tauri::command]
+pub async fn prepare_distribute_rewards(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<Vec<TransactionRequest>, String> {
+    info!("Building distributeRewards tx for content: {}", content_id);
+
+    let content_id_bytes: FixedBytes<32> = content_id
+        .strip_prefix("0x")
+        .unwrap_or(&content_id)
+        .parse()
+        .map_err(|e| format!("Invalid content ID: {e}"))?;
+
+    let eth = &state.config.ethereum;
+    let marketplace_addr = eth
+        .marketplace_address
+        .parse::<Address>()
+        .map_err(|e| format!("Invalid marketplace address: {e}"))?;
+
+    let domain_separator = compute_domain_separator(marketplace_addr, eth.chain_id);
+
+    // Read receipts from DB
+    let receipts = {
+        let db = state.db.lock().await;
+        db.get_receipts_for_content(&content_id)
+            .map_err(|e| format!("DB read failed: {e}"))?
+    };
+
+    info!("Found {} raw receipts for {}", receipts.len(), content_id);
+
+    // Verify each receipt's ECDSA signature and group by seeder ETH address
+    let chain = state.chain_client()?;
+    let mut seeder_receipt_counts: std::collections::HashMap<Address, u64> =
+        std::collections::HashMap::new();
+
+    for receipt in &receipts {
+        let seeder_addr: Address = receipt
+            .seeder_eth_address
+            .parse()
+            .unwrap_or(Address::ZERO);
+        if seeder_addr == Address::ZERO {
+            continue;
+        }
+
+        // Recover buyer from signature
+        let Some(recovered_buyer) = verify_receipt_signature(
+            &domain_separator,
+            content_id_bytes,
+            seeder_addr,
+            receipt.timestamp as u64,
+            &receipt.signature,
+        ) else {
+            warn!("Invalid receipt signature from alleged buyer {}", receipt.buyer_eth_address);
+            continue;
+        };
+
+        // Confirm buyer address matches what's stored
+        let stored_buyer: Address = receipt.buyer_eth_address.parse().unwrap_or(Address::ZERO);
+        if recovered_buyer != stored_buyer {
+            warn!("Signature mismatch: stored={}, recovered={}", stored_buyer, recovered_buyer);
+            continue;
+        }
+
+        // Verify buyer purchased on-chain
+        let purchased = chain
+            .marketplace
+            .has_purchased(content_id_bytes, recovered_buyer)
+            .await
+            .unwrap_or(false);
+        if !purchased {
+            warn!("Receipt from non-buyer {}", recovered_buyer);
+            continue;
+        }
+
+        *seeder_receipt_counts.entry(seeder_addr).or_default() += 1;
+    }
+
+    if seeder_receipt_counts.is_empty() {
+        return Err("No verified delivery receipts found — cannot distribute rewards".to_string());
+    }
+
+    // Filter to eligible seeders and compute weights = receipt_count * content_stake
+    let mut seeders: Vec<Address> = Vec::new();
+    let mut weights: Vec<U256> = Vec::new();
+
+    for (seeder, count) in &seeder_receipt_counts {
+        let eligible = chain
+            .staking
+            .is_eligible_seeder(*seeder, content_id_bytes)
+            .await
+            .unwrap_or(false);
+        if !eligible {
+            info!("Seeder {} is not eligible (insufficient content stake)", seeder);
+            continue;
+        }
+
+        let stake = chain
+            .staking
+            .content_stake(*seeder, content_id_bytes)
+            .await
+            .unwrap_or(U256::ZERO);
+
+        // Weight = receipt_count * stake (or just receipt_count if stake is 0)
+        let weight = if stake > U256::ZERO {
+            U256::from(*count) * stake
+        } else {
+            U256::from(*count)
+        };
+
+        seeders.push(*seeder);
+        weights.push(weight);
+        info!("Seeder {} → count={}, stake={}, weight={}", seeder, count, stake, weight);
+    }
+
+    if seeders.is_empty() {
+        return Err(
+            "No eligible seeders found — seeders must have staked ARA for this content".to_string(),
+        );
+    }
+
+    let calldata = MarketplaceClient::<()>::distribute_rewards_calldata(
+        content_id_bytes,
+        seeders,
+        weights,
+    );
+
+    Ok(vec![TransactionRequest {
+        to: format!("{marketplace_addr:#x}"),
+        data: hex_encode(&calldata),
+        value: "0x0".to_string(),
+        description: format!("Distribute rewards for content {}", &content_id[..10]),
+    }])
+}
+
+/// Build a `publicDistributeWithProofs()` transaction for the trustless fallback.
+/// Available after the distributionWindow has elapsed since the last purchase.
+/// Any eligible seeder can call this — receipts are verified on-chain.
+#[tauri::command]
+pub async fn prepare_public_distribute(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<Vec<TransactionRequest>, String> {
+    info!("Building publicDistributeWithProofs tx for content: {}", content_id);
+
+    let content_id_bytes: FixedBytes<32> = content_id
+        .strip_prefix("0x")
+        .unwrap_or(&content_id)
+        .parse()
+        .map_err(|e| format!("Invalid content ID: {e}"))?;
+
+    let eth = &state.config.ethereum;
+    let marketplace_addr = eth
+        .marketplace_address
+        .parse::<Address>()
+        .map_err(|e| format!("Invalid marketplace address: {e}"))?;
+
+    // Check if distribution window is open
+    let chain = state.chain_client()?;
+    let last_purchase = chain
+        .marketplace
+        .last_purchase_time(content_id_bytes)
+        .await
+        .unwrap_or(U256::ZERO);
+
+    if last_purchase == U256::ZERO {
+        return Err("No purchases have been made for this content".to_string());
+    }
+
+    let window = chain
+        .marketplace
+        .distribution_window()
+        .await
+        .unwrap_or(U256::from(30 * 24 * 3600u64));
+
+    let now = U256::from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    );
+
+    if now <= last_purchase + window {
+        let opens_in = (last_purchase + window - now).saturating_to::<u64>();
+        let hours = opens_in / 3600;
+        let mins = (opens_in % 3600) / 60;
+        return Err(format!(
+            "Distribution window not yet open — opens in {}h {}m",
+            hours, mins
+        ));
+    }
+
+    // Read receipts from DB and group by seeder ETH address
+    let receipts = {
+        let db = state.db.lock().await;
+        db.get_receipts_for_content(&content_id)
+            .map_err(|e| format!("DB read failed: {e}"))?
+    };
+
+    // Group receipts by seeder (the contract verifies signatures; we just bundle them)
+    let mut seeder_map: std::collections::HashMap<String, Vec<IMarketplace::SignedReceipt>> =
+        std::collections::HashMap::new();
+
+    for receipt in receipts {
+        let sig_hex = receipt.signature.strip_prefix("0x").unwrap_or(&receipt.signature);
+        let sig_bytes = alloy::hex::decode(sig_hex)
+            .unwrap_or_default();
+        if sig_bytes.len() != 65 {
+            continue;
+        }
+        seeder_map
+            .entry(receipt.seeder_eth_address)
+            .or_default()
+            .push(IMarketplace::SignedReceipt {
+                timestamp: U256::from(receipt.timestamp as u64),
+                signature: Bytes::from(sig_bytes),
+            });
+    }
+
+    if seeder_map.is_empty() {
+        return Err("No delivery receipts available to submit".to_string());
+    }
+
+    let mut bundles: Vec<IMarketplace::SeederBundle> = Vec::new();
+    for (seeder_str, signed_receipts) in seeder_map {
+        let seeder: Address = seeder_str.parse().unwrap_or(Address::ZERO);
+        if seeder == Address::ZERO {
+            continue;
+        }
+        bundles.push(IMarketplace::SeederBundle {
+            seeder,
+            receipts: signed_receipts,
+        });
+    }
+
+    if bundles.is_empty() {
+        return Err("No valid seeder bundles to submit".to_string());
+    }
+
+    let calldata = MarketplaceClient::<()>::public_distribute_calldata(content_id_bytes, bundles);
+
+    Ok(vec![TransactionRequest {
+        to: format!("{marketplace_addr:#x}"),
+        data: hex_encode(&calldata),
+        value: "0x0".to_string(),
+        description: format!("Public distribute rewards for content {}", &content_id[..10]),
+    }])
+}
+
+/// Compute the EIP-712 domain separator for the Marketplace contract.
+fn compute_domain_separator(marketplace_addr: Address, chain_id: u64) -> [u8; 32] {
+    let domain_type_hash = keccak256(
+        b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+    );
+    let name_hash = keccak256(b"AraMarketplace");
+    let version_hash = keccak256(b"1");
+
+    // ABI encode: (type_hash, name_hash, version_hash, chain_id, address)
+    let mut data = Vec::with_capacity(160);
+    data.extend_from_slice(domain_type_hash.as_slice());
+    data.extend_from_slice(name_hash.as_slice());
+    data.extend_from_slice(version_hash.as_slice());
+    // chain_id as uint256 big-endian
+    let chain_id_u256 = U256::from(chain_id);
+    data.extend_from_slice(&chain_id_u256.to_be_bytes::<32>());
+    // address left-padded to 32 bytes
+    data.extend_from_slice(&[0u8; 12]);
+    data.extend_from_slice(marketplace_addr.as_slice());
+
+    *keccak256(&data)
+}
+
+/// Verify an EIP-712 DeliveryReceipt signature and return the recovered signer.
+/// Returns None if the signature is invalid or recovery fails.
+fn verify_receipt_signature(
+    domain_separator: &[u8; 32],
+    content_id: FixedBytes<32>,
+    seeder_eth_address: Address,
+    timestamp: u64,
+    signature_hex: &str,
+) -> Option<Address> {
+    let receipt_type_hash = keccak256(
+        b"DeliveryReceipt(bytes32 contentId,address seederEthAddress,uint256 timestamp)",
+    );
+
+    // ABI encode struct: (type_hash, content_id, seeder_address_padded, timestamp)
+    let mut struct_data = Vec::with_capacity(128);
+    struct_data.extend_from_slice(receipt_type_hash.as_slice());
+    struct_data.extend_from_slice(content_id.as_slice());
+    // address left-padded to 32 bytes
+    struct_data.extend_from_slice(&[0u8; 12]);
+    struct_data.extend_from_slice(seeder_eth_address.as_slice());
+    // timestamp as uint256 big-endian
+    struct_data.extend_from_slice(&U256::from(timestamp).to_be_bytes::<32>());
+
+    let struct_hash = keccak256(&struct_data);
+
+    // EIP-712: "\x19\x01" || domain_separator || struct_hash
+    let mut digest_data = Vec::with_capacity(66);
+    digest_data.extend_from_slice(b"\x19\x01");
+    digest_data.extend_from_slice(domain_separator);
+    digest_data.extend_from_slice(struct_hash.as_slice());
+
+    let digest: FixedBytes<32> = keccak256(&digest_data);
+
+    // Parse 65-byte signature
+    let sig_hex_str = signature_hex.strip_prefix("0x").unwrap_or(signature_hex);
+    let sig_bytes = alloy::hex::decode(sig_hex_str).ok()?;
+    if sig_bytes.len() != 65 {
+        return None;
+    }
+
+    // ECDSA recovery: sig = r(32) || s(32) || v(1)
+    let sig = alloy::primitives::Signature::try_from(sig_bytes.as_slice()).ok()?;
+    sig.recover_address_from_prehash(&digest).ok()
 }
 
 #[cfg(test)]

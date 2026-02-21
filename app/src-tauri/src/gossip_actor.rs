@@ -30,6 +30,24 @@ pub enum GossipCmd {
     },
     /// Broadcast a SeederLeave and drop the topic subscription.
     LeaveSeeding { content_hash: ContentHash },
+    /// Broadcast a buyer-signed delivery receipt on the gossip topic for the given content.
+    /// The receipt proves the buyer received the content from a specific seeder.
+    BroadcastDeliveryReceipt {
+        content_hash: ContentHash,
+        content_id: [u8; 32],
+        seeder_eth_address: [u8; 20],
+        buyer_eth_address: [u8; 20],
+        signature: Vec<u8>,
+        timestamp: u64,
+    },
+    /// Broadcast this node's Ethereum address on all active seeding topics.
+    /// Lets creators map iroh NodeId → ETH address for reward distribution.
+    BroadcastSeederIdentity {
+        node_id: [u8; 32],
+        eth_address: [u8; 20],
+        /// Ed25519 signature: sign(keccak256("AraSeeder:" || node_id || eth_address))
+        signature: Vec<u8>,
+    },
 }
 
 /// Internal events sent from per-topic recv_loop tasks back to the actor.
@@ -42,6 +60,20 @@ enum RecvEvent {
     /// A new seeder NodeId was discovered and should be persisted to the DB
     /// so it can be used as a bootstrap peer after restart.
     SeederPersist { content_hash: ContentHash, node_id: NodeId },
+    /// A delivery receipt was received from the gossip overlay — store it in the DB.
+    DeliveryReceiptReceived {
+        content_id_hex: String,
+        seeder_eth_address_hex: String,
+        buyer_eth_address_hex: String,
+        signature_hex: String,
+        timestamp: i64,
+    },
+    /// A seeder identity mapping was received — update the DB with NodeId → ETH address.
+    SeederIdentityReceived {
+        content_hash: ContentHash,
+        node_id: NodeId,
+        eth_address_hex: String,
+    },
 }
 
 /// Known seeders discovered via gossip, keyed by content hash.
@@ -84,6 +116,22 @@ impl GossipActor {
                                 warn!("Gossip leave failed: {e}");
                             }
                         }
+                        Some(GossipCmd::BroadcastDeliveryReceipt {
+                            content_hash, content_id, seeder_eth_address,
+                            buyer_eth_address, signature, timestamp,
+                        }) => {
+                            if let Err(e) = self.handle_broadcast_receipt(
+                                content_hash, content_id, seeder_eth_address,
+                                buyer_eth_address, signature, timestamp,
+                            ).await {
+                                warn!("Broadcast delivery receipt failed: {e}");
+                            }
+                        }
+                        Some(GossipCmd::BroadcastSeederIdentity { node_id, eth_address, signature }) => {
+                            if let Err(e) = self.handle_broadcast_identity(node_id, eth_address, signature).await {
+                                warn!("Broadcast seeder identity failed: {e}");
+                            }
+                        }
                         None => break, // command channel closed
                     }
                 }
@@ -108,6 +156,32 @@ impl GossipActor {
                                 "INSERT OR IGNORE INTO content_seeders (content_hash, node_id, discovered_at) VALUES (?1, ?2, ?3)",
                                 rusqlite::params![hash_hex, node_id.to_string(), now],
                             );
+                        }
+                        Some(RecvEvent::DeliveryReceiptReceived {
+                            content_id_hex, seeder_eth_address_hex,
+                            buyer_eth_address_hex, signature_hex, timestamp,
+                        }) => {
+                            let db = self.db.lock().await;
+                            if let Err(e) = db.insert_delivery_receipt(
+                                &content_id_hex,
+                                &seeder_eth_address_hex,
+                                &buyer_eth_address_hex,
+                                &signature_hex,
+                                timestamp,
+                            ) {
+                                warn!("Failed to store delivery receipt: {e}");
+                            }
+                        }
+                        Some(RecvEvent::SeederIdentityReceived { content_hash, node_id, eth_address_hex }) => {
+                            let hash_hex = format!("0x{}", alloy::hex::encode(content_hash));
+                            let db = self.db.lock().await;
+                            if let Err(e) = db.set_seeder_eth_address(
+                                &hash_hex,
+                                &node_id.to_string(),
+                                &eth_address_hex,
+                            ) {
+                                warn!("Failed to store seeder identity: {e}");
+                            }
                         }
                         None => {} // all recv_loop senders dropped — fine
                     }
@@ -261,6 +335,37 @@ impl GossipActor {
                                 let _ = event_tx.send(RecvEvent::PeerChanged);
                             }
                         }
+                        Ok(GossipMessage::DeliveryReceipt {
+                            content_id,
+                            seeder_eth_address,
+                            buyer_eth_address,
+                            signature,
+                            timestamp,
+                        }) => {
+                            // Store receipt — signature is verified later during distribute_rewards
+                            let content_id_hex = format!("0x{}", alloy::hex::encode(content_id));
+                            let seeder_hex = alloy::primitives::Address::from(seeder_eth_address).to_checksum(None);
+                            let buyer_hex = alloy::primitives::Address::from(buyer_eth_address).to_checksum(None);
+                            let sig_hex = format!("0x{}", alloy::hex::encode(signature));
+                            let _ = event_tx.send(RecvEvent::DeliveryReceiptReceived {
+                                content_id_hex,
+                                seeder_eth_address_hex: seeder_hex,
+                                buyer_eth_address_hex: buyer_hex,
+                                signature_hex: sig_hex,
+                                timestamp: timestamp as i64,
+                            });
+                        }
+                        Ok(GossipMessage::SeederIdentity { node_id, eth_address, .. }) => {
+                            let peer_id = NodeId::from_bytes(&node_id);
+                            if let Ok(peer_id) = peer_id {
+                                let eth_hex = alloy::primitives::Address::from(eth_address).to_checksum(None);
+                                let _ = event_tx.send(RecvEvent::SeederIdentityReceived {
+                                    content_hash,
+                                    node_id: peer_id,
+                                    eth_address_hex: eth_hex,
+                                });
+                            }
+                        }
                         Err(e) => {
                             warn!("Failed to parse gossip message: {e}");
                         }
@@ -316,6 +421,49 @@ impl GossipActor {
                 }
             }
         }
+    }
+
+    async fn handle_broadcast_receipt(
+        &self,
+        content_hash: ContentHash,
+        content_id: [u8; 32],
+        seeder_eth_address: [u8; 20],
+        buyer_eth_address: [u8; 20],
+        signature: Vec<u8>,
+        timestamp: u64,
+    ) -> anyhow::Result<()> {
+        let msg = GossipMessage::DeliveryReceipt {
+            content_id,
+            seeder_eth_address,
+            buyer_eth_address,
+            signature,
+            timestamp,
+        };
+        if let Some(sender) = self.active_topics.get(&content_hash) {
+            let encoded = self.encode_msg(&msg)?;
+            sender.broadcast(encoded).await?;
+            info!("Broadcast delivery receipt for content {}", alloy::hex::encode(content_hash));
+        } else {
+            warn!("Cannot broadcast receipt: not subscribed to topic for {}", alloy::hex::encode(content_hash));
+        }
+        Ok(())
+    }
+
+    async fn handle_broadcast_identity(
+        &self,
+        node_id: [u8; 32],
+        eth_address: [u8; 20],
+        signature: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        let msg = GossipMessage::SeederIdentity { node_id, eth_address, signature };
+        let encoded = self.encode_msg(&msg)?;
+        for (hash, sender) in &self.active_topics {
+            if let Err(e) = sender.broadcast(encoded.clone()).await {
+                warn!("SeederIdentity broadcast failed for {}: {e}", alloy::hex::encode(hash));
+            }
+        }
+        info!("Broadcast SeederIdentity on {} topics", self.active_topics.len());
+        Ok(())
     }
 
     async fn handle_leave(&mut self, content_hash: ContentHash) -> anyhow::Result<()> {

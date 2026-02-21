@@ -10,6 +10,9 @@ import {
   confirmDelist,
   openDownloadedContent,
   openContentFolder,
+  getReceiptCount,
+  getRewardPool,
+  prepareDistributeRewards,
   type LibraryItem,
   type PublishedItem,
 } from "../lib/tauri";
@@ -60,6 +63,11 @@ function Library() {
   const [delistingId, setDelistingId] = useState<string | null>(null);
   const [delistError, setDelistError] = useState<string | null>(null);
   const [pubTogglingId, setPubTogglingId] = useState<string | null>(null);
+  const [rewardData, setRewardData] = useState<
+    Record<string, { receipts: number; pool: string }>
+  >({});
+  const [distributingId, setDistributingId] = useState<string | null>(null);
+  const [distributeError, setDistributeError] = useState<string | null>(null);
 
   const fetchPurchased = useCallback(() => {
     getLibrary()
@@ -69,8 +77,22 @@ function Library() {
   }, []);
 
   const fetchPublished = useCallback(() => {
+    setLoadingPublished(true);
     getPublishedContent()
-      .then(setPublishedItems)
+      .then(async (items) => {
+        setPublishedItems(items);
+        // Fetch receipt count + reward pool for each item in parallel
+        const entries = await Promise.all(
+          items.map(async (item) => {
+            const [receipts, pool] = await Promise.all([
+              getReceiptCount(item.content_id).catch(() => 0),
+              getRewardPool(item.content_id).catch(() => ""),
+            ]);
+            return [item.content_id, { receipts, pool }] as const;
+          })
+        );
+        setRewardData(Object.fromEntries(entries));
+      })
       .catch((e) => setPublishedError(String(e)))
       .finally(() => setLoadingPublished(false));
   }, []);
@@ -174,6 +196,31 @@ function Library() {
       setDelistError(String(e));
     } finally {
       setDelistingId(null);
+    }
+  };
+
+  const handleDistribute = async (item: PublishedItem) => {
+    setDistributingId(item.content_id);
+    setDistributeError(null);
+    try {
+      const txs = await prepareDistributeRewards(item.content_id);
+      if (txs.length > 0) {
+        if (!walletProvider) throw new Error("Wallet not connected");
+        await signAndSendTransactions(walletProvider, txs);
+      }
+      // Refresh reward data for this item
+      const [receipts, pool] = await Promise.all([
+        getReceiptCount(item.content_id).catch(() => 0),
+        getRewardPool(item.content_id).catch(() => ""),
+      ]);
+      setRewardData((prev) => ({
+        ...prev,
+        [item.content_id]: { receipts, pool },
+      }));
+    } catch (e) {
+      setDistributeError(String(e));
+    } finally {
+      setDistributingId(null);
     }
   };
 
@@ -322,9 +369,9 @@ function Library() {
       {/* ── Published Tab ───────────────────────────────────────────── */}
       {activeTab === "published" && (
         <>
-          {(publishedError || delistError) && (
+          {(publishedError || delistError || distributeError) && (
             <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm mb-4">
-              {publishedError || delistError}
+              {publishedError || delistError || distributeError}
             </div>
           )}
           {loadingPublished ? (
@@ -354,7 +401,7 @@ function Library() {
                       Price
                     </th>
                     <th className="text-right px-4 py-3 text-sm font-medium text-gray-500">
-                      Seeding
+                      Reward Pool
                     </th>
                     <th className="text-right px-4 py-3 text-sm font-medium text-gray-500">
                       Actions
@@ -362,55 +409,94 @@ function Library() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {publishedItems.map((item) => (
-                    <tr key={item.content_id}>
-                      <td className="px-4 py-3 text-sm text-gray-900">
-                        <div className="flex items-center gap-2">
-                          <span>{typeIcon(item.content_type)}</span>
-                          <Link
-                            to={`/content/${item.content_id}`}
-                            className="hover:text-ara-600"
-                          >
-                            {item.title || "Untitled"}
-                          </Link>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-500 text-right">
-                        {formatBytes(item.file_size_bytes)}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-600 text-right">
-                        {item.price_eth} ETH
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={() => handlePublishedToggleSeeding(item)}
-                          disabled={pubTogglingId === item.content_id}
-                          className={`text-xs px-3 py-1.5 rounded-full font-medium transition-colors disabled:opacity-50 ${
-                            item.is_seeding
-                              ? "bg-green-100 text-green-700 hover:bg-green-200"
-                              : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                          }`}
-                        >
-                          {pubTogglingId === item.content_id
-                            ? "..."
-                            : item.is_seeding
-                              ? "Seeding"
-                              : "Start Seeding"}
-                        </button>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={() => handleDelist(item)}
-                          disabled={delistingId === item.content_id}
-                          className="text-xs px-3 py-1.5 rounded-full font-medium bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50 transition-colors"
-                        >
-                          {delistingId === item.content_id
-                            ? "Delisting..."
-                            : "Delist"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {publishedItems.map((item) => {
+                    const rd = rewardData[item.content_id];
+                    const poolEth = rd ? parseFloat(rd.pool) : 0;
+                    const canDistribute =
+                      rd !== undefined &&
+                      rd.receipts > 0 &&
+                      poolEth > 0;
+                    return (
+                      <tr key={item.content_id}>
+                        <td className="px-4 py-3 text-sm text-gray-900">
+                          <div className="flex items-center gap-2">
+                            <span>{typeIcon(item.content_type)}</span>
+                            <Link
+                              to={`/content/${item.content_id}`}
+                              className="hover:text-ara-600"
+                            >
+                              {item.title || "Untitled"}
+                            </Link>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-500 text-right">
+                          {formatBytes(item.file_size_bytes)}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-600 text-right">
+                          {item.price_eth} ETH
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          {rd ? (
+                            <div className="text-xs text-gray-500 text-right">
+                              <div>{rd.receipts} {rd.receipts === 1 ? "delivery" : "deliveries"}</div>
+                              {rd.pool ? <div className="text-gray-700 font-medium">{rd.pool} pool</div> : null}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-gray-400">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => handlePublishedToggleSeeding(item)}
+                              disabled={pubTogglingId === item.content_id}
+                              className={`text-xs px-3 py-1.5 rounded-full font-medium transition-colors disabled:opacity-50 ${
+                                item.is_seeding
+                                  ? "bg-green-100 text-green-700 hover:bg-green-200"
+                                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                              }`}
+                            >
+                              {pubTogglingId === item.content_id
+                                ? "..."
+                                : item.is_seeding
+                                  ? "Seeding"
+                                  : "Seed"}
+                            </button>
+                            <button
+                              onClick={() => handleDistribute(item)}
+                              disabled={
+                                !canDistribute ||
+                                distributingId === item.content_id
+                              }
+                              title={
+                                !rd
+                                  ? "Loading reward data..."
+                                  : rd.receipts === 0
+                                    ? "No verified deliveries yet"
+                                    : poolEth <= 0
+                                      ? "Reward pool is empty"
+                                      : "Distribute rewards to seeders"
+                              }
+                              className="text-xs px-3 py-1.5 rounded-full font-medium bg-ara-100 text-ara-700 hover:bg-ara-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                            >
+                              {distributingId === item.content_id
+                                ? "Distributing..."
+                                : "Distribute"}
+                            </button>
+                            <button
+                              onClick={() => handleDelist(item)}
+                              disabled={delistingId === item.content_id}
+                              className="text-xs px-3 py-1.5 rounded-full font-medium bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50 transition-colors"
+                            >
+                              {delistingId === item.content_id
+                                ? "Delisting..."
+                                : "Delist"}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

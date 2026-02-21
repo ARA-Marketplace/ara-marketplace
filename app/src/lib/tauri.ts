@@ -230,3 +230,38 @@ export interface SyncResult {
 export async function syncContent(): Promise<SyncResult> {
   return invoke("sync_content");
 }
+
+// Reward distribution
+export async function getMarketplaceAddress(): Promise<string> {
+  return invoke("get_marketplace_address");
+}
+
+export async function broadcastDeliveryReceipt(params: {
+  contentId: string;
+  seederEthAddress: string;
+  buyerEthAddress: string;
+  signature: string;
+  timestamp: number;
+}): Promise<void> {
+  return invoke("broadcast_delivery_receipt", params);
+}
+
+export async function getReceiptCount(contentId: string): Promise<number> {
+  return invoke("get_receipt_count", { contentId });
+}
+
+export async function getRewardPool(contentId: string): Promise<string> {
+  return invoke("get_reward_pool", { contentId });
+}
+
+export async function prepareDistributeRewards(
+  contentId: string
+): Promise<TransactionRequest[]> {
+  return invoke("prepare_distribute_rewards", { contentId });
+}
+
+export async function preparePublicDistribute(
+  contentId: string
+): Promise<TransactionRequest[]> {
+  return invoke("prepare_public_distribute", { contentId });
+}

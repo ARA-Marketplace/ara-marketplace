@@ -6,6 +6,8 @@ import {
   confirmPurchase,
   updateContent,
   confirmUpdateContent,
+  broadcastDeliveryReceipt,
+  getMarketplaceAddress,
   type ContentDetail as ContentDetailType,
 } from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
@@ -47,6 +49,9 @@ function ContentDetail() {
   const [purchaseStep, setPurchaseStep] = useState<PurchaseStep>("idle");
   const [purchaseError, setPurchaseError] = useState<string | null>(null);
   const [purchaseTxHash, setPurchaseTxHash] = useState<string | null>(null);
+  const [receiptStep, setReceiptStep] = useState<
+    "idle" | "signing" | "done" | "skipped"
+  >("idle");
 
   // Edit state
   const [editing, setEditing] = useState(false);
@@ -179,6 +184,66 @@ function ContentDetail() {
     } catch (err) {
       setPurchaseError(String(err));
       setPurchaseStep("idle");
+    }
+  };
+
+  // Sign and broadcast an EIP-712 delivery receipt after purchase.
+  // This is gasless and optional — the signature proves to the content creator
+  // that a specific seeder served this buyer, so rewards can be fairly distributed.
+  const handleSignReceipt = async () => {
+    if (!content || !address || !walletProvider) return;
+    setReceiptStep("signing");
+    try {
+      const marketplaceAddr = await getMarketplaceAddress();
+      if (!marketplaceAddr) throw new Error("Marketplace not configured");
+
+      const timestamp = Math.floor(Date.now() / 1000);
+      const typedData = {
+        types: {
+          EIP712Domain: [
+            { name: "name", type: "string" },
+            { name: "version", type: "string" },
+            { name: "chainId", type: "uint256" },
+            { name: "verifyingContract", type: "address" },
+          ],
+          DeliveryReceipt: [
+            { name: "contentId", type: "bytes32" },
+            { name: "seederEthAddress", type: "address" },
+            { name: "timestamp", type: "uint256" },
+          ],
+        },
+        primaryType: "DeliveryReceipt",
+        domain: {
+          name: "AraMarketplace",
+          version: "1",
+          chainId: 11155111,
+          verifyingContract: marketplaceAddr,
+        },
+        message: {
+          contentId: content.content_id,
+          seederEthAddress: content.creator,
+          timestamp,
+        },
+      };
+
+      const signature = await (walletProvider as {
+        request: (args: { method: string; params: unknown[] }) => Promise<string>;
+      }).request({
+        method: "eth_signTypedData_v4",
+        params: [address, JSON.stringify(typedData)],
+      });
+
+      await broadcastDeliveryReceipt({
+        contentId: content.content_id,
+        seederEthAddress: content.creator,
+        buyerEthAddress: address,
+        signature,
+        timestamp,
+      });
+      setReceiptStep("done");
+    } catch {
+      // Treat any error (including user rejection) as a skip
+      setReceiptStep("skipped");
     }
   };
 
@@ -417,6 +482,38 @@ function ContentDetail() {
                       </>
                     )}
                   </p>
+                  {/* Optional: sign delivery receipt to help reward the seeder */}
+                  {receiptStep === "idle" && (
+                    <div className="mt-3 pt-3 border-t border-green-200">
+                      <p className="text-green-700 text-xs mb-2">
+                        Help reward the seeder: sign a gasless receipt proving you received this content.
+                      </p>
+                      <div className="flex gap-3 items-center">
+                        <button
+                          onClick={handleSignReceipt}
+                          className="text-xs px-3 py-1.5 bg-green-600 text-white rounded-full font-medium hover:bg-green-700 transition-colors"
+                        >
+                          Sign Receipt
+                        </button>
+                        <button
+                          onClick={() => setReceiptStep("skipped")}
+                          className="text-xs text-green-600 hover:text-green-800 underline"
+                        >
+                          Skip
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {receiptStep === "signing" && (
+                    <p className="mt-2 text-xs text-green-600">
+                      Waiting for signature in wallet...
+                    </p>
+                  )}
+                  {receiptStep === "done" && (
+                    <p className="mt-2 text-xs text-green-600 font-medium">
+                      Receipt signed — seeder delivery verified.
+                    </p>
+                  )}
                 </div>
               ) : isCreator ? (
                 <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-700 text-sm">
