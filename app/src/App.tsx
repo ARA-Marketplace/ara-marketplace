@@ -7,6 +7,14 @@ import Library from "./pages/Library";
 import Dashboard from "./pages/Dashboard";
 import Wallet from "./pages/Wallet";
 
+// Apply saved theme before first render to avoid flash
+const savedTheme = localStorage.getItem("ara-theme") ?? "dark";
+if (savedTheme === "dark") {
+  document.documentElement.classList.add("dark");
+} else {
+  document.documentElement.classList.remove("dark");
+}
+
 function App() {
   return (
     <Layout>

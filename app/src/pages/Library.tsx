@@ -1,73 +1,57 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
-  getLibrary,
-  getPublishedContent,
-  startSeeding,
-  stopSeeding,
-  delistContent,
-  confirmDelist,
-  openDownloadedContent,
-  openContentFolder,
-  getReceiptCount,
-  getRewardPool,
-  prepareDistributeRewards,
-  type LibraryItem,
-  type PublishedItem,
+  getLibrary, getPublishedContent, startSeeding, stopSeeding,
+  delistContent, confirmDelist, openDownloadedContent, openContentFolder,
+  getReceiptCount, getRewardPool, prepareDistributeRewards,
+  updateContentFile, confirmContentFileUpdate,
+  type LibraryItem, type PublishedItem,
 } from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
 import { useWeb3ModalAccount, useWeb3ModalProvider } from "@web3modal/ethers/react";
 
 type Tab = "purchased" | "published";
 
-function formatBytes(bytes: number): string {
+function fmtBytes(bytes: number) {
   if (bytes <= 0) return "—";
-  const units = ["B", "KB", "MB", "GB", "TB"];
+  const u = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${u[i]}`;
 }
 
-function formatDate(ts: number): string {
+function fmtDate(ts: number) {
   return new Date(ts * 1000).toLocaleDateString();
 }
 
 const TYPE_ICONS: Record<string, string> = {
-  game: "🎮",
-  music: "🎵",
-  video: "🎬",
-  document: "📄",
-  software: "💾",
+  game: "🎮", music: "🎵", video: "🎬", document: "📄", software: "💾",
 };
-function typeIcon(t: string) {
-  return TYPE_ICONS[t] ?? "📦";
-}
+const typeIcon = (t: string) => TYPE_ICONS[t] ?? "📦";
 
 function Library() {
   const { isConnected } = useWeb3ModalAccount();
   const { walletProvider } = useWeb3ModalProvider();
-
   const [activeTab, setActiveTab] = useState<Tab>("purchased");
 
-  // Purchased tab state
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [loadingPurchased, setLoadingPurchased] = useState(true);
   const [purchasedError, setPurchasedError] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [openingId, setOpeningId] = useState<string | null>(null);
 
-  // Published tab state
   const [publishedItems, setPublishedItems] = useState<PublishedItem[]>([]);
   const [loadingPublished, setLoadingPublished] = useState(true);
   const [publishedError, setPublishedError] = useState<string | null>(null);
   const [delistingId, setDelistingId] = useState<string | null>(null);
   const [delistError, setDelistError] = useState<string | null>(null);
   const [pubTogglingId, setPubTogglingId] = useState<string | null>(null);
-  const [rewardData, setRewardData] = useState<
-    Record<string, { receipts: number; pool: string }>
-  >({});
+  const [rewardData, setRewardData] = useState<Record<string, { receipts: number; pool: string }>>({});
   const [distributingId, setDistributingId] = useState<string | null>(null);
   const [distributeError, setDistributeError] = useState<string | null>(null);
+  const [updatingFileId, setUpdatingFileId] = useState<string | null>(null);
+  const [updateFileError, setUpdateFileError] = useState<string | null>(null);
 
   const fetchPurchased = useCallback(() => {
     getLibrary()
@@ -79,11 +63,10 @@ function Library() {
   const fetchPublished = useCallback(() => {
     setLoadingPublished(true);
     getPublishedContent()
-      .then(async (items) => {
-        setPublishedItems(items);
-        // Fetch receipt count + reward pool for each item in parallel
+      .then(async (its) => {
+        setPublishedItems(its);
         const entries = await Promise.all(
-          items.map(async (item) => {
+          its.map(async (item) => {
             const [receipts, pool] = await Promise.all([
               getReceiptCount(item.content_id).catch(() => 0),
               getRewardPool(item.content_id).catch(() => ""),
@@ -99,91 +82,57 @@ function Library() {
 
   useEffect(() => {
     if (!isConnected) {
-      setItems([]);
-      setPublishedItems([]);
-      setLoadingPurchased(false);
-      setLoadingPublished(false);
+      setItems([]); setPublishedItems([]);
+      setLoadingPurchased(false); setLoadingPublished(false);
       return;
     }
-    fetchPurchased();
-    fetchPublished();
-    const interval = setInterval(() => {
-      fetchPurchased();
-      fetchPublished();
-    }, 30000);
+    fetchPurchased(); fetchPublished();
+    const interval = setInterval(() => { fetchPurchased(); fetchPublished(); }, 30000);
     return () => clearInterval(interval);
   }, [isConnected, fetchPurchased, fetchPublished]);
 
-  // Refresh on chain sync or seeder stats changes
   useEffect(() => {
     const unlistenSync = listen("content-synced", () => {
-      if (isConnected) {
-        fetchPurchased();
-        fetchPublished();
-      }
+      if (isConnected) { fetchPurchased(); fetchPublished(); }
     });
     const unlistenSeeder = listen("seeder-stats-updated", () => {
       if (isConnected) fetchPublished();
     });
-    return () => {
-      unlistenSync.then((f) => f());
-      unlistenSeeder.then((f) => f());
-    };
+    return () => { unlistenSync.then((f) => f()); unlistenSeeder.then((f) => f()); };
   }, [isConnected, fetchPurchased, fetchPublished]);
-
-  // ── Purchased tab handlers ─────────────────────────────────────────────
 
   const handleToggleSeeding = async (item: LibraryItem) => {
     setTogglingId(item.content_id);
     try {
-      if (item.is_seeding) {
-        await stopSeeding(item.content_id);
-      } else {
-        await startSeeding(item.content_id);
-      }
+      if (item.is_seeding) await stopSeeding(item.content_id);
+      else await startSeeding(item.content_id);
       fetchPurchased();
-    } finally {
-      setTogglingId(null);
-    }
+    } finally { setTogglingId(null); }
   };
 
   const handleOpenFile = async (item: LibraryItem) => {
     setOpeningId(item.content_id);
-    try {
-      await openDownloadedContent(item.content_id);
-    } finally {
-      setOpeningId(null);
-    }
+    try { await openDownloadedContent(item.content_id); }
+    finally { setOpeningId(null); }
   };
 
   const handleOpenFolder = async (item: LibraryItem) => {
     setOpeningId(item.content_id);
-    try {
-      await openContentFolder(item.content_id);
-    } finally {
-      setOpeningId(null);
-    }
+    try { await openContentFolder(item.content_id); }
+    finally { setOpeningId(null); }
   };
-
-  // ── Published tab handlers ─────────────────────────────────────────────
 
   const handlePublishedToggleSeeding = async (item: PublishedItem) => {
     setPubTogglingId(item.content_id);
     try {
-      if (item.is_seeding) {
-        await stopSeeding(item.content_id);
-      } else {
-        await startSeeding(item.content_id);
-      }
+      if (item.is_seeding) await stopSeeding(item.content_id);
+      else await startSeeding(item.content_id);
       fetchPublished();
-    } finally {
-      setPubTogglingId(null);
-    }
+    } finally { setPubTogglingId(null); }
   };
 
   const handleDelist = async (item: PublishedItem) => {
-    setDelistingId(item.content_id);
-    setDelistError(null);
+    setDelistingId(item.content_id); setDelistError(null);
     try {
       const txs = await delistContent(item.content_id);
       if (txs.length > 0) {
@@ -192,133 +141,107 @@ function Library() {
       }
       await confirmDelist(item.content_id);
       fetchPublished();
-    } catch (e) {
-      setDelistError(String(e));
-    } finally {
-      setDelistingId(null);
-    }
+    } catch (e) { setDelistError(String(e)); }
+    finally { setDelistingId(null); }
+  };
+
+  const handleUpdateFile = async (item: PublishedItem) => {
+    setUpdateFileError(null);
+    const selected = await open({ multiple: false, directory: false, title: "Select replacement file" });
+    if (!selected) return;
+    setUpdatingFileId(item.content_id);
+    try {
+      const result = await updateContentFile({ contentId: item.content_id, filePath: selected });
+      if (result.transactions.length > 0) {
+        if (!walletProvider) throw new Error("Wallet not connected");
+        await signAndSendTransactions(walletProvider, result.transactions);
+      }
+      await confirmContentFileUpdate({ contentId: item.content_id, newContentHash: result.new_content_hash });
+      fetchPublished();
+    } catch (e) { setUpdateFileError(String(e)); }
+    finally { setUpdatingFileId(null); }
   };
 
   const handleDistribute = async (item: PublishedItem) => {
-    setDistributingId(item.content_id);
-    setDistributeError(null);
+    setDistributingId(item.content_id); setDistributeError(null);
     try {
       const txs = await prepareDistributeRewards(item.content_id);
       if (txs.length > 0) {
         if (!walletProvider) throw new Error("Wallet not connected");
         await signAndSendTransactions(walletProvider, txs);
       }
-      // Refresh reward data for this item
       const [receipts, pool] = await Promise.all([
         getReceiptCount(item.content_id).catch(() => 0),
         getRewardPool(item.content_id).catch(() => ""),
       ]);
-      setRewardData((prev) => ({
-        ...prev,
-        [item.content_id]: { receipts, pool },
-      }));
-    } catch (e) {
-      setDistributeError(String(e));
-    } finally {
-      setDistributingId(null);
-    }
+      setRewardData((prev) => ({ ...prev, [item.content_id]: { receipts, pool } }));
+    } catch (e) { setDistributeError(String(e)); }
+    finally { setDistributingId(null); }
   };
 
-  // ── Render ─────────────────────────────────────────────────────────────
+  const tabCls = (t: Tab) =>
+    `px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+      activeTab === t
+        ? "border-ara-600 text-ara-600 dark:text-ara-400 dark:border-ara-500"
+        : "border-transparent text-slate-500 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+    }`;
 
   return (
     <div>
-      <h1 className="text-3xl font-bold text-gray-900">Library</h1>
-      <p className="mt-2 text-gray-600 mb-6">
-        Manage your purchased and published content. Seed to earn ETH rewards.
-      </p>
+      <div className="mb-6">
+        <h1 className="page-title">Library</h1>
+        <p className="page-subtitle">Manage your purchased and published content.</p>
+      </div>
 
       {!isConnected && (
-        <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-700 text-sm mb-6">
-          Connect your wallet to view your library.
-        </div>
+        <div className="alert-warning mb-6">Connect your wallet to view your library.</div>
       )}
 
       {/* Tabs */}
-      <div className="flex border-b border-gray-200 mb-6">
-        <button
-          onClick={() => setActiveTab("purchased")}
-          className={`px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-            activeTab === "purchased"
-              ? "border-ara-600 text-ara-700"
-              : "border-transparent text-gray-500 hover:text-gray-700"
-          }`}
-        >
+      <div className="flex border-b border-slate-200 dark:border-slate-800 mb-6">
+        <button onClick={() => setActiveTab("purchased")} className={tabCls("purchased")}>
           Purchased
-          {items.length > 0 && (
-            <span className="ml-2 text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
-              {items.length}
-            </span>
-          )}
+          {items.length > 0 && <span className="ml-2 badge-gray">{items.length}</span>}
         </button>
-        <button
-          onClick={() => setActiveTab("published")}
-          className={`px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-            activeTab === "published"
-              ? "border-ara-600 text-ara-700"
-              : "border-transparent text-gray-500 hover:text-gray-700"
-          }`}
-        >
+        <button onClick={() => setActiveTab("published")} className={tabCls("published")}>
           Published
-          {publishedItems.length > 0 && (
-            <span className="ml-2 text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
-              {publishedItems.length}
-            </span>
-          )}
+          {publishedItems.length > 0 && <span className="ml-2 badge-gray">{publishedItems.length}</span>}
         </button>
       </div>
 
-      {/* ── Purchased Tab ───────────────────────────────────────────── */}
+      {/* ── Purchased Tab ── */}
       {activeTab === "purchased" && (
         <>
-          {purchasedError && (
-            <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm mb-4">
-              {purchasedError}
-            </div>
-          )}
+          {purchasedError && <div className="alert-error mb-4">{purchasedError}</div>}
           {loadingPurchased ? (
-            <div className="text-center text-gray-400 py-12">Loading...</div>
+            <div className="flex justify-center py-16">
+              <div className="w-8 h-8 border-2 border-ara-500 border-t-transparent rounded-full animate-spin" />
+            </div>
           ) : items.length === 0 ? (
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-10 text-center text-gray-400">
-              <p className="text-lg">No purchases yet</p>
-              <p className="mt-2 text-sm">
-                <Link to="/" className="text-ara-600 hover:underline">
-                  Browse the Marketplace
-                </Link>{" "}
+            <div className="card p-10 text-center">
+              <p className="text-slate-400 dark:text-slate-600 mb-1">No purchases yet</p>
+              <p className="text-sm text-slate-500 dark:text-slate-600">
+                <Link to="/" className="text-ara-500 hover:text-ara-400 underline">Browse the Marketplace</Link>{" "}
                 to find content to buy.
               </p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-2">
               {items.map((item) => (
-                <div
-                  key={item.content_id}
-                  className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 flex items-center gap-4"
-                >
-                  <span className="text-2xl flex-shrink-0">
-                    {typeIcon(item.content_type)}
-                  </span>
+                <div key={item.content_id}
+                  className="card flex items-center gap-4 px-4 py-3.5 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                  <span className="text-xl flex-shrink-0">{typeIcon(item.content_type)}</span>
                   <div className="flex-1 min-w-0">
-                    <Link
-                      to={`/content/${item.content_id}`}
-                      className="font-medium text-gray-900 hover:text-ara-600 truncate block"
-                    >
+                    <Link to={`/content/${item.content_id}`}
+                      className="font-medium text-slate-900 dark:text-slate-100 hover:text-ara-600 dark:hover:text-ara-400 truncate block text-sm">
                       {item.title || "Untitled"}
                     </Link>
-                    <div className="text-xs text-gray-400 mt-0.5 flex gap-3">
-                      <span>Purchased {formatDate(item.purchased_at)}</span>
+                    <div className="text-xs text-slate-400 dark:text-slate-600 mt-0.5 flex gap-3">
+                      <span>Purchased {fmtDate(item.purchased_at)}</span>
                       {item.tx_hash && (
-                        <a
-                          href={`https://sepolia.etherscan.io/tx/${item.tx_hash}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-ara-500 hover:underline"
-                        >
+                        <a href={`https://sepolia.etherscan.io/tx/${item.tx_hash}`}
+                          target="_blank" rel="noopener noreferrer"
+                          className="text-ara-500 hover:underline">
                           Etherscan ↗
                         </a>
                       )}
@@ -327,36 +250,26 @@ function Library() {
                   <div className="flex items-center gap-2 flex-shrink-0">
                     {item.download_path && (
                       <>
-                        <button
-                          onClick={() => handleOpenFile(item)}
+                        <button onClick={() => handleOpenFile(item)}
                           disabled={openingId === item.content_id}
-                          className="text-xs px-3 py-1.5 rounded-full font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-50 transition-colors"
-                        >
+                          className="btn-ghost text-xs px-3 py-1.5">
                           Open File
                         </button>
-                        <button
-                          onClick={() => handleOpenFolder(item)}
+                        <button onClick={() => handleOpenFolder(item)}
                           disabled={openingId === item.content_id}
-                          className="text-xs px-3 py-1.5 rounded-full font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-50 transition-colors"
-                        >
+                          className="btn-ghost text-xs px-3 py-1.5">
                           Folder
                         </button>
                       </>
                     )}
-                    <button
-                      onClick={() => handleToggleSeeding(item)}
+                    <button onClick={() => handleToggleSeeding(item)}
                       disabled={togglingId === item.content_id}
-                      className={`text-xs px-3 py-1.5 rounded-full font-medium transition-colors disabled:opacity-50 ${
+                      className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors disabled:opacity-50 ${
                         item.is_seeding
-                          ? "bg-green-100 text-green-700 hover:bg-green-200"
-                          : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                      }`}
-                    >
-                      {togglingId === item.content_id
-                        ? "..."
-                        : item.is_seeding
-                          ? "Seeding"
-                          : "Start Seeding"}
+                          ? "bg-emerald-100 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-200 dark:hover:bg-emerald-900/40"
+                          : "btn-ghost"
+                      }`}>
+                      {togglingId === item.content_id ? "…" : item.is_seeding ? "Seeding" : "Start Seeding"}
                     </button>
                   </div>
                 </div>
@@ -366,131 +279,102 @@ function Library() {
         </>
       )}
 
-      {/* ── Published Tab ───────────────────────────────────────────── */}
+      {/* ── Published Tab ── */}
       {activeTab === "published" && (
         <>
-          {(publishedError || delistError || distributeError) && (
-            <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm mb-4">
-              {publishedError || delistError || distributeError}
+          {(publishedError || delistError || distributeError || updateFileError) && (
+            <div className="alert-error mb-4">
+              {publishedError || delistError || distributeError || updateFileError}
             </div>
           )}
           {loadingPublished ? (
-            <div className="text-center text-gray-400 py-12">Loading...</div>
+            <div className="flex justify-center py-16">
+              <div className="w-8 h-8 border-2 border-ara-500 border-t-transparent rounded-full animate-spin" />
+            </div>
           ) : publishedItems.length === 0 ? (
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-10 text-center text-gray-400">
-              <p className="text-lg">Nothing published yet</p>
-              <p className="mt-2 text-sm">
-                <Link to="/publish" className="text-ara-600 hover:underline">
+            <div className="card p-10 text-center">
+              <p className="text-slate-400 dark:text-slate-600 mb-1">Nothing published yet</p>
+              <p className="text-sm text-slate-500 dark:text-slate-600">
+                <Link to="/publish" className="text-ara-500 hover:text-ara-400 underline">
                   Publish your first file
                 </Link>{" "}
                 to start earning.
               </p>
             </div>
           ) : (
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-              <table className="w-full">
-                <thead className="bg-gray-50 border-b border-gray-200">
+            <div className="card overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="border-b border-slate-200 dark:border-slate-800">
                   <tr>
-                    <th className="text-left px-4 py-3 text-sm font-medium text-gray-500">
-                      Title
-                    </th>
-                    <th className="text-right px-4 py-3 text-sm font-medium text-gray-500">
-                      Size
-                    </th>
-                    <th className="text-right px-4 py-3 text-sm font-medium text-gray-500">
-                      Price
-                    </th>
-                    <th className="text-right px-4 py-3 text-sm font-medium text-gray-500">
-                      Reward Pool
-                    </th>
-                    <th className="text-right px-4 py-3 text-sm font-medium text-gray-500">
-                      Actions
-                    </th>
+                    {["Title", "Size", "Price", "Rewards", "Actions"].map((h, i) => (
+                      <th key={h} className={`px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 ${i === 0 ? "text-left" : "text-right"}`}>
+                        {h}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
                   {publishedItems.map((item) => {
                     const rd = rewardData[item.content_id];
                     const poolEth = rd ? parseFloat(rd.pool) : 0;
-                    const canDistribute =
-                      rd !== undefined &&
-                      rd.receipts > 0 &&
-                      poolEth > 0;
+                    const canDistribute = rd !== undefined && rd.receipts > 0 && poolEth > 0;
                     return (
-                      <tr key={item.content_id}>
-                        <td className="px-4 py-3 text-sm text-gray-900">
+                      <tr key={item.content_id} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
+                        <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
                             <span>{typeIcon(item.content_type)}</span>
-                            <Link
-                              to={`/content/${item.content_id}`}
-                              className="hover:text-ara-600"
-                            >
+                            <Link to={`/content/${item.content_id}`}
+                              className="text-slate-900 dark:text-slate-200 hover:text-ara-600 dark:hover:text-ara-400 font-medium">
                               {item.title || "Untitled"}
                             </Link>
+                            {item.updated_at !== null && (
+                              <span className="badge-blue">Updated</span>
+                            )}
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-500 text-right">
-                          {formatBytes(item.file_size_bytes)}
+                        <td className="px-4 py-3 text-right text-slate-500 dark:text-slate-400">
+                          {fmtBytes(item.file_size_bytes)}
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-600 text-right">
+                        <td className="px-4 py-3 text-right text-slate-600 dark:text-slate-300 font-medium">
                           {item.price_eth} ETH
                         </td>
                         <td className="px-4 py-3 text-right">
                           {rd ? (
-                            <div className="text-xs text-gray-500 text-right">
+                            <div className="text-xs text-slate-500 dark:text-slate-400">
                               <div>{rd.receipts} {rd.receipts === 1 ? "delivery" : "deliveries"}</div>
-                              {rd.pool ? <div className="text-gray-700 font-medium">{rd.pool} pool</div> : null}
+                              {rd.pool ? <div className="text-slate-700 dark:text-slate-300 font-medium">{rd.pool}</div> : null}
                             </div>
                           ) : (
-                            <span className="text-xs text-gray-400">—</span>
+                            <span className="text-xs text-slate-400">—</span>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-right">
-                          <div className="flex items-center justify-end gap-2">
-                            <button
-                              onClick={() => handlePublishedToggleSeeding(item)}
+                        <td className="px-4 py-3">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button onClick={() => handlePublishedToggleSeeding(item)}
                               disabled={pubTogglingId === item.content_id}
-                              className={`text-xs px-3 py-1.5 rounded-full font-medium transition-colors disabled:opacity-50 ${
+                              className={`text-xs px-2.5 py-1.5 rounded-lg font-medium transition-colors disabled:opacity-50 ${
                                 item.is_seeding
-                                  ? "bg-green-100 text-green-700 hover:bg-green-200"
-                                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                              }`}
-                            >
-                              {pubTogglingId === item.content_id
-                                ? "..."
-                                : item.is_seeding
-                                  ? "Seeding"
-                                  : "Seed"}
+                                  ? "bg-emerald-100 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-200 dark:hover:bg-emerald-900/40"
+                                  : "btn-ghost"
+                              }`}>
+                              {pubTogglingId === item.content_id ? "…" : item.is_seeding ? "Seeding" : "Seed"}
                             </button>
-                            <button
-                              onClick={() => handleDistribute(item)}
-                              disabled={
-                                !canDistribute ||
-                                distributingId === item.content_id
-                              }
-                              title={
-                                !rd
-                                  ? "Loading reward data..."
-                                  : rd.receipts === 0
-                                    ? "No verified deliveries yet"
-                                    : poolEth <= 0
-                                      ? "Reward pool is empty"
-                                      : "Distribute rewards to seeders"
-                              }
-                              className="text-xs px-3 py-1.5 rounded-full font-medium bg-ara-100 text-ara-700 hover:bg-ara-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                            >
-                              {distributingId === item.content_id
-                                ? "Distributing..."
-                                : "Distribute"}
+                            <button onClick={() => handleDistribute(item)}
+                              disabled={!canDistribute || distributingId === item.content_id}
+                              title={!rd ? "Loading…" : rd.receipts === 0 ? "No verified deliveries yet" : poolEth <= 0 ? "Pool is empty" : "Distribute rewards to seeders"}
+                              className="badge-purple px-2.5 py-1.5 rounded-lg text-xs font-medium hover:bg-ara-200 dark:hover:bg-ara-900/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                              {distributingId === item.content_id ? "…" : "Distribute"}
                             </button>
-                            <button
-                              onClick={() => handleDelist(item)}
+                            <button onClick={() => handleUpdateFile(item)}
+                              disabled={updatingFileId === item.content_id}
+                              title="Replace the content file"
+                              className="text-xs px-2.5 py-1.5 rounded-lg font-medium bg-indigo-100 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-400 hover:bg-indigo-200 dark:hover:bg-indigo-900/40 transition-colors disabled:opacity-50">
+                              {updatingFileId === item.content_id ? "…" : "Update File"}
+                            </button>
+                            <button onClick={() => handleDelist(item)}
                               disabled={delistingId === item.content_id}
-                              className="text-xs px-3 py-1.5 rounded-full font-medium bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50 transition-colors"
-                            >
-                              {delistingId === item.content_id
-                                ? "Delisting..."
-                                : "Delist"}
+                              className="btn-danger px-2.5 py-1.5">
+                              {delistingId === item.content_id ? "…" : "Delist"}
                             </button>
                           </div>
                         </td>
