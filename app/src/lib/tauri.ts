@@ -201,10 +201,14 @@ export async function purchaseContent(
   return invoke("purchase_content", { contentId });
 }
 
+export interface ConfirmPurchaseResult {
+  download_path: string;
+}
+
 export async function confirmPurchase(
   contentId: string,
   txHash: string
-): Promise<void> {
+): Promise<ConfirmPurchaseResult> {
   return invoke("confirm_purchase", { contentId, txHash });
 }
 

@@ -10,6 +10,8 @@ import {
   broadcastDeliveryReceipt,
   getMarketplaceAddress,
   getPreviewAsset,
+  openDownloadedContent,
+  openContentFolder,
   type ContentDetail as ContentDetailType,
   type ContentMetadataV2,
 } from "../lib/tauri";
@@ -68,6 +70,7 @@ function ContentDetail() {
   const [purchaseError, setPurchaseError] = useState<string | null>(null);
   const [purchaseTxHash, setPurchaseTxHash] = useState<string | null>(null);
   const [receiptStep, setReceiptStep] = useState<"idle" | "signing" | "done" | "skipped">("idle");
+  const [downloadPath, setDownloadPath] = useState<string | null>(null);
 
   // Preview carousel state
   const [carouselItems, setCarouselItems] = useState<CarouselItem[]>([]);
@@ -240,19 +243,16 @@ function ContentDetail() {
         setPurchaseStep("signing");
         txHash = await signAndSendTransactions(walletProvider, result.transactions);
         setPurchaseStep("confirming");
-        await confirmPurchase(result.content_id, txHash);
+        const confirmResult = await confirmPurchase(result.content_id, txHash);
+        setDownloadPath(confirmResult.download_path);
       } else {
         setPurchaseStep("confirming");
-        await confirmPurchase(result.content_id, txHash);
+        const confirmResult = await confirmPurchase(result.content_id, txHash);
+        setDownloadPath(confirmResult.download_path);
       }
 
       setPurchaseTxHash(txHash !== "0x0" ? txHash : null);
       setPurchaseStep("done");
-
-      // Auto-trigger receipt signing — prompts the wallet immediately so the
-      // buyer doesn't need to find and click a separate button.
-      // Uses a short delay to let the "Purchase successful!" UI render first.
-      setTimeout(() => handleSignReceipt(), 500);
     } catch (err) {
       setPurchaseError(String(err));
       setPurchaseStep("idle");
@@ -632,49 +632,78 @@ function ContentDetail() {
                 {purchaseStep === "done" ? (
                   <div className="alert-success">
                     <p className="font-medium">Purchase successful!</p>
-                    <p className="mt-1 text-sm">
-                      Check your{" "}
-                      <Link to="/library" className="underline font-medium">
-                        Library
-                      </Link>{" "}
-                      to download your content.
-                      {purchaseTxHash && (
-                        <>
-                          {" "}
+
+                    {downloadPath && (
+                      <div className="mt-2 p-3 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg border border-emerald-200 dark:border-emerald-800/40">
+                        <p className="text-sm font-medium mb-1">File downloaded:</p>
+                        <p className="text-xs font-mono text-emerald-800 dark:text-emerald-300 break-all mb-2">
+                          {downloadPath}
+                        </p>
+                        <div className="flex gap-2">
                           <button
-                            onClick={() =>
-                              openUrl(`https://sepolia.etherscan.io/tx/${purchaseTxHash}`)
-                            }
-                            className="inline underline font-medium cursor-pointer"
+                            onClick={() => contentId && openDownloadedContent(decodeURIComponent(contentId))}
+                            className="text-xs px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition-colors"
                           >
-                            View on Etherscan ↗
+                            Open File
+                          </button>
+                          <button
+                            onClick={() => contentId && openContentFolder(decodeURIComponent(contentId))}
+                            className="text-xs px-3 py-1.5 bg-emerald-100 dark:bg-emerald-800/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-800/50 rounded-lg font-medium transition-colors"
+                          >
+                            Show in Folder
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {purchaseTxHash && (
+                      <p className="mt-2 text-sm">
+                        <button
+                          onClick={() =>
+                            openUrl(`https://sepolia.etherscan.io/tx/${purchaseTxHash}`)
+                          }
+                          className="inline underline font-medium cursor-pointer"
+                        >
+                          View on Etherscan ↗
+                        </button>
+                      </p>
+                    )}
+
+                    <div className="mt-3 pt-3 border-t border-emerald-200 dark:border-emerald-800/40">
+                      {receiptStep === "idle" && (
+                        <>
+                          <p className="text-xs mb-2 opacity-80">
+                            Confirm delivery to help reward the seeder who sent you this file.
+                            This is a free signature (no gas cost).
+                          </p>
+                          <button
+                            onClick={handleSignReceipt}
+                            className="text-xs px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full font-medium transition-colors"
+                          >
+                            Sign Delivery Receipt
                           </button>
                         </>
                       )}
-                    </p>
-
-                    {receiptStep === "idle" && (
-                      <p className="mt-2 text-xs opacity-80">Requesting delivery receipt signature…</p>
-                    )}
-                    {receiptStep === "signing" && (
-                      <p className="mt-2 text-xs opacity-80">Waiting for signature in wallet…</p>
-                    )}
-                    {receiptStep === "done" && (
-                      <p className="mt-2 text-xs font-medium">Receipt signed — seeder delivery verified.</p>
-                    )}
-                    {receiptStep === "skipped" && (
-                      <div className="mt-3 pt-3 border-t border-emerald-200 dark:border-emerald-800/40">
-                        <p className="text-xs mb-2 opacity-80">
-                          Receipt not signed. Sign to help reward the seeder (gasless).
-                        </p>
-                        <button
-                          onClick={handleSignReceipt}
-                          className="text-xs px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full font-medium transition-colors"
-                        >
-                          Sign Receipt
-                        </button>
-                      </div>
-                    )}
+                      {receiptStep === "signing" && (
+                        <p className="text-xs opacity-80">Waiting for signature in wallet…</p>
+                      )}
+                      {receiptStep === "done" && (
+                        <p className="text-xs font-medium">Receipt signed — seeder delivery verified.</p>
+                      )}
+                      {receiptStep === "skipped" && (
+                        <>
+                          <p className="text-xs mb-2 opacity-80">
+                            Receipt not signed. Sign to help reward the seeder (gasless).
+                          </p>
+                          <button
+                            onClick={handleSignReceipt}
+                            className="text-xs px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full font-medium transition-colors"
+                          >
+                            Sign Receipt
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 ) : isCreator ? (
                   <div className="alert-info">

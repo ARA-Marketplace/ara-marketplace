@@ -7,7 +7,13 @@ use ara_p2p::content::ContentManager;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tauri::State;
-use tracing::info;
+use tracing::{info, warn};
+
+#[derive(Serialize, Deserialize)]
+pub struct ConfirmPurchaseResult {
+    /// Local filesystem path where the content was saved
+    pub download_path: String,
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct PurchasePrepareResult {
@@ -142,7 +148,7 @@ pub async fn confirm_purchase(
     state: State<'_, AppState>,
     content_id: String,
     tx_hash: String,
-) -> Result<(), String> {
+) -> Result<ConfirmPurchaseResult, String> {
     info!(
         "Confirming purchase: content={}, tx={}",
         content_id, tx_hash
@@ -366,7 +372,9 @@ pub async fn confirm_purchase(
 
     info!("Auto-started seeding for {} after purchase", content_id);
 
-    Ok(())
+    Ok(ConfirmPurchaseResult {
+        download_path: download_path_str,
+    })
 }
 
 /// Get the user's library of purchased content.
@@ -606,7 +614,10 @@ pub async fn get_reward_pool(
         .marketplace
         .reward_pool(content_id_bytes)
         .await
-        .unwrap_or(U256::ZERO);
+        .map_err(|e| {
+            warn!("RPC error querying reward pool for {}: {}", content_id, e);
+            format!("Failed to query reward pool: {e}")
+        })?;
 
     Ok(crate::commands::types::format_wei(pool))
 }

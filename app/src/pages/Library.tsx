@@ -47,7 +47,7 @@ function Library() {
   const [delistingId, setDelistingId] = useState<string | null>(null);
   const [delistError, setDelistError] = useState<string | null>(null);
   const [pubTogglingId, setPubTogglingId] = useState<string | null>(null);
-  const [rewardData, setRewardData] = useState<Record<string, { receipts: number; pool: string }>>({});
+  const [rewardData, setRewardData] = useState<Record<string, { receipts: number; pool: string; poolError?: boolean }>>({});
   const [distributingId, setDistributingId] = useState<string | null>(null);
   const [distributeError, setDistributeError] = useState<string | null>(null);
   const [updatingFileId, setUpdatingFileId] = useState<string | null>(null);
@@ -67,11 +67,13 @@ function Library() {
         setPublishedItems(its);
         const entries = await Promise.all(
           its.map(async (item) => {
-            const [receipts, pool] = await Promise.all([
+            const [receipts, poolResult] = await Promise.all([
               getReceiptCount(item.content_id).catch(() => 0),
-              getRewardPool(item.content_id).catch(() => ""),
+              getRewardPool(item.content_id)
+                .then((pool) => ({ pool, poolError: false }))
+                .catch(() => ({ pool: "", poolError: true })),
             ]);
-            return [item.content_id, { receipts, pool }] as const;
+            return [item.content_id, { receipts, pool: poolResult.pool, poolError: poolResult.poolError }] as const;
           })
         );
         setRewardData(Object.fromEntries(entries));
@@ -170,11 +172,13 @@ function Library() {
         if (!walletProvider) throw new Error("Wallet not connected");
         await signAndSendTransactions(walletProvider, txs);
       }
-      const [receipts, pool] = await Promise.all([
+      const [receipts, poolResult] = await Promise.all([
         getReceiptCount(item.content_id).catch(() => 0),
-        getRewardPool(item.content_id).catch(() => ""),
+        getRewardPool(item.content_id)
+          .then((pool) => ({ pool, poolError: false }))
+          .catch(() => ({ pool: "", poolError: true })),
       ]);
-      setRewardData((prev) => ({ ...prev, [item.content_id]: { receipts, pool } }));
+      setRewardData((prev) => ({ ...prev, [item.content_id]: { receipts, pool: poolResult.pool, poolError: poolResult.poolError } }));
     } catch (e) { setDistributeError(String(e)); }
     finally { setDistributingId(null); }
   };
@@ -282,6 +286,15 @@ function Library() {
       {/* ── Published Tab ── */}
       {activeTab === "published" && (
         <>
+          <div className="flex justify-end mb-3">
+            <button
+              onClick={fetchPublished}
+              disabled={loadingPublished}
+              className="btn-ghost text-xs px-3 py-1.5"
+            >
+              {loadingPublished ? "Refreshing…" : "Refresh"}
+            </button>
+          </div>
           {(publishedError || delistError || distributeError || updateFileError) && (
             <div className="alert-error mb-4">
               {publishedError || delistError || distributeError || updateFileError}
@@ -316,8 +329,9 @@ function Library() {
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
                   {publishedItems.map((item) => {
                     const rd = rewardData[item.content_id];
-                    const poolEth = rd ? parseFloat(rd.pool) : 0;
-                    const canDistribute = rd !== undefined && rd.receipts > 0 && poolEth > 0;
+                    const poolEth = rd && rd.pool ? parseFloat(rd.pool) : 0;
+                    const hasPoolError = rd?.poolError === true;
+                    const canDistribute = rd !== undefined && !hasPoolError && rd.receipts > 0 && poolEth > 0;
                     return (
                       <tr key={item.content_id} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
                         <td className="px-4 py-3">
@@ -342,7 +356,25 @@ function Library() {
                           {rd ? (
                             <div className="text-xs text-slate-500 dark:text-slate-400">
                               <div>{rd.receipts} {rd.receipts === 1 ? "delivery" : "deliveries"}</div>
-                              {rd.pool ? <div className="text-slate-700 dark:text-slate-300 font-medium">{rd.pool}</div> : null}
+                              {hasPoolError ? (
+                                <button
+                                  onClick={() => {
+                                    getRewardPool(item.content_id)
+                                      .then((pool) =>
+                                        setRewardData((prev) => ({
+                                          ...prev,
+                                          [item.content_id]: { ...prev[item.content_id], pool, poolError: false },
+                                        }))
+                                      )
+                                      .catch(() => {});
+                                  }}
+                                  className="text-amber-600 dark:text-amber-400 hover:underline"
+                                >
+                                  Failed to load — Retry
+                                </button>
+                              ) : rd.pool ? (
+                                <div className="text-slate-700 dark:text-slate-300 font-medium">{rd.pool} ETH</div>
+                              ) : null}
                             </div>
                           ) : (
                             <span className="text-xs text-slate-400">—</span>
@@ -361,7 +393,7 @@ function Library() {
                             </button>
                             <button onClick={() => handleDistribute(item)}
                               disabled={!canDistribute || distributingId === item.content_id}
-                              title={!rd ? "Loading…" : rd.receipts === 0 ? "No verified deliveries yet" : poolEth <= 0 ? "Pool is empty" : "Distribute rewards to seeders"}
+                              title={!rd ? "Loading…" : hasPoolError ? "Reward pool data unavailable — click Refresh" : rd.receipts === 0 ? "No verified deliveries yet" : poolEth <= 0 ? "Pool is empty" : "Distribute rewards to seeders"}
                               className="badge-purple px-2.5 py-1.5 rounded-lg text-xs font-medium hover:bg-ara-200 dark:hover:bg-ara-900/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                               {distributingId === item.content_id ? "…" : "Distribute"}
                             </button>
