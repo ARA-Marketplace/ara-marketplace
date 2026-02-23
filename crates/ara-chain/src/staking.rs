@@ -48,6 +48,13 @@ impl<P: Provider + Clone> StakingClient<P> {
         Ok(result)
     }
 
+    /// Get the minimum ARA stake required to be an eligible seeder.
+    pub async fn seeder_min_stake(&self) -> Result<U256> {
+        let contract = IAraStaking::new(self.address, &self.provider);
+        let result = contract.seederMinStake().call().await?;
+        Ok(result)
+    }
+
     /// Check if user is eligible to seed specific content.
     pub async fn is_eligible_seeder(
         &self,

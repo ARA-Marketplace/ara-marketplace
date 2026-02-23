@@ -291,9 +291,29 @@ pub async fn prepare_distribute_rewards(
         return Err("No verified delivery receipts found — cannot distribute rewards".to_string());
     }
 
-    // Filter to eligible seeders and compute weights = receipt_count * content_stake
+    // Get the caller's wallet address so we can auto-stake them if needed.
+    let caller_addr: Option<Address> = {
+        let wallet = state.wallet_address.lock().await;
+        wallet.as_ref().and_then(|s| s.parse().ok())
+    };
+
+    // Fetch seeder minimum stake and staking contract address (needed for auto-stake tx).
+    let staking_addr = eth
+        .staking_address
+        .parse::<Address>()
+        .map_err(|e| format!("Invalid staking address: {e}"))?;
+
+    let seeder_min_stake = chain
+        .staking
+        .seeder_min_stake()
+        .await
+        .unwrap_or(U256::from(1_000_000_000_000_000_000u128)); // default 1 ARA
+
+    // Filter to eligible seeders and compute weights = receipt_count * content_stake.
+    // If the caller (creator) has general stake but no content stake, we auto-stake them.
     let mut seeders: Vec<Address> = Vec::new();
     let mut weights: Vec<U256> = Vec::new();
+    let mut needs_auto_stake = false;
 
     for (seeder, count) in &seeder_receipt_counts {
         let eligible = chain
@@ -301,7 +321,28 @@ pub async fn prepare_distribute_rewards(
             .is_eligible_seeder(*seeder, content_id_bytes)
             .await
             .unwrap_or(false);
+
         if !eligible {
+            // Check if this is the caller and they have enough general stake to auto-stake.
+            if Some(*seeder) == caller_addr {
+                let general_balance = chain
+                    .staking
+                    .staked_balance(*seeder)
+                    .await
+                    .unwrap_or(U256::ZERO);
+                if general_balance >= seeder_min_stake {
+                    info!(
+                        "Creator {} has general stake {} but no content stake — will auto-stake",
+                        seeder, general_balance
+                    );
+                    needs_auto_stake = true;
+                    // Weight uses seeder_min_stake as the assumed post-stake amount.
+                    let weight = U256::from(*count) * seeder_min_stake;
+                    seeders.push(*seeder);
+                    weights.push(weight);
+                    continue;
+                }
+            }
             info!("Seeder {} is not eligible (insufficient content stake)", seeder);
             continue;
         }
@@ -326,22 +367,40 @@ pub async fn prepare_distribute_rewards(
 
     if seeders.is_empty() {
         return Err(
-            "No eligible seeders found — seeders must have staked ARA for this content".to_string(),
+            "No eligible seeders found — seeders must have staked ARA for this content. \
+             As the publisher, stake at least 1 ARA for this content via the Staking page first."
+                .to_string(),
         );
     }
 
-    let calldata = MarketplaceClient::<()>::distribute_rewards_calldata(
+    let distribute_calldata = MarketplaceClient::<()>::distribute_rewards_calldata(
         content_id_bytes,
         seeders,
         weights,
     );
 
-    Ok(vec![TransactionRequest {
+    let mut txs: Vec<TransactionRequest> = Vec::new();
+
+    // Prepend stakeForContent if the creator needs to be made eligible first.
+    if needs_auto_stake {
+        let stake_calldata =
+            StakingClient::<()>::stake_for_content_calldata(content_id_bytes, seeder_min_stake);
+        txs.push(TransactionRequest {
+            to: format!("{staking_addr:#x}"),
+            data: hex_encode(&stake_calldata),
+            value: "0x0".to_string(),
+            description: "Stake 1 ARA for your own content (seeder eligibility)".to_string(),
+        });
+    }
+
+    txs.push(TransactionRequest {
         to: format!("{marketplace_addr:#x}"),
-        data: hex_encode(&calldata),
+        data: hex_encode(&distribute_calldata),
         value: "0x0".to_string(),
         description: format!("Distribute rewards for content {}", &content_id[..10]),
-    }])
+    });
+
+    Ok(txs)
 }
 
 /// Build a `publicDistributeWithProofs()` transaction for the trustless fallback.

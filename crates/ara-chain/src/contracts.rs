@@ -23,6 +23,7 @@ sol! {
         function contentStake(address user, bytes32 contentId) external view returns (uint256);
         function isEligiblePublisher(address user) external view returns (bool);
         function isEligibleSeeder(address user, bytes32 contentId) external view returns (bool);
+        function seederMinStake() external view returns (uint256);
 
         event Staked(address indexed user, uint256 amount);
         event Unstaked(address indexed user, uint256 amount);

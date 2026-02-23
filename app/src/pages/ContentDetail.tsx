@@ -248,6 +248,11 @@ function ContentDetail() {
 
       setPurchaseTxHash(txHash !== "0x0" ? txHash : null);
       setPurchaseStep("done");
+
+      // Auto-trigger receipt signing — prompts the wallet immediately so the
+      // buyer doesn't need to find and click a separate button.
+      // Uses a short delay to let the "Purchase successful!" UI render first.
+      setTimeout(() => handleSignReceipt(), 500);
     } catch (err) {
       setPurchaseError(String(err));
       setPurchaseStep("idle");
@@ -649,31 +654,26 @@ function ContentDetail() {
                     </p>
 
                     {receiptStep === "idle" && (
-                      <div className="mt-3 pt-3 border-t border-emerald-200 dark:border-emerald-800/40">
-                        <p className="text-xs mb-2 opacity-80">
-                          Help reward the seeder: sign a gasless receipt proving you received this content.
-                        </p>
-                        <div className="flex gap-3 items-center">
-                          <button
-                            onClick={handleSignReceipt}
-                            className="text-xs px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full font-medium transition-colors"
-                          >
-                            Sign Receipt
-                          </button>
-                          <button
-                            onClick={() => setReceiptStep("skipped")}
-                            className="text-xs underline opacity-70 hover:opacity-100"
-                          >
-                            Skip
-                          </button>
-                        </div>
-                      </div>
+                      <p className="mt-2 text-xs opacity-80">Requesting delivery receipt signature…</p>
                     )}
                     {receiptStep === "signing" && (
                       <p className="mt-2 text-xs opacity-80">Waiting for signature in wallet…</p>
                     )}
                     {receiptStep === "done" && (
                       <p className="mt-2 text-xs font-medium">Receipt signed — seeder delivery verified.</p>
+                    )}
+                    {receiptStep === "skipped" && (
+                      <div className="mt-3 pt-3 border-t border-emerald-200 dark:border-emerald-800/40">
+                        <p className="text-xs mb-2 opacity-80">
+                          Receipt not signed. Sign to help reward the seeder (gasless).
+                        </p>
+                        <button
+                          onClick={handleSignReceipt}
+                          className="text-xs px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full font-medium transition-colors"
+                        >
+                          Sign Receipt
+                        </button>
+                      </div>
                     )}
                   </div>
                 ) : isCreator ? (
