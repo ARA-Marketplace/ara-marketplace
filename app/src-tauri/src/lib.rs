@@ -7,6 +7,28 @@ mod state;
 use tauri::Manager;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+/// Percent-decode a URL path component. Handles ASCII byte sequences produced by
+/// `encodeURIComponent` (e.g. `%5C` → `\`, `%3A` → `:`). Sufficient for local file paths.
+fn percent_decode(s: &str) -> String {
+    let mut result = String::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                result.push(char::from((h * 16 + l) as u8));
+                i += 3;
+                continue;
+            }
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+    result
+}
+
 pub fn run() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,iroh=warn,iroh_net=warn"));
@@ -51,6 +73,50 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        // Serve preview-cache files via localasset:// (or https://localasset.localhost on Windows).
+        // This avoids Tauri's built-in asset-protocol scope restrictions.
+        .register_uri_scheme_protocol("localasset", |_app, request| {
+            use tauri::http::Response;
+
+            // Strip leading '/' and percent-decode the path component.
+            let path_encoded = request.uri().path().trim_start_matches('/');
+            let path = percent_decode(path_encoded);
+
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    // Detect MIME type from bytes first, fall back to extension.
+                    let mime = infer::get(&bytes)
+                        .map(|k| k.mime_type())
+                        .unwrap_or_else(|| {
+                            let p = path.to_lowercase();
+                            if p.ends_with(".mp4") {
+                                "video/mp4"
+                            } else if p.ends_with(".webm") {
+                                "video/webm"
+                            } else if p.ends_with(".mov") {
+                                "video/quicktime"
+                            } else if p.ends_with(".png") {
+                                "image/png"
+                            } else if p.ends_with(".gif") {
+                                "image/gif"
+                            } else if p.ends_with(".jpg") || p.ends_with(".jpeg") {
+                                "image/jpeg"
+                            } else {
+                                "application/octet-stream"
+                            }
+                        });
+                    Response::builder()
+                        .header("Content-Type", mime)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .body(bytes)
+                        .unwrap()
+                }
+                Err(_) => Response::builder()
+                    .status(404)
+                    .body(vec![])
+                    .unwrap(),
+            }
+        })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // Focus the existing window when a second instance is launched
             if let Some(window) = app.get_webview_window("main") {
@@ -75,6 +141,10 @@ pub fn run() {
             commands::content::get_published_content,
             commands::content::delist_content,
             commands::content::confirm_delist,
+            commands::content::update_content_file,
+            commands::content::confirm_content_file_update,
+            commands::content::import_preview_assets,
+            commands::content::get_preview_asset,
             commands::marketplace::purchase_content,
             commands::marketplace::confirm_purchase,
             commands::marketplace::get_library,

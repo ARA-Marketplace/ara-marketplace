@@ -34,6 +34,7 @@ sol! {
     interface IContentRegistry {
         function publishContent(bytes32 contentHash, string metadataURI, uint256 priceWei) external returns (bytes32 contentId);
         function updateContent(bytes32 contentId, uint256 newPriceWei, string newMetadataURI) external;
+        function updateContentFile(bytes32 contentId, bytes32 newContentHash) external;
         function delistContent(bytes32 contentId) external;
         function getContentCount() external view returns (uint256);
         function getContentHash(bytes32 contentId) external view returns (bytes32);
@@ -43,6 +44,7 @@ sol! {
 
         event ContentPublished(bytes32 indexed contentId, address indexed creator, bytes32 contentHash, string metadataURI, uint256 priceWei);
         event ContentUpdated(bytes32 indexed contentId, uint256 newPriceWei, string newMetadataURI);
+        event ContentFileUpdated(bytes32 indexed contentId, bytes32 oldHash, bytes32 newHash, address indexed creator);
         event ContentDelisted(bytes32 indexed contentId);
     }
 

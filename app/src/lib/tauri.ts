@@ -24,6 +24,34 @@ export async function getBalances(): Promise<Balances> {
 }
 
 // Content
+
+/** A single preview asset (image or video) stored as an iroh blob. */
+export interface PreviewAsset {
+  asset_type: "image" | "video";
+  hash: string;
+  filename: string;
+  size: number;
+}
+
+/**
+ * v2 metadata structure parsed from `metadata_uri` JSON.
+ * All fields are optional — fall back gracefully for v1 content.
+ */
+export interface ContentMetadataV2 {
+  v?: number;
+  title?: string;
+  description?: string;
+  content_type?: string;
+  filename?: string;
+  file_size?: number;
+  node_id?: string;
+  relay_url?: string;
+  categories?: string[];
+  main_preview_image?: { hash: string; filename: string; size: number };
+  main_preview_trailer?: { hash: string; filename: string; size: number };
+  previews?: Array<{ type: string; hash: string; filename: string; size: number }>;
+}
+
 export interface ContentDetail {
   content_id: string;
   content_hash: string;
@@ -35,6 +63,10 @@ export interface ContentDetail {
   active: boolean;
   seeder_count: number;
   purchase_count: number;
+  /** Raw metadata_uri JSON — parse with JSON.parse() to get ContentMetadataV2 */
+  metadata_uri: string;
+  updated_at: number | null;
+  categories: string[];
 }
 
 export interface PublishPrepareResult {
@@ -49,6 +81,10 @@ export async function publishContent(params: {
   description: string;
   contentType: string;
   priceEth: string;
+  categories?: string[];
+  mainPreviewImagePath?: string;
+  mainPreviewTrailerPath?: string;
+  previewPaths?: string[];
 }): Promise<PublishPrepareResult> {
   return invoke("publish_content", params);
 }
@@ -76,6 +112,7 @@ export async function updateContent(params: {
   description: string;
   contentType: string;
   priceEth: string;
+  categories?: string[];
 }): Promise<TransactionRequest[]> {
   return invoke("update_content", params);
 }
@@ -86,6 +123,7 @@ export async function confirmUpdateContent(params: {
   description: string;
   contentType: string;
   priceEth: string;
+  categories?: string[];
 }): Promise<void> {
   return invoke("confirm_update_content", params);
 }
@@ -101,6 +139,40 @@ export interface PublishedItem {
   price_eth: string;
   is_seeding: boolean;
   file_size_bytes: number;
+  updated_at: number | null;
+}
+
+export interface UpdateFileResult {
+  new_content_hash: string;
+  transactions: TransactionRequest[];
+}
+
+export async function updateContentFile(params: {
+  contentId: string;
+  filePath: string;
+}): Promise<UpdateFileResult> {
+  return invoke("update_content_file", params);
+}
+
+export async function confirmContentFileUpdate(params: {
+  contentId: string;
+  newContentHash: string;
+}): Promise<void> {
+  return invoke("confirm_content_file_update", params);
+}
+
+export async function importPreviewAssets(params: {
+  filePaths: string[];
+}): Promise<PreviewAsset[]> {
+  return invoke("import_preview_assets", params);
+}
+
+export async function getPreviewAsset(params: {
+  contentId: string;
+  previewHash: string;
+  filename: string;
+}): Promise<string> {
+  return invoke("get_preview_asset", params);
 }
 
 export async function getPublishedContent(): Promise<PublishedItem[]> {

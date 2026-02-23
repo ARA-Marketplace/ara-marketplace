@@ -51,7 +51,9 @@ impl Database {
                 created_at INTEGER NOT NULL,
                 publisher_node_id TEXT,
                 publisher_relay_url TEXT,
-                filename TEXT
+                filename TEXT,
+                updated_at INTEGER,
+                categories TEXT
             );
 
             CREATE TABLE IF NOT EXISTS purchases (
@@ -124,6 +126,13 @@ impl Database {
             .conn
             .execute("ALTER TABLE content_seeders ADD COLUMN eth_address TEXT", []);
         // delivery_receipts is a new table — CREATE TABLE IF NOT EXISTS handles existing DBs
+        // updated_at and categories are new columns — silently ignored if already present
+        let _ = self
+            .conn
+            .execute("ALTER TABLE content ADD COLUMN updated_at INTEGER", []);
+        let _ = self
+            .conn
+            .execute("ALTER TABLE content ADD COLUMN categories TEXT", []);
 
         Ok(())
     }
@@ -223,6 +232,7 @@ impl Database {
 
     /// Upsert a content row discovered from on-chain event sync.
     /// On conflict, updates price and metadata but preserves local publisher data.
+    /// `categories` is a JSON array string (e.g. `["action","indie"]`); pass `""` if unknown.
     pub fn upsert_synced_content(
         &self,
         content_id: &str,
@@ -238,13 +248,14 @@ impl Database {
         publisher_node_id: &str,
         publisher_relay_url: &str,
         created_at: i64,
+        categories: &str,
     ) -> rusqlite::Result<usize> {
         self.conn.execute(
             "INSERT INTO content
              (content_id, content_hash, creator, metadata_uri, price_wei,
               title, description, content_type, file_size_bytes, active,
-              created_at, publisher_node_id, publisher_relay_url, filename)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11, ?12, ?13)
+              created_at, publisher_node_id, publisher_relay_url, filename, categories)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(content_id) DO UPDATE SET
                price_wei = excluded.price_wei,
                metadata_uri = excluded.metadata_uri,
@@ -255,11 +266,12 @@ impl Database {
                file_size_bytes = CASE WHEN excluded.file_size_bytes > 0 THEN excluded.file_size_bytes ELSE file_size_bytes END,
                publisher_node_id = CASE WHEN excluded.publisher_node_id != '' THEN excluded.publisher_node_id ELSE publisher_node_id END,
                publisher_relay_url = CASE WHEN excluded.publisher_relay_url != '' THEN excluded.publisher_relay_url ELSE publisher_relay_url END,
+               categories = CASE WHEN excluded.categories != '' THEN excluded.categories ELSE categories END,
                active = 1",
             rusqlite::params![
                 content_id, content_hash, creator, metadata_uri, price_wei,
                 title, description, content_type, file_size, created_at,
-                publisher_node_id, publisher_relay_url, filename,
+                publisher_node_id, publisher_relay_url, filename, categories,
             ],
         )
     }

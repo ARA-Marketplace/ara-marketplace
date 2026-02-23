@@ -456,4 +456,62 @@ contract MarketplaceTest is Test {
         marketplace.purchase{value: contentPrice}(contentId);
         assertEq(marketplace.lastPurchaseTime(contentId), timeBefore);
     }
+
+    // --- updateContentFile tests ---
+
+    function test_UpdateContentFile() public {
+        bytes32 newContentHash = keccak256("game-file-v2-data");
+
+        vm.prank(creator);
+        registry.updateContentFile(contentId, newContentHash);
+
+        // The on-chain content hash should now reflect the new file
+        assertEq(registry.getContentHash(contentId), newContentHash);
+        // The contentId is unchanged
+        assertEq(registry.getCreator(contentId), creator);
+        assertTrue(registry.isActive(contentId));
+    }
+
+    function test_UpdateContentFileEmitsEvent() public {
+        bytes32 newContentHash = keccak256("game-file-v2-data");
+
+        vm.prank(creator);
+        vm.expectEmit(true, true, false, true);
+        emit ContentRegistry.ContentFileUpdated(contentId, contentHash, newContentHash, creator);
+        registry.updateContentFile(contentId, newContentHash);
+    }
+
+    function test_UpdateContentFileRevertNonCreator() public {
+        bytes32 newContentHash = keccak256("game-file-v2-data");
+
+        vm.prank(buyer);
+        vm.expectRevert(ContentRegistry.NotContentCreator.selector);
+        registry.updateContentFile(contentId, newContentHash);
+    }
+
+    function test_UpdateContentFileRevertDelisted() public {
+        bytes32 newContentHash = keccak256("game-file-v2-data");
+
+        vm.prank(creator);
+        registry.delistContent(contentId);
+
+        vm.prank(creator);
+        vm.expectRevert(ContentRegistry.ContentNotActive.selector);
+        registry.updateContentFile(contentId, newContentHash);
+    }
+
+    function test_UpdateContentFilePreservesPurchases() public {
+        // Buyer purchases the original content
+        vm.prank(buyer);
+        marketplace.purchase{value: contentPrice}(contentId);
+        assertTrue(marketplace.hasPurchased(contentId, buyer));
+
+        // Creator pushes a file update
+        bytes32 newContentHash = keccak256("game-file-v2-data");
+        vm.prank(creator);
+        registry.updateContentFile(contentId, newContentHash);
+
+        // Buyer's purchase record is still valid for the same contentId
+        assertTrue(marketplace.hasPurchased(contentId, buyer));
+    }
 }

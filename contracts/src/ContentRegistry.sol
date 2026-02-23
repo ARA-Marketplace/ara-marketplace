@@ -39,6 +39,7 @@ contract ContentRegistry {
         uint256 priceWei
     );
     event ContentUpdated(bytes32 indexed contentId, uint256 newPriceWei, string newMetadataURI);
+    event ContentFileUpdated(bytes32 indexed contentId, bytes32 oldHash, bytes32 newHash, address indexed creator);
     event ContentDelisted(bytes32 indexed contentId);
 
     error InsufficientStake();
@@ -93,6 +94,18 @@ contract ContentRegistry {
         c.metadataURI = newMetadataURI;
 
         emit ContentUpdated(contentId, newPriceWei, newMetadataURI);
+    }
+
+    /// @notice Replace the content file for an existing listing. Only the creator can call.
+    ///         The contentId and all purchase records remain unchanged; only the BLAKE3 blob hash
+    ///         (used for P2P retrieval) is updated. Buyers re-download to get the new file.
+    function updateContentFile(bytes32 contentId, bytes32 newContentHash) external {
+        Content storage c = contents[contentId];
+        if (c.creator != msg.sender) revert NotContentCreator();
+        if (!c.active) revert ContentNotActive();
+        bytes32 oldHash = c.contentHash;
+        c.contentHash = newContentHash;
+        emit ContentFileUpdated(contentId, oldHash, newContentHash, msg.sender);
     }
 
     /// @notice Delist content from the marketplace. Only the creator can delist.

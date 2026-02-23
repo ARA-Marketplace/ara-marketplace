@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tracing::{info, warn};
 
-/// Metadata embedded in the on-chain metadataURI (v1 JSON format).
+/// Metadata embedded in the on-chain metadataURI (v1/v2 JSON format).
 #[derive(Deserialize)]
 struct MetadataV1 {
     #[serde(default)]
@@ -21,6 +21,9 @@ struct MetadataV1 {
     node_id: String,
     #[serde(default)]
     relay_url: String,
+    /// v2: list of category strings (e.g. ["action", "indie"])
+    #[serde(default)]
+    categories: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -178,6 +181,7 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                             file_size: 0,
                             node_id: String::new(),
                             relay_url: String::new(),
+                            categories: Vec::new(),
                         }
                     }
                 };
@@ -187,6 +191,7 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                     .unwrap()
                     .as_secs() as i64;
 
+                let categories_json = serde_json::to_string(&meta.categories).unwrap_or_default();
                 match db.upsert_synced_content(
                     &cid,
                     &chash,
@@ -201,6 +206,7 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                     &meta.node_id,
                     &meta.relay_url,
                     created_at,
+                    &categories_json,
                 ) {
                     Ok(n) if n > 0 => {
                         new_count += 1;
@@ -242,6 +248,7 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                     }
                 };
 
+                let categories_json = serde_json::to_string(&meta.categories).unwrap_or_default();
                 let _ = db.conn().execute(
                     "UPDATE content SET price_wei = ?1, metadata_uri = ?2,
                      title = CASE WHEN ?3 != '' THEN ?3 ELSE title END,
@@ -250,7 +257,8 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                      filename = CASE WHEN ?6 != '' THEN ?6 ELSE filename END,
                      file_size_bytes = CASE WHEN ?7 > 0 THEN ?7 ELSE file_size_bytes END,
                      publisher_node_id = CASE WHEN ?8 != '' THEN ?8 ELSE publisher_node_id END,
-                     publisher_relay_url = CASE WHEN ?9 != '' THEN ?9 ELSE publisher_relay_url END
+                     publisher_relay_url = CASE WHEN ?9 != '' THEN ?9 ELSE publisher_relay_url END,
+                     categories = CASE WHEN ?11 != '' THEN ?11 ELSE categories END
                      WHERE content_id = ?10",
                     rusqlite::params![
                         &new_price_wei.to_string(),
@@ -263,6 +271,7 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                         &meta.node_id,
                         &meta.relay_url,
                         &cid,
+                        &categories_json,
                     ],
                 );
                 info!("Updated content metadata: {} ({})", meta.title, cid);

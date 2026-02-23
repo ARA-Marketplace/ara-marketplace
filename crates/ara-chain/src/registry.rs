@@ -93,6 +93,19 @@ impl<P> RegistryClient<P> {
         .abi_encode()
     }
 
+    /// Encode calldata for `updateContentFile(contentId, newContentHash)`.
+    /// Used to replace the P2P blob for an existing listing without changing the contentId.
+    pub fn update_content_file_calldata(
+        content_id: FixedBytes<32>,
+        new_content_hash: FixedBytes<32>,
+    ) -> Vec<u8> {
+        IContentRegistry::updateContentFileCall {
+            contentId: content_id,
+            newContentHash: new_content_hash,
+        }
+        .abi_encode()
+    }
+
     /// Encode calldata for `delistContent(contentId)`.
     pub fn delist_content_calldata(content_id: FixedBytes<32>) -> Vec<u8> {
         IContentRegistry::delistContentCall {
