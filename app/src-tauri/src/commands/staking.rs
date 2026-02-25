@@ -844,6 +844,12 @@ pub async fn get_reward_pipeline(
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    info!(
+        "Reward pipeline for {}: found {} published content items",
+        wallet_str,
+        content_ids.len()
+    );
+
     let chain = state.chain_client()?;
 
     // Query reward pool for each content
@@ -855,23 +861,28 @@ pub async fn get_reward_pipeline(
             .unwrap_or(cid)
             .parse()
             .unwrap_or_default();
-        let pool = chain
-            .marketplace
-            .reward_pool(content_id_bytes)
-            .await
-            .unwrap_or(U256::ZERO);
-        if pool > U256::ZERO {
-            total_in_pools += pool;
-            pool_count += 1;
+        match chain.marketplace.reward_pool(content_id_bytes).await {
+            Ok(pool) => {
+                info!("  Pool for {}: {} wei", &cid[..10], pool);
+                if pool > U256::ZERO {
+                    total_in_pools += pool;
+                    pool_count += 1;
+                }
+            }
+            Err(e) => {
+                warn!("  Failed to query reward_pool for {}: {}", &cid[..10], e);
+            }
         }
     }
 
     // On-chain claimable
-    let claimable = chain
-        .marketplace
-        .claimable_rewards(wallet_addr)
-        .await
-        .unwrap_or(U256::ZERO);
+    let claimable = match chain.marketplace.claimable_rewards(wallet_addr).await {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("Failed to query claimable_rewards: {}", e);
+            U256::ZERO
+        }
+    };
 
     // Historical withdrawn from DB
     let withdrawn_str = {
@@ -882,6 +893,14 @@ pub async fn get_reward_pipeline(
     let withdrawn: U256 = withdrawn_str.parse().unwrap_or(U256::ZERO);
 
     let lifetime = claimable + withdrawn;
+
+    info!(
+        "Reward pipeline result: in_pools={}, claimable={}, withdrawn={}, lifetime={}",
+        format_wei(total_in_pools),
+        format_wei(claimable),
+        format_wei(withdrawn),
+        format_wei(lifetime)
+    );
 
     Ok(RewardPipelineResponse {
         in_pools_eth: format_wei(total_in_pools),
