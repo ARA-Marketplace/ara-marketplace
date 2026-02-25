@@ -7,10 +7,15 @@ import {
 import { useWalletStore } from "../store/walletStore";
 import {
   getRewardHistory,
+  getRewardPipeline,
+  prepareCollectRewards,
+  confirmClaimRewards,
   syncRewards,
   type RewardHistoryItem,
   type RewardHistoryResponse,
+  type RewardPipelineResponse,
 } from "../lib/tauri";
+import { signAndSendTransactions } from "../lib/transactions";
 
 const PAGE_SIZE = 10;
 
@@ -45,6 +50,21 @@ function Wallet() {
   const [hasMore, setHasMore] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
+  // Pipeline state
+  const [pipeline, setPipeline] = useState<RewardPipelineResponse | null>(null);
+  const [collecting, setCollecting] = useState(false);
+  const [collectStatus, setCollectStatus] = useState<string | null>(null);
+  const [collectError, setCollectError] = useState<string | null>(null);
+
+  const fetchPipeline = useCallback(async () => {
+    try {
+      const data = await getRewardPipeline();
+      setPipeline(data);
+    } catch {
+      // Pipeline is supplementary — don't block the page
+    }
+  }, []);
+
   const fetchRewardHistory = useCallback(async (offset: number, append: boolean) => {
     setLoadingHistory(true);
     try {
@@ -73,11 +93,12 @@ function Wallet() {
     }
   }, [address, fetchRewardHistory]);
 
-  // Refresh balances and history on every mount (handles navigation from other pages).
+  // Refresh balances, pipeline, and history on every mount (handles navigation from other pages).
   // Sync rewards from chain first to ensure DB has the latest distribute/claim events.
   useEffect(() => {
     if (address) {
       refreshBalances();
+      fetchPipeline();
       setHistoryOffset(0);
       // Sync from chain, then fetch history (so newly distributed/claimed rewards appear)
       syncRewards()
@@ -104,13 +125,51 @@ function Wallet() {
     } catch { /* error set in store */ }
   };
 
+  const handleCollect = async () => {
+    if (!walletProvider) { open(); return; }
+    setCollecting(true);
+    setCollectError(null);
+    setCollectStatus("Preparing transactions...");
+    try {
+      const txs = await prepareCollectRewards();
+      const lastTxHash = await signAndSendTransactions(
+        walletProvider,
+        txs,
+        (msg) => setCollectStatus(msg),
+      );
+      // Record the claim in local DB
+      setCollectStatus("Recording on chain...");
+      await confirmClaimRewards(lastTxHash).catch((e) => {
+        console.warn("confirm_claim_rewards failed, will rely on sync:", e);
+      });
+      // Re-sync to capture all distribute + claim events
+      await syncRewards().catch(() => {});
+      setCollectStatus(null);
+      // Refresh everything
+      await Promise.all([
+        refreshBalances(),
+        fetchPipeline(),
+        fetchRewardHistory(0, false),
+      ]);
+      setHistoryOffset(0);
+    } catch (e) {
+      setCollectError(String(e));
+      setCollectStatus(null);
+    } finally {
+      setCollecting(false);
+    }
+  };
+
+  // Fallback: plain claim (no distribute) — for when claimable > 0 but no pools
   const handleClaim = async () => {
     if (!walletProvider) { open(); return; }
     try {
       await claimRewards(walletProvider);
-      // Refresh history after claiming (claimRewards already syncs internally)
       setHistoryOffset(0);
-      await fetchRewardHistory(0, false);
+      await Promise.all([
+        fetchRewardHistory(0, false),
+        fetchPipeline(),
+      ]);
     }
     catch { /* error set in store */ }
   };
@@ -217,20 +276,44 @@ function Wallet() {
             </div>
           </div>
 
-          {/* Rewards Summary — 3 columns */}
+          {/* Rewards Pipeline: Pools → Claimable → Withdrawn */}
+          {collectError && (
+            <div className="alert-error mb-0 flex justify-between items-center">
+              <span>{collectError}</span>
+              <button onClick={() => setCollectError(null)} className="text-xs font-medium ml-4 hover:opacity-70 flex-shrink-0">
+                Dismiss
+              </button>
+            </div>
+          )}
+          {collectStatus && (
+            <div className="alert-info mb-0 flex items-center">
+              <span>{collectStatus}</span>
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-4">
-            <div className="card p-5">
+            {/* Column 1: In Reward Pools */}
+            <div className="card p-5 relative">
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-0.5">
-                Lifetime Earnings
+                In Reward Pools
               </p>
               <p className="text-[10px] text-slate-400 dark:text-slate-600 mb-2">
-                Total rewards distributed to you
+                Awaiting distribution
               </p>
-              <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
-                {rewardHistory?.total_earned_eth ?? claimableRewards} <span className="text-sm font-normal text-slate-500">ETH</span>
+              <p className="text-xl font-bold text-amber-600 dark:text-amber-400">
+                {pipeline?.in_pools_eth ?? "0.0"} <span className="text-sm font-normal text-slate-500">ETH</span>
               </p>
+              {pipeline && pipeline.pool_count > 0 && (
+                <p className="text-[10px] text-slate-400 dark:text-slate-600 mt-1">
+                  {pipeline.pool_count} pool{pipeline.pool_count !== 1 ? "s" : ""} pending
+                </p>
+              )}
+              {/* Arrow indicator */}
+              <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-10 text-slate-300 dark:text-slate-700 text-lg">
+                &rsaquo;
+              </div>
             </div>
-            <div className="card p-5">
+            {/* Column 2: Ready to Claim */}
+            <div className="card p-5 relative">
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-0.5">
                 Ready to Claim
               </p>
@@ -238,16 +321,14 @@ function Wallet() {
                 Withdraw to your wallet
               </p>
               <p className="text-xl font-bold text-emerald-600 dark:text-emerald-400">
-                {rewardHistory?.claimable_eth ?? claimableRewards} <span className="text-sm font-normal text-slate-500">ETH</span>
+                {pipeline?.ready_to_claim_eth ?? claimableRewards} <span className="text-sm font-normal text-slate-500">ETH</span>
               </p>
-              <button
-                onClick={handleClaim}
-                disabled={isSendingTx || claimableRewards === "0" || claimableRewards === "0.0"}
-                className="btn-success w-full mt-3 px-3 py-1.5 text-xs"
-              >
-                Claim Rewards
-              </button>
+              {/* Arrow indicator */}
+              <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-10 text-slate-300 dark:text-slate-700 text-lg">
+                &rsaquo;
+              </div>
             </div>
+            {/* Column 3: Withdrawn */}
             <div className="card p-5">
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-0.5">
                 Withdrawn
@@ -256,8 +337,43 @@ function Wallet() {
                 Already sent to your wallet
               </p>
               <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
-                {rewardHistory?.total_claimed_eth ?? "0"} <span className="text-sm font-normal text-slate-500">ETH</span>
+                {pipeline?.withdrawn_eth ?? rewardHistory?.total_claimed_eth ?? "0"} <span className="text-sm font-normal text-slate-500">ETH</span>
               </p>
+            </div>
+          </div>
+
+          {/* Collect / Claim button + Lifetime summary */}
+          <div className="card p-5">
+            <div className="flex justify-between items-center">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
+                  Lifetime Earnings
+                </p>
+                <p className="text-2xl font-bold text-slate-900 dark:text-slate-100">
+                  {pipeline?.lifetime_earnings_eth ?? rewardHistory?.total_earned_eth ?? "0.0"} <span className="text-sm font-normal text-slate-500">ETH</span>
+                </p>
+              </div>
+              <div className="flex-shrink-0 ml-4">
+                {(pipeline?.in_pools_eth !== "0.0" && pipeline?.in_pools_eth !== "0") ? (
+                  <button
+                    onClick={handleCollect}
+                    disabled={collecting || isSendingTx}
+                    className="btn-success px-5 py-2 text-sm"
+                  >
+                    {collecting ? "Collecting..." : pipeline?.ready_to_claim_eth !== "0.0" && pipeline?.ready_to_claim_eth !== "0"
+                      ? "Collect All"
+                      : "Distribute & Claim"}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleClaim}
+                    disabled={isSendingTx || claimableRewards === "0" || claimableRewards === "0.0"}
+                    className="btn-success px-5 py-2 text-sm"
+                  >
+                    Claim Rewards
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 

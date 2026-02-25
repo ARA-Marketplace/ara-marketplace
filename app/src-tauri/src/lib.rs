@@ -167,6 +167,8 @@ pub fn run() {
             commands::staking::confirm_distribute_rewards,
             commands::staking::confirm_claim_rewards,
             commands::staking::get_reward_history,
+            commands::staking::get_reward_pipeline,
+            commands::staking::prepare_collect_rewards,
             commands::tx::wait_for_transaction,
             commands::sync::sync_content,
             commands::sync::sync_rewards,

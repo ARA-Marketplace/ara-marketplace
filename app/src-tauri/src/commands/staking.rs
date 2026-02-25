@@ -801,6 +801,337 @@ pub async fn get_reward_history(
     })
 }
 
+// ── Reward pipeline and one-click collect ──
+
+#[derive(Serialize, Deserialize)]
+pub struct RewardPipelineResponse {
+    /// Total ETH in reward pools for content the user can distribute (as creator)
+    pub in_pools_eth: String,
+    /// Number of content items with non-zero pools
+    pub pool_count: u32,
+    /// On-chain claimableRewards(address) — already distributed to this user
+    pub ready_to_claim_eth: String,
+    /// Historical total claimed from DB
+    pub withdrawn_eth: String,
+    /// ready_to_claim + withdrawn
+    pub lifetime_earnings_eth: String,
+}
+
+/// Get reward pipeline data: pools → claimable → withdrawn.
+#[tauri::command]
+pub async fn get_reward_pipeline(
+    state: State<'_, AppState>,
+) -> Result<RewardPipelineResponse, String> {
+    let wallet = state.wallet_address.lock().await;
+    let wallet_str = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    let wallet_addr: Address = wallet_str
+        .parse()
+        .map_err(|e| format!("Invalid address: {e}"))?;
+    drop(wallet);
+
+    // Get all content IDs the user has published
+    let content_ids: Vec<String> = {
+        let db = state.db.lock().await;
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT content_id FROM content WHERE LOWER(creator) = LOWER(?1) AND active = 1",
+            )
+            .map_err(|e| format!("DB query failed: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![&wallet_str], |row| row.get(0))
+            .map_err(|e| format!("DB query failed: {e}"))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let chain = state.chain_client()?;
+
+    // Query reward pool for each content
+    let mut total_in_pools = U256::ZERO;
+    let mut pool_count = 0u32;
+    for cid in &content_ids {
+        let content_id_bytes: FixedBytes<32> = cid
+            .strip_prefix("0x")
+            .unwrap_or(cid)
+            .parse()
+            .unwrap_or_default();
+        let pool = chain
+            .marketplace
+            .reward_pool(content_id_bytes)
+            .await
+            .unwrap_or(U256::ZERO);
+        if pool > U256::ZERO {
+            total_in_pools += pool;
+            pool_count += 1;
+        }
+    }
+
+    // On-chain claimable
+    let claimable = chain
+        .marketplace
+        .claimable_rewards(wallet_addr)
+        .await
+        .unwrap_or(U256::ZERO);
+
+    // Historical withdrawn from DB
+    let withdrawn_str = {
+        let db = state.db.lock().await;
+        db.get_total_claimed_wei()
+            .map_err(|e| format!("DB query failed: {e}"))?
+    };
+    let withdrawn: U256 = withdrawn_str.parse().unwrap_or(U256::ZERO);
+
+    let lifetime = claimable + withdrawn;
+
+    Ok(RewardPipelineResponse {
+        in_pools_eth: format_wei(total_in_pools),
+        pool_count,
+        ready_to_claim_eth: format_wei(claimable),
+        withdrawn_eth: format_wei(withdrawn),
+        lifetime_earnings_eth: format_wei(lifetime),
+    })
+}
+
+/// Build all transactions to distribute pending reward pools then claim.
+/// Iterates all content the user published, distributes non-empty pools, then appends claimRewards.
+#[tauri::command]
+pub async fn prepare_collect_rewards(
+    state: State<'_, AppState>,
+) -> Result<Vec<TransactionRequest>, String> {
+    info!("Building collect-all-rewards transactions");
+
+    let wallet = state.wallet_address.lock().await;
+    let wallet_str = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    let wallet_addr: Address = wallet_str
+        .parse()
+        .map_err(|e| format!("Invalid address: {e}"))?;
+    drop(wallet);
+
+    let eth = &state.config.ethereum;
+    let marketplace_addr = eth
+        .marketplace_address
+        .parse::<Address>()
+        .map_err(|e| format!("Invalid marketplace address: {e}"))?;
+    let staking_addr = eth
+        .staking_address
+        .parse::<Address>()
+        .map_err(|e| format!("Invalid staking address: {e}"))?;
+
+    let domain_separator = compute_domain_separator(marketplace_addr, eth.chain_id);
+    let chain = state.chain_client()?;
+
+    // Get content IDs + titles for this creator
+    let content_items: Vec<(String, String)> = {
+        let db = state.db.lock().await;
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT content_id, COALESCE(title, '') FROM content
+                 WHERE LOWER(creator) = LOWER(?1) AND active = 1",
+            )
+            .map_err(|e| format!("DB query failed: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![&wallet_str], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("DB query failed: {e}"))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    // Fetch seeder min stake once
+    let seeder_min_stake = chain
+        .staking
+        .seeder_min_stake()
+        .await
+        .unwrap_or(U256::from(1_000_000_000_000_000_000u128));
+
+    let mut all_txs: Vec<TransactionRequest> = Vec::new();
+    let mut distributed_count = 0u32;
+
+    for (content_id, title) in &content_items {
+        let content_id_bytes: FixedBytes<32> = content_id
+            .strip_prefix("0x")
+            .unwrap_or(content_id)
+            .parse()
+            .unwrap_or_default();
+
+        // Skip if pool is empty
+        let pool = chain
+            .marketplace
+            .reward_pool(content_id_bytes)
+            .await
+            .unwrap_or(U256::ZERO);
+        if pool == U256::ZERO {
+            continue;
+        }
+
+        // Read delivery receipts
+        let receipts = {
+            let db = state.db.lock().await;
+            db.get_receipts_for_content(content_id).unwrap_or_default()
+        };
+        if receipts.is_empty() {
+            info!("Pool for {} has {} ETH but no receipts — skipping", content_id, format_wei(pool));
+            continue;
+        }
+
+        // Verify receipts and compute seeder weights (same logic as prepare_distribute_rewards)
+        let mut seeder_receipt_counts: std::collections::HashMap<Address, u64> =
+            std::collections::HashMap::new();
+
+        for receipt in &receipts {
+            let seeder_addr: Address = receipt
+                .seeder_eth_address
+                .parse()
+                .unwrap_or(Address::ZERO);
+            if seeder_addr == Address::ZERO {
+                continue;
+            }
+            let Some(recovered_buyer) = verify_receipt_signature(
+                &domain_separator,
+                content_id_bytes,
+                seeder_addr,
+                receipt.timestamp as u64,
+                &receipt.signature,
+            ) else {
+                continue;
+            };
+            let stored_buyer: Address =
+                receipt.buyer_eth_address.parse().unwrap_or(Address::ZERO);
+            if recovered_buyer != stored_buyer {
+                continue;
+            }
+            let purchased = chain
+                .marketplace
+                .has_purchased(content_id_bytes, recovered_buyer)
+                .await
+                .unwrap_or(false);
+            if !purchased {
+                continue;
+            }
+            *seeder_receipt_counts.entry(seeder_addr).or_default() += 1;
+        }
+
+        if seeder_receipt_counts.is_empty() {
+            continue;
+        }
+
+        // Build seeders/weights arrays
+        let mut seeders: Vec<Address> = Vec::new();
+        let mut weights: Vec<U256> = Vec::new();
+        let mut needs_auto_stake = false;
+
+        for (seeder, count) in &seeder_receipt_counts {
+            let eligible = chain
+                .staking
+                .is_eligible_seeder(*seeder, content_id_bytes)
+                .await
+                .unwrap_or(false);
+            if !eligible {
+                if *seeder == wallet_addr {
+                    let general_balance = chain
+                        .staking
+                        .staked_balance(*seeder)
+                        .await
+                        .unwrap_or(U256::ZERO);
+                    if general_balance >= seeder_min_stake {
+                        needs_auto_stake = true;
+                        seeders.push(*seeder);
+                        weights.push(U256::from(*count) * seeder_min_stake);
+                        continue;
+                    }
+                }
+                continue;
+            }
+            let stake = chain
+                .staking
+                .content_stake(*seeder, content_id_bytes)
+                .await
+                .unwrap_or(U256::ZERO);
+            let weight = if stake > U256::ZERO {
+                U256::from(*count) * stake
+            } else {
+                U256::from(*count)
+            };
+            seeders.push(*seeder);
+            weights.push(weight);
+        }
+
+        if seeders.is_empty() {
+            continue;
+        }
+
+        let label = if title.is_empty() {
+            format!("content {}", &content_id[..10])
+        } else {
+            title.clone()
+        };
+
+        // Auto-stake tx if needed
+        if needs_auto_stake {
+            let stake_calldata = StakingClient::<()>::stake_for_content_calldata(
+                content_id_bytes,
+                seeder_min_stake,
+            );
+            all_txs.push(TransactionRequest {
+                to: format!("{staking_addr:#x}"),
+                data: hex_encode(&stake_calldata),
+                value: "0x0".to_string(),
+                description: format!("Stake 1 ARA for seeder eligibility ({})", label),
+            });
+        }
+
+        // Distribute tx
+        let distribute_calldata = MarketplaceClient::<()>::distribute_rewards_calldata(
+            content_id_bytes,
+            seeders,
+            weights,
+        );
+        all_txs.push(TransactionRequest {
+            to: format!("{marketplace_addr:#x}"),
+            data: hex_encode(&distribute_calldata),
+            value: "0x0".to_string(),
+            description: format!("Distribute rewards for {}", label),
+        });
+
+        distributed_count += 1;
+        info!(
+            "Queued distribute for {} (pool: {} ETH)",
+            label,
+            format_wei(pool)
+        );
+    }
+
+    // Append claim tx if there's anything to claim (existing claimable + newly distributed)
+    let existing_claimable = chain
+        .marketplace
+        .claimable_rewards(wallet_addr)
+        .await
+        .unwrap_or(U256::ZERO);
+
+    if distributed_count > 0 || existing_claimable > U256::ZERO {
+        let claim_data = MarketplaceClient::<()>::claim_rewards_calldata();
+        all_txs.push(TransactionRequest {
+            to: format!("{marketplace_addr:#x}"),
+            data: hex_encode(&claim_data),
+            value: "0x0".to_string(),
+            description: "Claim all accumulated rewards".to_string(),
+        });
+    }
+
+    if all_txs.is_empty() {
+        return Err("No rewards to collect — no pools to distribute and nothing to claim".to_string());
+    }
+
+    info!(
+        "Collect rewards: {} distribute txs + 1 claim tx = {} total",
+        distributed_count,
+        all_txs.len()
+    );
+
+    Ok(all_txs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

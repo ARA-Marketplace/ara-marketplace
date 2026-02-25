@@ -387,3 +387,20 @@ export interface RewardSyncResult {
 export async function syncRewards(): Promise<RewardSyncResult> {
   return invoke("sync_rewards");
 }
+
+// Reward pipeline and one-click collect
+export interface RewardPipelineResponse {
+  in_pools_eth: string;
+  pool_count: number;
+  ready_to_claim_eth: string;
+  withdrawn_eth: string;
+  lifetime_earnings_eth: string;
+}
+
+export async function getRewardPipeline(): Promise<RewardPipelineResponse> {
+  return invoke("get_reward_pipeline");
+}
+
+export async function prepareCollectRewards(): Promise<TransactionRequest[]> {
+  return invoke("prepare_collect_rewards");
+}
