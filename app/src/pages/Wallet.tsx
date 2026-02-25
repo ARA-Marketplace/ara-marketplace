@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   useWeb3Modal,
   useWeb3ModalAccount,
@@ -107,6 +108,19 @@ function Wallet() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Auto-refresh when background reward sync finds new events
+  useEffect(() => {
+    const unlisten = listen("rewards-synced", () => {
+      if (address) {
+        refreshBalances();
+        fetchPipeline();
+        fetchRewardHistory(0, false);
+        setHistoryOffset(0);
+      }
+    });
+    return () => { unlisten.then((f) => f()); };
+  }, [address, refreshBalances, fetchPipeline, fetchRewardHistory]);
 
   const handleLoadMore = () => {
     const newOffset = historyOffset + PAGE_SIZE;
@@ -399,7 +413,7 @@ function Wallet() {
             </div>
             {historyItems.length === 0 && !loadingHistory ? (
               <div className="px-5 py-8 text-center text-sm text-slate-400 dark:text-slate-600">
-                No reward events yet. Distribute rewards from your Published content to see them here.
+                No reward events yet. Rewards appear here after purchases and collection.
               </div>
             ) : (
               <table className="w-full text-sm">

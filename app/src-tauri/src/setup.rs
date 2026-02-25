@@ -1,4 +1,4 @@
-use crate::commands::sync::sync_content_impl;
+use crate::commands::sync::{sync_content_impl, sync_rewards_impl};
 use crate::state::AppState;
 use ara_core::config::AppConfig;
 use ara_core::storage::Database;
@@ -93,6 +93,7 @@ pub fn init(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     // Periodic background sync: poll the chain every 30s for new content events.
     // Emits "content-synced" so the Marketplace page auto-refreshes.
+    let app_handle_rewards = app_handle_sync.clone();
     tauri::async_runtime::spawn(async move {
         // Wait for initial sync to finish first
         tokio::time::sleep(std::time::Duration::from_secs(35)).await;
@@ -109,6 +110,37 @@ pub fn init(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => warn!("Periodic sync failed: {e}"),
                 _ => {} // No new content, skip logging
+            }
+        }
+    });
+
+    // Periodic reward sync: poll chain every 30s for new purchases/distributions/claims.
+    // Only runs when a wallet is connected. Emits "rewards-synced" so the Wallet page auto-refreshes.
+    tauri::async_runtime::spawn(async move {
+        // Wait for initial sync + content sync to settle
+        tokio::time::sleep(std::time::Duration::from_secs(40)).await;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            let state = app_handle_rewards.state::<AppState>();
+            // Only sync if a wallet is connected
+            let has_wallet = state.wallet_address.lock().await.is_some();
+            if !has_wallet {
+                continue;
+            }
+            match sync_rewards_impl(&state).await {
+                Ok(r)
+                    if r.distributions_found > 0
+                        || r.claims_found > 0
+                        || r.purchases_found > 0 =>
+                {
+                    info!(
+                        "Periodic reward sync: {} dist, {} claims, {} purchases",
+                        r.distributions_found, r.claims_found, r.purchases_found
+                    );
+                    let _ = app_handle_rewards.emit("rewards-synced", ());
+                }
+                Err(e) => warn!("Periodic reward sync failed: {e}"),
+                _ => {} // No new events
             }
         }
     });

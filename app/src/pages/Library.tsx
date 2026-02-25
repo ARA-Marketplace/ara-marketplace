@@ -5,8 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   getLibrary, getPublishedContent, startSeeding, stopSeeding,
   delistContent, confirmDelist, openDownloadedContent, openContentFolder,
-  getReceiptCount, getRewardPool, prepareDistributeRewards,
-  confirmDistributeRewards, syncRewards,
+  getReceiptCount, getRewardPool,
   updateContentFile, confirmContentFileUpdate,
   type LibraryItem, type PublishedItem,
 } from "../lib/tauri";
@@ -49,12 +48,8 @@ function Library() {
   const [delistError, setDelistError] = useState<string | null>(null);
   const [pubTogglingId, setPubTogglingId] = useState<string | null>(null);
   const [rewardData, setRewardData] = useState<Record<string, { receipts: number; pool: string; poolError?: boolean }>>({});
-  const [distributingId, setDistributingId] = useState<string | null>(null);
-  const [distributeError, setDistributeError] = useState<string | null>(null);
   const [updatingFileId, setUpdatingFileId] = useState<string | null>(null);
   const [updateFileError, setUpdateFileError] = useState<string | null>(null);
-  const [distributeSuccess, setDistributeSuccess] = useState<string | null>(null);
-  const [distributeStatus, setDistributeStatus] = useState<string | null>(null);
 
   const fetchPurchased = useCallback(() => {
     getLibrary()
@@ -165,35 +160,6 @@ function Library() {
       fetchPublished();
     } catch (e) { setUpdateFileError(String(e)); }
     finally { setUpdatingFileId(null); }
-  };
-
-  const handleDistribute = async (item: PublishedItem) => {
-    setDistributingId(item.content_id); setDistributeError(null); setDistributeSuccess(null); setDistributeStatus(null);
-    try {
-      const txs = await prepareDistributeRewards(item.content_id);
-      let txHash = "";
-      if (txs.length > 0) {
-        if (!walletProvider) throw new Error("Wallet not connected");
-        txHash = await signAndSendTransactions(walletProvider, txs, (msg) => setDistributeStatus(msg));
-      }
-      // Record distribution in local DB (dedup by tx_hash prevents duplicates with sync)
-      if (txHash) {
-        await confirmDistributeRewards(item.content_id, txHash).catch((e) => {
-          console.warn("confirm_distribute_rewards failed, will rely on sync:", e);
-        });
-        // Re-sync from chain to ensure distribution is captured even if confirm failed
-        await syncRewards().catch(() => {});
-      }
-      const [receipts, poolResult] = await Promise.all([
-        getReceiptCount(item.content_id).catch(() => 0),
-        getRewardPool(item.content_id)
-          .then((pool) => ({ pool, poolError: false }))
-          .catch(() => ({ pool: "", poolError: true })),
-      ]);
-      setRewardData((prev) => ({ ...prev, [item.content_id]: { receipts, pool: poolResult.pool, poolError: poolResult.poolError } }));
-      setDistributeSuccess(item.title || item.content_id);
-    } catch (e) { setDistributeError(String(e)); }
-    finally { setDistributingId(null); setDistributeStatus(null); }
   };
 
   const tabCls = (t: Tab) =>
@@ -308,22 +274,9 @@ function Library() {
               {loadingPublished ? "Refreshing…" : "Refresh"}
             </button>
           </div>
-          {distributeSuccess && (
-            <div className="mb-4 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-4 py-3 text-sm flex justify-between items-center">
-              <span className="text-emerald-800 dark:text-emerald-300">
-                Rewards distributed for &ldquo;{distributeSuccess}&rdquo;.{" "}
-                <Link to="/wallet" className="underline font-medium hover:text-emerald-600 dark:hover:text-emerald-200">
-                  Go to Wallet to claim your ETH
-                </Link>
-              </span>
-              <button onClick={() => setDistributeSuccess(null)} className="text-xs font-medium ml-4 text-emerald-600 dark:text-emerald-400 hover:opacity-70 flex-shrink-0">
-                Dismiss
-              </button>
-            </div>
-          )}
-          {(publishedError || delistError || distributeError || updateFileError) && (
+          {(publishedError || delistError || updateFileError) && (
             <div className="alert-error mb-4">
-              {publishedError || delistError || distributeError || updateFileError}
+              {publishedError || delistError || updateFileError}
             </div>
           )}
           {loadingPublished ? (
@@ -357,7 +310,6 @@ function Library() {
                     const rd = rewardData[item.content_id];
                     const poolEth = rd && rd.pool ? parseFloat(rd.pool) : 0;
                     const hasPoolError = rd?.poolError === true;
-                    const canDistribute = rd !== undefined && !hasPoolError && rd.receipts > 0 && poolEth > 0;
                     return (
                       <tr key={item.content_id} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
                         <td className="px-4 py-3">
@@ -399,7 +351,14 @@ function Library() {
                                   Failed to load — Retry
                                 </button>
                               ) : rd.pool ? (
-                                <div className="text-slate-700 dark:text-slate-300 font-medium">{rd.pool} ETH</div>
+                                <>
+                                  <div className="text-slate-700 dark:text-slate-300 font-medium">{rd.pool} ETH</div>
+                                  {poolEth > 0 && (
+                                    <Link to="/wallet" className="text-ara-500 hover:underline">
+                                      Collect on Wallet
+                                    </Link>
+                                  )}
+                                </>
                               ) : null}
                             </div>
                           ) : (
@@ -416,12 +375,6 @@ function Library() {
                                   : "btn-ghost"
                               }`}>
                               {pubTogglingId === item.content_id ? "…" : item.is_seeding ? "Seeding" : "Seed"}
-                            </button>
-                            <button onClick={() => handleDistribute(item)}
-                              disabled={!canDistribute || distributingId === item.content_id}
-                              title={!rd ? "Loading…" : hasPoolError ? "Reward pool data unavailable — click Refresh" : rd.receipts === 0 ? "No verified deliveries yet" : poolEth <= 0 ? "Pool is empty" : "Distribute rewards to seeders"}
-                              className="badge-purple px-2.5 py-1.5 rounded-lg text-xs font-medium hover:bg-ara-200 dark:hover:bg-ara-900/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed max-w-[200px] truncate">
-                              {distributingId === item.content_id ? (distributeStatus || "Preparing…") : "Distribute"}
                             </button>
                             <button onClick={() => handleUpdateFile(item)}
                               disabled={updatingFileId === item.content_id}
