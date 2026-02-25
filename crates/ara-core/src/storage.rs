@@ -308,22 +308,24 @@ impl Database {
 
     /// Get total ETH claimed (sum of amount_wei where claimed = 1), as a string.
     pub fn get_total_claimed_wei(&self) -> Result<String> {
-        let total: String = self.conn.query_row(
+        // SUM() returns an integer in SQLite; read as i64 then convert to string
+        // (rusqlite's FromSql for String only handles Text, not Integer).
+        let total: i64 = self.conn.query_row(
             "SELECT COALESCE(SUM(CAST(amount_wei AS INTEGER)), 0) FROM rewards WHERE claimed = 1",
             [],
             |row| row.get(0),
         )?;
-        Ok(total)
+        Ok(total.to_string())
     }
 
     /// Get total ETH distributed but not yet claimed (claimed = 0), as a string.
     pub fn get_total_unclaimed_wei(&self) -> Result<String> {
-        let total: String = self.conn.query_row(
+        let total: i64 = self.conn.query_row(
             "SELECT COALESCE(SUM(CAST(amount_wei AS INTEGER)), 0) FROM rewards WHERE claimed = 0",
             [],
             |row| row.get(0),
         )?;
-        Ok(total)
+        Ok(total.to_string())
     }
 
     /// Upsert a purchase row from on-chain event sync.

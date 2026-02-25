@@ -888,7 +888,10 @@ pub async fn get_reward_pipeline(
     let withdrawn_str = {
         let db = state.db.lock().await;
         db.get_total_claimed_wei()
-            .map_err(|e| format!("DB query failed: {e}"))?
+            .map_err(|e| {
+                warn!("get_total_claimed_wei failed: {e}");
+                format!("DB query failed: {e}")
+            })?
     };
     let withdrawn: U256 = withdrawn_str.parse().unwrap_or(U256::ZERO);
 
