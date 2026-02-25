@@ -157,7 +157,11 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         (msg) => set({ txStatus: msg })
       );
       // Record the claim in local DB (dedup with sync via tx_hash)
-      await confirmClaimRewardsIpc(txHash).catch(() => {});
+      await confirmClaimRewardsIpc(txHash).catch((e) => {
+        console.warn("confirm_claim_rewards failed, will rely on sync:", e);
+      });
+      // Re-sync from chain to ensure the claim event is captured even if confirm failed
+      await syncRewardsIpc().catch(() => {});
       set({ txStatus: `Rewards claimed! Tx: ${txHash.slice(0, 10)}…`, isSendingTx: false });
       await get().refreshBalances();
       return txHash;

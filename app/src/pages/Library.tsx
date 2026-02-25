@@ -6,7 +6,7 @@ import {
   getLibrary, getPublishedContent, startSeeding, stopSeeding,
   delistContent, confirmDelist, openDownloadedContent, openContentFolder,
   getReceiptCount, getRewardPool, prepareDistributeRewards,
-  confirmDistributeRewards,
+  confirmDistributeRewards, syncRewards,
   updateContentFile, confirmContentFileUpdate,
   type LibraryItem, type PublishedItem,
 } from "../lib/tauri";
@@ -178,7 +178,11 @@ function Library() {
       }
       // Record distribution in local DB (dedup by tx_hash prevents duplicates with sync)
       if (txHash) {
-        await confirmDistributeRewards(item.content_id, txHash).catch(() => {});
+        await confirmDistributeRewards(item.content_id, txHash).catch((e) => {
+          console.warn("confirm_distribute_rewards failed, will rely on sync:", e);
+        });
+        // Re-sync from chain to ensure distribution is captured even if confirm failed
+        await syncRewards().catch(() => {});
       }
       const [receipts, poolResult] = await Promise.all([
         getReceiptCount(item.content_id).catch(() => 0),

@@ -7,6 +7,7 @@ import {
 import { useWalletStore } from "../store/walletStore";
 import {
   getRewardHistory,
+  syncRewards,
   type RewardHistoryItem,
   type RewardHistoryResponse,
 } from "../lib/tauri";
@@ -72,12 +73,16 @@ function Wallet() {
     }
   }, [address, fetchRewardHistory]);
 
-  // Refresh balances and history on every mount (handles navigation from other pages)
+  // Refresh balances and history on every mount (handles navigation from other pages).
+  // Sync rewards from chain first to ensure DB has the latest distribute/claim events.
   useEffect(() => {
     if (address) {
       refreshBalances();
       setHistoryOffset(0);
-      fetchRewardHistory(0, false);
+      // Sync from chain, then fetch history (so newly distributed/claimed rewards appear)
+      syncRewards()
+        .catch(() => {})
+        .finally(() => fetchRewardHistory(0, false));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -103,7 +108,7 @@ function Wallet() {
     if (!walletProvider) { open(); return; }
     try {
       await claimRewards(walletProvider);
-      // Refresh history after claiming
+      // Refresh history after claiming (claimRewards already syncs internally)
       setHistoryOffset(0);
       await fetchRewardHistory(0, false);
     }
