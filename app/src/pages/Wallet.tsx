@@ -333,7 +333,7 @@ function Wallet() {
                 In Reward Pools
               </p>
               <p className="text-[10px] text-slate-400 dark:text-slate-600 mb-2">
-                Awaiting distribution
+                From content purchases
               </p>
               <p className="text-xl font-bold text-amber-600 dark:text-amber-400">
                 {pipeline?.in_pools_eth ?? "0.0"} <span className="text-sm font-normal text-slate-500">ETH</span>
@@ -396,9 +396,7 @@ function Wallet() {
                     disabled={collecting || isSendingTx}
                     className="btn-success px-5 py-2 text-sm"
                   >
-                    {collecting ? "Collecting..." : hasValue(pipeline.ready_to_claim_eth)
-                      ? "Collect All"
-                      : "Distribute & Claim"}
+                    {collecting ? "Collecting..." : "Collect All"}
                   </button>
                 ) : (
                   <button
