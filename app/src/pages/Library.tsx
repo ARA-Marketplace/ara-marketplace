@@ -54,6 +54,7 @@ function Library() {
   const [updatingFileId, setUpdatingFileId] = useState<string | null>(null);
   const [updateFileError, setUpdateFileError] = useState<string | null>(null);
   const [distributeSuccess, setDistributeSuccess] = useState<string | null>(null);
+  const [distributeStatus, setDistributeStatus] = useState<string | null>(null);
 
   const fetchPurchased = useCallback(() => {
     getLibrary()
@@ -167,13 +168,13 @@ function Library() {
   };
 
   const handleDistribute = async (item: PublishedItem) => {
-    setDistributingId(item.content_id); setDistributeError(null); setDistributeSuccess(null);
+    setDistributingId(item.content_id); setDistributeError(null); setDistributeSuccess(null); setDistributeStatus(null);
     try {
       const txs = await prepareDistributeRewards(item.content_id);
       let txHash = "";
       if (txs.length > 0) {
         if (!walletProvider) throw new Error("Wallet not connected");
-        txHash = await signAndSendTransactions(walletProvider, txs);
+        txHash = await signAndSendTransactions(walletProvider, txs, (msg) => setDistributeStatus(msg));
       }
       // Record distribution in local DB (dedup by tx_hash prevents duplicates with sync)
       if (txHash) {
@@ -188,7 +189,7 @@ function Library() {
       setRewardData((prev) => ({ ...prev, [item.content_id]: { receipts, pool: poolResult.pool, poolError: poolResult.poolError } }));
       setDistributeSuccess(item.title || item.content_id);
     } catch (e) { setDistributeError(String(e)); }
-    finally { setDistributingId(null); }
+    finally { setDistributingId(null); setDistributeStatus(null); }
   };
 
   const tabCls = (t: Tab) =>
@@ -415,8 +416,8 @@ function Library() {
                             <button onClick={() => handleDistribute(item)}
                               disabled={!canDistribute || distributingId === item.content_id}
                               title={!rd ? "Loading…" : hasPoolError ? "Reward pool data unavailable — click Refresh" : rd.receipts === 0 ? "No verified deliveries yet" : poolEth <= 0 ? "Pool is empty" : "Distribute rewards to seeders"}
-                              className="badge-purple px-2.5 py-1.5 rounded-lg text-xs font-medium hover:bg-ara-200 dark:hover:bg-ara-900/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-                              {distributingId === item.content_id ? "…" : "Distribute"}
+                              className="badge-purple px-2.5 py-1.5 rounded-lg text-xs font-medium hover:bg-ara-200 dark:hover:bg-ara-900/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed max-w-[200px] truncate">
+                              {distributingId === item.content_id ? (distributeStatus || "Preparing…") : "Distribute"}
                             </button>
                             <button onClick={() => handleUpdateFile(item)}
                               disabled={updatingFileId === item.content_id}

@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   getContentDetail,
   purchaseContent,
@@ -56,6 +57,13 @@ const CONTENT_CATEGORIES = [
   "Indie", "Educational", "Music", "Other",
 ];
 
+function fmtBytes(bytes: number) {
+  if (bytes <= 0) return "0 B";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${u[i]}`;
+}
+
 function ContentDetail() {
   const { contentId } = useParams<{ contentId: string }>();
   const { open: openModal } = useWeb3Modal();
@@ -71,6 +79,8 @@ function ContentDetail() {
   const [purchaseTxHash, setPurchaseTxHash] = useState<string | null>(null);
   const [receiptStep, setReceiptStep] = useState<"idle" | "signing" | "done" | "skipped">("idle");
   const [downloadPath, setDownloadPath] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<{ received: number; total: number } | null>(null);
+  const unlistenProgressRef = useRef<UnlistenFn | null>(null);
 
   // Preview carousel state
   const [carouselItems, setCarouselItems] = useState<CarouselItem[]>([]);
@@ -108,6 +118,16 @@ function ContentDetail() {
     if (!contentId) return;
     loadContent(decodeURIComponent(contentId));
   }, [contentId]);
+
+  // Clean up progress event listener on unmount
+  useEffect(() => {
+    return () => {
+      if (unlistenProgressRef.current) {
+        unlistenProgressRef.current();
+        unlistenProgressRef.current = null;
+      }
+    };
+  }, []);
 
   // Load preview assets lazily after content + meta are set
   useEffect(() => {
@@ -228,6 +248,7 @@ function ContentDetail() {
   const handlePurchase = async () => {
     if (!contentId || !isConnected) return;
     setPurchaseError(null);
+    setDownloadProgress(null);
     try {
       setPurchaseStep("preparing");
       const result = await purchaseContent(decodeURIComponent(contentId));
@@ -242,20 +263,40 @@ function ContentDetail() {
         }
         setPurchaseStep("signing");
         txHash = await signAndSendTransactions(walletProvider, result.transactions);
-        setPurchaseStep("confirming");
-        const confirmResult = await confirmPurchase(result.content_id, txHash);
-        setDownloadPath(confirmResult.download_path);
-      } else {
-        setPurchaseStep("confirming");
-        const confirmResult = await confirmPurchase(result.content_id, txHash);
-        setDownloadPath(confirmResult.download_path);
       }
+
+      // Start listening for download progress before confirming (which triggers download)
+      const unlisten = await listen<{ content_id: string; bytes_received: number; total_bytes: number }>(
+        "download-progress",
+        (event) => {
+          setDownloadProgress({ received: event.payload.bytes_received, total: event.payload.total_bytes });
+        }
+      );
+      unlistenProgressRef.current = unlisten;
+
+      setPurchaseStep("confirming");
+      const confirmResult = await confirmPurchase(result.content_id, txHash);
+      setDownloadPath(confirmResult.download_path);
+
+      // Clean up progress listener
+      unlisten();
+      unlistenProgressRef.current = null;
 
       setPurchaseTxHash(txHash !== "0x0" ? txHash : null);
       setPurchaseStep("done");
+
+      // Auto-sign delivery receipt (gasless signature, no ETH cost).
+      // Fires in background — if user rejects the wallet popup it falls back to manual button.
+      handleSignReceipt();
     } catch (err) {
+      // Clean up progress listener on error
+      if (unlistenProgressRef.current) {
+        unlistenProgressRef.current();
+        unlistenProgressRef.current = null;
+      }
       setPurchaseError(String(err));
       setPurchaseStep("idle");
+      setDownloadProgress(null);
     }
   };
 
@@ -685,10 +726,10 @@ function ContentDetail() {
                         </>
                       )}
                       {receiptStep === "signing" && (
-                        <p className="text-xs opacity-80">Waiting for signature in wallet…</p>
+                        <p className="text-xs opacity-80">Signing delivery receipt in wallet…</p>
                       )}
                       {receiptStep === "done" && (
-                        <p className="text-xs font-medium">Receipt signed — seeder delivery verified.</p>
+                        <p className="text-xs font-medium">Receipt signed — you're now seeding and earning rewards for this content.</p>
                       )}
                       {receiptStep === "skipped" && (
                         <>
@@ -710,15 +751,33 @@ function ContentDetail() {
                     You are the creator of this listing.
                   </div>
                 ) : (
-                  <button
-                    onClick={handlePurchase}
-                    disabled={!canPurchase}
-                    className="btn-primary-lg w-full"
-                  >
-                    {purchaseStep === "idle"
-                      ? `Purchase for ${content.price_eth} ETH`
-                      : STEP_LABELS[purchaseStep]}
-                  </button>
+                  <div className="space-y-2">
+                    <button
+                      onClick={handlePurchase}
+                      disabled={!canPurchase}
+                      className="btn-primary-lg w-full"
+                    >
+                      {purchaseStep === "idle"
+                        ? `Purchase for ${content.price_eth} ETH`
+                        : purchaseStep === "confirming" && downloadProgress
+                          ? "Downloading content..."
+                          : STEP_LABELS[purchaseStep]}
+                    </button>
+                    {purchaseStep === "confirming" && downloadProgress && downloadProgress.total > 0 && (
+                      <div>
+                        <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2 overflow-hidden">
+                          <div
+                            className="bg-ara-500 h-2 rounded-full transition-all duration-300"
+                            style={{ width: `${Math.min(100, (downloadProgress.received / downloadProgress.total) * 100).toFixed(1)}%` }}
+                          />
+                        </div>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 text-center">
+                          {fmtBytes(downloadProgress.received)} / {fmtBytes(downloadProgress.total)}{" "}
+                          ({((downloadProgress.received / downloadProgress.total) * 100).toFixed(1)}%)
+                        </p>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             </div>

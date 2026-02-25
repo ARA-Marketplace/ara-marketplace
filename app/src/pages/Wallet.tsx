@@ -72,6 +72,16 @@ function Wallet() {
     }
   }, [address, fetchRewardHistory]);
 
+  // Refresh balances and history on every mount (handles navigation from other pages)
+  useEffect(() => {
+    if (address) {
+      refreshBalances();
+      setHistoryOffset(0);
+      fetchRewardHistory(0, false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleLoadMore = () => {
     const newOffset = historyOffset + PAGE_SIZE;
     setHistoryOffset(newOffset);
@@ -205,16 +215,22 @@ function Wallet() {
           {/* Rewards Summary — 3 columns */}
           <div className="grid grid-cols-3 gap-4">
             <div className="card p-5">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
-                Total Earned
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-0.5">
+                Lifetime Earnings
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-600 mb-2">
+                Total rewards distributed to you
               </p>
               <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
                 {rewardHistory?.total_earned_eth ?? claimableRewards} <span className="text-sm font-normal text-slate-500">ETH</span>
               </p>
             </div>
             <div className="card p-5">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
-                Claimable
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-0.5">
+                Ready to Claim
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-600 mb-2">
+                Withdraw to your wallet
               </p>
               <p className="text-xl font-bold text-emerald-600 dark:text-emerald-400">
                 {rewardHistory?.claimable_eth ?? claimableRewards} <span className="text-sm font-normal text-slate-500">ETH</span>
@@ -228,8 +244,11 @@ function Wallet() {
               </button>
             </div>
             <div className="card p-5">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
-                Already Claimed
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-0.5">
+                Withdrawn
+              </p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-600 mb-2">
+                Already sent to your wallet
               </p>
               <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
                 {rewardHistory?.total_claimed_eth ?? "0"} <span className="text-sm font-normal text-slate-500">ETH</span>

@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
+use futures_lite::StreamExt;
 use iroh::NodeAddr;
 use iroh_blobs::net_protocol::DownloadMode;
 use iroh_blobs::rpc::client::blobs::{DownloadOptions, MemClient as BlobsClient, WrapOption};
@@ -125,6 +126,77 @@ impl ContentManager {
             iroh_hash.fmt_short(),
             outcome.downloaded_size,
             outcome.local_size,
+        );
+        Ok(())
+    }
+
+    /// Download a blob with progress reporting via a callback.
+    /// The callback receives `(bytes_received, total_size)`.
+    /// Falls back to the regular download if progress events aren't emitted.
+    pub async fn download_with_progress<F>(
+        &self,
+        hash: &ContentHash,
+        node: NodeAddr,
+        mode: DownloadMode,
+        on_progress: F,
+    ) -> Result<()>
+    where
+        F: Fn(u64, u64) + Send + 'static,
+    {
+        let iroh_hash = Hash::from_bytes(*hash);
+        info!(
+            "Downloading blob {} from {} (with progress)",
+            iroh_hash.fmt_short(),
+            node.node_id,
+        );
+
+        let mut stream = self
+            .client
+            .download_with_opts(
+                iroh_hash,
+                DownloadOptions {
+                    format: BlobFormat::Raw,
+                    nodes: vec![node],
+                    tag: SetTagOption::Auto,
+                    mode,
+                },
+            )
+            .await?;
+
+        let mut total_size: u64 = 0;
+
+        while let Some(event) = stream.next().await {
+            use iroh_blobs::get::db::DownloadProgress;
+            match event {
+                Ok(DownloadProgress::Found { size, .. }) => {
+                    total_size = size;
+                    on_progress(0, total_size);
+                }
+                Ok(DownloadProgress::Progress { offset, .. }) => {
+                    if total_size > 0 {
+                        on_progress(offset, total_size);
+                    }
+                }
+                Ok(DownloadProgress::AllDone(_stats)) => {
+                    if total_size > 0 {
+                        on_progress(total_size, total_size);
+                    }
+                    break;
+                }
+                Ok(DownloadProgress::Abort(err)) => {
+                    return Err(anyhow::anyhow!("Download aborted: {}", err));
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!("Download stream error: {}", e));
+                }
+                _ => {}
+            }
+        }
+
+        info!(
+            "Download complete (with progress): {} ({} bytes)",
+            iroh_hash.fmt_short(),
+            total_size,
         );
         Ok(())
     }

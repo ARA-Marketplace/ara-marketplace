@@ -4,9 +4,10 @@ use crate::state::AppState;
 use alloy::primitives::{Address, FixedBytes, U256};
 use ara_chain::marketplace::MarketplaceClient;
 use ara_p2p::content::ContentManager;
+use iroh_blobs::net_protocol::DownloadMode;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tauri::State;
+use tauri::{Emitter, State};
 use tracing::{info, warn};
 
 #[derive(Serialize, Deserialize)]
@@ -278,8 +279,24 @@ pub async fn confirm_purchase(
                 );
             }
 
+            let app_handle = state.app_handle.clone();
+            let progress_content_id = content_id.clone();
             content_mgr
-                .download_from(&content_hash_bytes, node_addr)
+                .download_with_progress(
+                    &content_hash_bytes,
+                    node_addr,
+                    DownloadMode::Queued,
+                    move |received, total| {
+                        let _ = app_handle.emit(
+                            "download-progress",
+                            serde_json::json!({
+                                "content_id": progress_content_id,
+                                "bytes_received": received,
+                                "total_bytes": total,
+                            }),
+                        );
+                    },
+                )
                 .await
                 .map_err(|e| format!("P2P download failed: {e}"))?;
         } else {

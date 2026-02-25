@@ -757,6 +757,11 @@ pub async fn get_reward_history(
         .get_total_claimed_wei()
         .map_err(|e| format!("DB query failed: {e}"))?;
     let total_claimed_wei: U256 = total_claimed_str.parse().unwrap_or(U256::ZERO);
+
+    let total_unclaimed_str = db
+        .get_total_unclaimed_wei()
+        .map_err(|e| format!("DB query failed: {e}"))?;
+    let total_unclaimed_wei: U256 = total_unclaimed_str.parse().unwrap_or(U256::ZERO);
     drop(db);
 
     // Query on-chain claimable rewards
@@ -781,7 +786,12 @@ pub async fn get_reward_history(
         }
     };
 
-    let total_earned = total_claimed_wei + claimable_wei;
+    // Lifetime earnings = claimed + currently claimable on-chain.
+    // Also consider DB unclaimed distributions as a fallback (they may not yet
+    // be reflected in the on-chain claimable mapping if distribute hasn't been called).
+    let total_earned_from_chain = total_claimed_wei + claimable_wei;
+    let total_earned_from_db = total_claimed_wei + total_unclaimed_wei;
+    let total_earned = total_earned_from_chain.max(total_earned_from_db);
 
     Ok(RewardHistoryResponse {
         items,
