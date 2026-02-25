@@ -20,6 +20,13 @@ import { signAndSendTransactions } from "../lib/transactions";
 
 const PAGE_SIZE = 10;
 
+/** Returns true if the value is a non-zero ETH string (handles null/undefined/0/0.0). */
+function hasValue(v: string | undefined | null): boolean {
+  if (!v) return false;
+  const n = parseFloat(v);
+  return !isNaN(n) && n > 0;
+}
+
 function fmtDate(ts: number) {
   // Block numbers are used as approx timestamps from sync;
   // real timestamps (from confirm commands) are unix seconds.
@@ -152,6 +159,10 @@ function Wallet() {
 
   const handleCollect = async () => {
     if (!walletProvider) { open(); return; }
+    if (!pipeline || !hasValue(pipeline.in_pools_eth)) {
+      setCollectError("No reward pools to collect. Try refreshing.");
+      return;
+    }
     setCollecting(true);
     setCollectError(null);
     setCollectStatus("Preparing transactions...");
@@ -379,20 +390,20 @@ function Wallet() {
                 </p>
               </div>
               <div className="flex-shrink-0 ml-4">
-                {(pipeline?.in_pools_eth !== "0.0" && pipeline?.in_pools_eth !== "0") ? (
+                {pipeline && hasValue(pipeline.in_pools_eth) ? (
                   <button
                     onClick={handleCollect}
                     disabled={collecting || isSendingTx}
                     className="btn-success px-5 py-2 text-sm"
                   >
-                    {collecting ? "Collecting..." : pipeline?.ready_to_claim_eth !== "0.0" && pipeline?.ready_to_claim_eth !== "0"
+                    {collecting ? "Collecting..." : hasValue(pipeline.ready_to_claim_eth)
                       ? "Collect All"
                       : "Distribute & Claim"}
                   </button>
                 ) : (
                   <button
                     onClick={handleClaim}
-                    disabled={isSendingTx || claimableRewards === "0" || claimableRewards === "0.0"}
+                    disabled={isSendingTx || !hasValue(claimableRewards)}
                     className="btn-success px-5 py-2 text-sm"
                   >
                     Claim Rewards
