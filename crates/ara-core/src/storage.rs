@@ -13,6 +13,18 @@ pub struct DeliveryReceipt {
     pub timestamp: i64,
 }
 
+/// A reward event row (distribution or claim) from the local DB cache.
+#[derive(Debug, Clone)]
+pub struct RewardRow {
+    pub id: i64,
+    pub content_id: String,
+    pub amount_wei: String,
+    pub tx_hash: Option<String>,
+    pub claimed: bool,
+    pub distributed_at: i64,
+    pub content_title: Option<String>,
+}
+
 /// Local SQLite database for caching on-chain state, seeding metrics, and user data.
 pub struct Database {
     conn: Connection,
@@ -126,6 +138,11 @@ impl Database {
             .conn
             .execute("ALTER TABLE content_seeders ADD COLUMN eth_address TEXT", []);
         // delivery_receipts is a new table — CREATE TABLE IF NOT EXISTS handles existing DBs
+        // Unique index on rewards.tx_hash for dedup (sync + immediate recording can both insert)
+        let _ = self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_rewards_tx_hash ON rewards(tx_hash)",
+            [],
+        );
         // updated_at and categories are new columns — silently ignored if already present
         let _ = self
             .conn
@@ -228,6 +245,101 @@ impl Database {
             map.insert(seeder, count);
         }
         Ok(map)
+    }
+
+    // ── Reward tracking ──
+
+    /// Insert a reward distribution record. Deduplicates by tx_hash.
+    pub fn insert_reward(
+        &self,
+        content_id: &str,
+        amount_wei: &str,
+        tx_hash: &str,
+        distributed_at: i64,
+    ) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO rewards (content_id, amount_wei, tx_hash, claimed, distributed_at)
+             VALUES (?1, ?2, ?3, 0, ?4)",
+            rusqlite::params![content_id, amount_wei, tx_hash, distributed_at],
+        )
+    }
+
+    /// Insert a reward claim record (already claimed on-chain).
+    pub fn insert_reward_claim(
+        &self,
+        amount_wei: &str,
+        tx_hash: &str,
+        claimed_at: i64,
+    ) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO rewards (content_id, amount_wei, tx_hash, claimed, distributed_at)
+             VALUES ('claim', ?1, ?2, 1, ?3)",
+            rusqlite::params![amount_wei, tx_hash, claimed_at],
+        )
+    }
+
+    /// Get reward history with pagination (newest first).
+    pub fn get_reward_history(
+        &self,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<RewardRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT r.id, r.content_id, r.amount_wei, r.tx_hash, r.claimed, r.distributed_at,
+                    c.title
+             FROM rewards r
+             LEFT JOIN content c ON r.content_id = c.content_id
+             ORDER BY r.distributed_at DESC
+             LIMIT ?1 OFFSET ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![limit, offset], |row| {
+            Ok(RewardRow {
+                id: row.get(0)?,
+                content_id: row.get(1)?,
+                amount_wei: row.get(2)?,
+                tx_hash: row.get(3)?,
+                claimed: row.get::<_, i32>(4)? != 0,
+                distributed_at: row.get(5)?,
+                content_title: row.get(6)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    /// Get total ETH claimed (sum of amount_wei where claimed = 1), as a string.
+    pub fn get_total_claimed_wei(&self) -> Result<String> {
+        let total: String = self.conn.query_row(
+            "SELECT COALESCE(SUM(CAST(amount_wei AS INTEGER)), 0) FROM rewards WHERE claimed = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(total)
+    }
+
+    /// Get total ETH distributed but not yet claimed (claimed = 0), as a string.
+    pub fn get_total_unclaimed_wei(&self) -> Result<String> {
+        let total: String = self.conn.query_row(
+            "SELECT COALESCE(SUM(CAST(amount_wei AS INTEGER)), 0) FROM rewards WHERE claimed = 0",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(total)
+    }
+
+    /// Upsert a purchase row from on-chain event sync.
+    pub fn upsert_purchase(
+        &self,
+        content_id: &str,
+        buyer: &str,
+        price_paid_wei: &str,
+        tx_hash: &str,
+        purchased_at: i64,
+    ) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO purchases (content_id, buyer, price_paid_wei, tx_hash, purchased_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![content_id, buyer, price_paid_wei, tx_hash, purchased_at],
+        )
     }
 
     /// Upsert a content row discovered from on-chain event sync.

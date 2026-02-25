@@ -164,8 +164,12 @@ pub fn run() {
             commands::staking::claim_rewards,
             commands::staking::prepare_distribute_rewards,
             commands::staking::prepare_public_distribute,
+            commands::staking::confirm_distribute_rewards,
+            commands::staking::confirm_claim_rewards,
+            commands::staking::get_reward_history,
             commands::tx::wait_for_transaction,
             commands::sync::sync_content,
+            commands::sync::sync_rewards,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

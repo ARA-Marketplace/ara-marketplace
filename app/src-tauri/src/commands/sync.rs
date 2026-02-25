@@ -1,4 +1,5 @@
 use crate::state::AppState;
+use alloy::primitives::Address;
 use ara_chain::{AraEvent, IndexedEvent};
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -33,13 +34,28 @@ pub struct SyncResult {
     pub synced_to_block: u64,
 }
 
-/// Fetch content events in chunks, adapting chunk size to RPC limits.
+#[derive(Serialize)]
+pub struct RewardSyncResult {
+    pub distributions_found: u32,
+    pub claims_found: u32,
+    pub purchases_found: u32,
+    pub synced_to_block: u64,
+}
+
+/// Which event source to fetch from.
+enum EventSource {
+    Content,
+    Marketplace,
+}
+
+/// Fetch events in chunks, adapting chunk size to RPC limits.
 /// Starts with a large chunk and halves on range errors.
 /// Retries with exponential backoff on 429 rate-limit responses.
 async fn fetch_events_chunked(
     state: &AppState,
     from_block: u64,
     to_block: u64,
+    source: EventSource,
 ) -> Result<Vec<IndexedEvent>, String> {
     let chain = state
         .chain_client()
@@ -54,11 +70,16 @@ async fn fetch_events_chunked(
     while cursor <= to_block {
         let chunk_end = (cursor + chunk_size - 1).min(to_block);
 
-        match chain
-            .events
-            .fetch_content_events(cursor, Some(chunk_end))
-            .await
-        {
+        let result = match source {
+            EventSource::Content => {
+                chain.events.fetch_content_events(cursor, Some(chunk_end)).await
+            }
+            EventSource::Marketplace => {
+                chain.events.fetch_marketplace_events(cursor, Some(chunk_end)).await
+            }
+        };
+
+        match result {
             Ok(events) => {
                 all_events.extend(events);
                 cursor = chunk_end + 1;
@@ -146,7 +167,7 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
     );
 
     // Fetch events in adaptive chunks (handles RPC range limits)
-    let events = fetch_events_chunked(state, from_block, to_block).await?;
+    let events = fetch_events_chunked(state, from_block, to_block, EventSource::Content).await?;
 
     let mut new_count = 0u32;
     let mut delisted_count = 0u32;
@@ -296,7 +317,150 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
     })
 }
 
+/// Sync marketplace events (purchases, distributions, claims) for the connected wallet.
+/// Rebuilds the `rewards` and `purchases` tables from on-chain events.
+pub async fn sync_rewards_impl(state: &AppState) -> Result<RewardSyncResult, String> {
+    let wallet = state.wallet_address.lock().await;
+    let wallet_str = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    let wallet_addr: Address = wallet_str
+        .parse()
+        .map_err(|e| format!("Invalid wallet address: {e}"))?;
+    drop(wallet);
+
+    let chain = state
+        .chain_client()
+        .map_err(|e| format!("Chain client error: {e}"))?;
+
+    let from_block = {
+        let db = state.db.lock().await;
+        db.get_config("rewards_sync_block")
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|b| b + 1)
+            .unwrap_or(state.config.ethereum.deployment_block)
+    };
+
+    let to_block = chain
+        .get_block_number()
+        .await
+        .map_err(|e| format!("Failed to get block number: {e}"))?;
+
+    if from_block > to_block {
+        return Ok(RewardSyncResult {
+            distributions_found: 0,
+            claims_found: 0,
+            purchases_found: 0,
+            synced_to_block: to_block,
+        });
+    }
+
+    info!(
+        "Syncing marketplace events for {} from block {} to {}",
+        wallet_str, from_block, to_block
+    );
+
+    let events = fetch_events_chunked(state, from_block, to_block, EventSource::Marketplace).await?;
+
+    let mut distributions_found = 0u32;
+    let mut claims_found = 0u32;
+    let mut purchases_found = 0u32;
+
+    let db = state.db.lock().await;
+    for indexed in &events {
+        let tx_hash_str = indexed
+            .tx_hash
+            .map(|h| format!("0x{}", alloy::hex::encode(h.as_slice())))
+            .unwrap_or_default();
+
+        // Use block number as approximate timestamp (precise timestamps would require
+        // fetching each block header, which is expensive). Good enough for sorting.
+        let approx_timestamp = indexed.block_number as i64;
+
+        match &indexed.event {
+            AraEvent::ContentPurchased {
+                content_id,
+                buyer,
+                price_paid,
+                ..
+            } => {
+                if *buyer == wallet_addr {
+                    let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
+                    let buyer_str = format!("{buyer:#x}");
+                    if let Err(e) = db.upsert_purchase(
+                        &cid,
+                        &buyer_str,
+                        &price_paid.to_string(),
+                        &tx_hash_str,
+                        approx_timestamp,
+                    ) {
+                        warn!("Failed to upsert purchase {}: {}", cid, e);
+                    } else {
+                        purchases_found += 1;
+                    }
+                }
+            }
+            AraEvent::RewardsDistributed {
+                content_id,
+                seeders,
+                amounts,
+                ..
+            } => {
+                // Find this wallet's share
+                for (i, seeder) in seeders.iter().enumerate() {
+                    if *seeder == wallet_addr {
+                        let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
+                        let amount = amounts.get(i).copied().unwrap_or_default();
+                        if let Err(e) = db.insert_reward(
+                            &cid,
+                            &amount.to_string(),
+                            &tx_hash_str,
+                            approx_timestamp,
+                        ) {
+                            warn!("Failed to insert reward for {}: {}", cid, e);
+                        } else {
+                            distributions_found += 1;
+                        }
+                    }
+                }
+            }
+            AraEvent::RewardClaimed { seeder, amount } => {
+                if *seeder == wallet_addr {
+                    if let Err(e) = db.insert_reward_claim(
+                        &amount.to_string(),
+                        &tx_hash_str,
+                        approx_timestamp,
+                    ) {
+                        warn!("Failed to insert reward claim: {}", e);
+                    } else {
+                        claims_found += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let _ = db.set_config("rewards_sync_block", &to_block.to_string());
+    drop(db);
+
+    info!(
+        "Rewards sync complete: {} distributions, {} claims, {} purchases, synced to block {}",
+        distributions_found, claims_found, purchases_found, to_block
+    );
+
+    Ok(RewardSyncResult {
+        distributions_found,
+        claims_found,
+        purchases_found,
+        synced_to_block: to_block,
+    })
+}
+
 #[tauri::command]
 pub async fn sync_content(state: State<'_, AppState>) -> Result<SyncResult, String> {
     sync_content_impl(&state).await
+}
+
+#[tauri::command]
+pub async fn sync_rewards(state: State<'_, AppState>) -> Result<RewardSyncResult, String> {
+    sync_rewards_impl(&state).await
 }

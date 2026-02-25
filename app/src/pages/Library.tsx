@@ -6,6 +6,7 @@ import {
   getLibrary, getPublishedContent, startSeeding, stopSeeding,
   delistContent, confirmDelist, openDownloadedContent, openContentFolder,
   getReceiptCount, getRewardPool, prepareDistributeRewards,
+  confirmDistributeRewards,
   updateContentFile, confirmContentFileUpdate,
   type LibraryItem, type PublishedItem,
 } from "../lib/tauri";
@@ -52,6 +53,7 @@ function Library() {
   const [distributeError, setDistributeError] = useState<string | null>(null);
   const [updatingFileId, setUpdatingFileId] = useState<string | null>(null);
   const [updateFileError, setUpdateFileError] = useState<string | null>(null);
+  const [distributeSuccess, setDistributeSuccess] = useState<string | null>(null);
 
   const fetchPurchased = useCallback(() => {
     getLibrary()
@@ -165,12 +167,17 @@ function Library() {
   };
 
   const handleDistribute = async (item: PublishedItem) => {
-    setDistributingId(item.content_id); setDistributeError(null);
+    setDistributingId(item.content_id); setDistributeError(null); setDistributeSuccess(null);
     try {
       const txs = await prepareDistributeRewards(item.content_id);
+      let txHash = "";
       if (txs.length > 0) {
         if (!walletProvider) throw new Error("Wallet not connected");
-        await signAndSendTransactions(walletProvider, txs);
+        txHash = await signAndSendTransactions(walletProvider, txs);
+      }
+      // Record distribution in local DB (dedup by tx_hash prevents duplicates with sync)
+      if (txHash) {
+        await confirmDistributeRewards(item.content_id, txHash).catch(() => {});
       }
       const [receipts, poolResult] = await Promise.all([
         getReceiptCount(item.content_id).catch(() => 0),
@@ -179,6 +186,7 @@ function Library() {
           .catch(() => ({ pool: "", poolError: true })),
       ]);
       setRewardData((prev) => ({ ...prev, [item.content_id]: { receipts, pool: poolResult.pool, poolError: poolResult.poolError } }));
+      setDistributeSuccess(item.title || item.content_id);
     } catch (e) { setDistributeError(String(e)); }
     finally { setDistributingId(null); }
   };
@@ -295,6 +303,19 @@ function Library() {
               {loadingPublished ? "Refreshing…" : "Refresh"}
             </button>
           </div>
+          {distributeSuccess && (
+            <div className="mb-4 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-4 py-3 text-sm flex justify-between items-center">
+              <span className="text-emerald-800 dark:text-emerald-300">
+                Rewards distributed for &ldquo;{distributeSuccess}&rdquo;.{" "}
+                <Link to="/wallet" className="underline font-medium hover:text-emerald-600 dark:hover:text-emerald-200">
+                  Go to Wallet to claim your ETH
+                </Link>
+              </span>
+              <button onClick={() => setDistributeSuccess(null)} className="text-xs font-medium ml-4 text-emerald-600 dark:text-emerald-400 hover:opacity-70 flex-shrink-0">
+                Dismiss
+              </button>
+            </div>
+          )}
           {(publishedError || delistError || distributeError || updateFileError) && (
             <div className="alert-error mb-4">
               {publishedError || delistError || distributeError || updateFileError}

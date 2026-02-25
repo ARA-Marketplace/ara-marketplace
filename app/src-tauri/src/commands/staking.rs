@@ -1,6 +1,8 @@
 use crate::commands::types::{format_wei, hex_encode, parse_token_amount, TransactionRequest};
 use crate::state::AppState;
-use alloy::primitives::{Address, Bytes, FixedBytes, U256, keccak256};
+use alloy::primitives::{Address, Bytes, FixedBytes, TxHash, U256, keccak256};
+use alloy::providers::{Provider, ProviderBuilder};
+use alloy::sol_types::SolEvent;
 use ara_chain::contracts::IMarketplace;
 use ara_chain::marketplace::MarketplaceClient;
 use ara_chain::staking::StakingClient;
@@ -583,6 +585,210 @@ fn verify_receipt_signature(
     // ECDSA recovery: sig = r(32) || s(32) || v(1)
     let sig = alloy::primitives::Signature::try_from(sig_bytes.as_slice()).ok()?;
     sig.recover_address_from_prehash(&digest).ok()
+}
+
+// ── Reward history and confirmation commands ──
+
+#[derive(Serialize, Deserialize)]
+pub struct RewardHistoryItem {
+    pub content_id: String,
+    pub content_title: String,
+    pub amount_eth: String,
+    pub tx_hash: Option<String>,
+    pub claimed: bool,
+    pub distributed_at: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RewardHistoryResponse {
+    pub items: Vec<RewardHistoryItem>,
+    pub total_earned_eth: String,
+    pub total_claimed_eth: String,
+    pub claimable_eth: String,
+}
+
+/// Called after distributeRewards tx is confirmed on-chain.
+/// Parses the RewardsDistributed event from the receipt to record the user's share.
+#[tauri::command]
+pub async fn confirm_distribute_rewards(
+    state: State<'_, AppState>,
+    content_id: String,
+    tx_hash: String,
+) -> Result<(), String> {
+    info!(
+        "Confirming reward distribution: content={}, tx={}",
+        content_id, tx_hash
+    );
+
+    let wallet = state.wallet_address.lock().await;
+    let my_address_str = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    let my_address: Address = my_address_str
+        .parse()
+        .map_err(|e| format!("Invalid address: {e}"))?;
+    drop(wallet);
+
+    // Create a standalone HTTP provider (same pattern as tx.rs)
+    let rpc_url = &state.config.ethereum.rpc_url;
+    let provider = ProviderBuilder::new()
+        .connect_http(rpc_url.parse().map_err(|e| format!("Invalid RPC URL: {e}"))?);
+
+    let hash: TxHash = tx_hash
+        .parse()
+        .map_err(|e| format!("Invalid tx hash: {e}"))?;
+
+    let receipt = provider
+        .get_transaction_receipt(hash)
+        .await
+        .map_err(|e| format!("Failed to get receipt: {e}"))?
+        .ok_or("Receipt not found")?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    // Decode RewardsDistributed event from logs to find our share
+    let mut my_amount = U256::ZERO;
+    for log in receipt.inner.logs() {
+        if let Ok(event) = IMarketplace::RewardsDistributed::decode_log(&log.inner) {
+            for (i, seeder) in event.seeders.iter().enumerate() {
+                if *seeder == my_address {
+                    if let Some(amount) = event.amounts.get(i) {
+                        my_amount += *amount;
+                    }
+                }
+            }
+        }
+    }
+
+    let db = state.db.lock().await;
+    if let Err(e) = db.insert_reward(&content_id, &my_amount.to_string(), &tx_hash, now) {
+        warn!("Failed to record distribution: {}", e);
+    }
+
+    info!(
+        "Recorded reward distribution: {} wei for {}",
+        my_amount, content_id
+    );
+    Ok(())
+}
+
+/// Called after claimRewards tx is confirmed on-chain.
+/// Parses the RewardClaimed event from the receipt and records in DB.
+#[tauri::command]
+pub async fn confirm_claim_rewards(
+    state: State<'_, AppState>,
+    tx_hash: String,
+) -> Result<(), String> {
+    info!("Confirming reward claim: tx={}", tx_hash);
+
+    let rpc_url = &state.config.ethereum.rpc_url;
+    let provider = ProviderBuilder::new()
+        .connect_http(rpc_url.parse().map_err(|e| format!("Invalid RPC URL: {e}"))?);
+
+    let hash: TxHash = tx_hash
+        .parse()
+        .map_err(|e| format!("Invalid tx hash: {e}"))?;
+
+    let receipt = provider
+        .get_transaction_receipt(hash)
+        .await
+        .map_err(|e| format!("Failed to get receipt: {e}"))?
+        .ok_or("Receipt not found")?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let mut claimed_amount = U256::ZERO;
+    for log in receipt.inner.logs() {
+        if let Ok(event) = IMarketplace::RewardClaimed::decode_log(&log.inner) {
+            claimed_amount += event.amount;
+        }
+    }
+
+    let db = state.db.lock().await;
+    if let Err(e) = db.insert_reward_claim(&claimed_amount.to_string(), &tx_hash, now) {
+        warn!("Failed to record claim: {}", e);
+    }
+
+    info!("Recorded reward claim: {} wei", claimed_amount);
+    Ok(())
+}
+
+/// Get paginated reward history and summary totals.
+#[tauri::command]
+pub async fn get_reward_history(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<RewardHistoryResponse, String> {
+    let limit = limit.unwrap_or(20);
+    let offset = offset.unwrap_or(0);
+
+    let db = state.db.lock().await;
+    let rows = db
+        .get_reward_history(limit, offset)
+        .map_err(|e| format!("DB query failed: {e}"))?;
+
+    let items: Vec<RewardHistoryItem> = rows
+        .into_iter()
+        .map(|r| {
+            let amount_wei: U256 = r.amount_wei.parse().unwrap_or(U256::ZERO);
+            RewardHistoryItem {
+                content_id: r.content_id.clone(),
+                content_title: r.content_title.unwrap_or_else(|| {
+                    if r.content_id == "claim" {
+                        "Reward Claim".to_string()
+                    } else {
+                        "Unknown".to_string()
+                    }
+                }),
+                amount_eth: format_wei(amount_wei),
+                tx_hash: r.tx_hash,
+                claimed: r.claimed,
+                distributed_at: r.distributed_at as u64,
+            }
+        })
+        .collect();
+
+    let total_claimed_str = db
+        .get_total_claimed_wei()
+        .map_err(|e| format!("DB query failed: {e}"))?;
+    let total_claimed_wei: U256 = total_claimed_str.parse().unwrap_or(U256::ZERO);
+    drop(db);
+
+    // Query on-chain claimable rewards
+    let claimable_wei = {
+        let wallet = state.wallet_address.lock().await;
+        if let Some(addr_str) = wallet.as_ref() {
+            if let Ok(addr) = addr_str.parse::<Address>() {
+                if let Ok(chain) = state.chain_client() {
+                    chain
+                        .marketplace
+                        .claimable_rewards(addr)
+                        .await
+                        .unwrap_or(U256::ZERO)
+                } else {
+                    U256::ZERO
+                }
+            } else {
+                U256::ZERO
+            }
+        } else {
+            U256::ZERO
+        }
+    };
+
+    let total_earned = total_claimed_wei + claimable_wei;
+
+    Ok(RewardHistoryResponse {
+        items,
+        total_earned_eth: format_wei(total_earned),
+        total_claimed_eth: format_wei(total_claimed_wei),
+        claimable_eth: format_wei(claimable_wei),
+    })
 }
 
 #[cfg(test)]

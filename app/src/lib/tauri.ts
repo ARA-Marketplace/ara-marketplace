@@ -341,3 +341,49 @@ export async function preparePublicDistribute(
 ): Promise<TransactionRequest[]> {
   return invoke("prepare_public_distribute", { contentId });
 }
+
+// Reward history and confirmation
+export interface RewardHistoryItem {
+  content_id: string;
+  content_title: string;
+  amount_eth: string;
+  tx_hash: string | null;
+  claimed: boolean;
+  distributed_at: number;
+}
+
+export interface RewardHistoryResponse {
+  items: RewardHistoryItem[];
+  total_earned_eth: string;
+  total_claimed_eth: string;
+  claimable_eth: string;
+}
+
+export async function getRewardHistory(
+  limit?: number,
+  offset?: number
+): Promise<RewardHistoryResponse> {
+  return invoke("get_reward_history", { limit, offset });
+}
+
+export async function confirmDistributeRewards(
+  contentId: string,
+  txHash: string
+): Promise<void> {
+  return invoke("confirm_distribute_rewards", { contentId, txHash });
+}
+
+export async function confirmClaimRewards(txHash: string): Promise<void> {
+  return invoke("confirm_claim_rewards", { txHash });
+}
+
+export interface RewardSyncResult {
+  distributions_found: number;
+  claims_found: number;
+  purchases_found: number;
+  synced_to_block: number;
+}
+
+export async function syncRewards(): Promise<RewardSyncResult> {
+  return invoke("sync_rewards");
+}

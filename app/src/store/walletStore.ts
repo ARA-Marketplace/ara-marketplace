@@ -7,6 +7,8 @@ import {
   stakeAra as stakeAraIpc,
   unstakeAra as unstakeAraIpc,
   claimRewards as claimRewardsIpc,
+  confirmClaimRewards as confirmClaimRewardsIpc,
+  syncRewards as syncRewardsIpc,
 } from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
 import type { Eip1193Provider } from "ethers";
@@ -58,6 +60,8 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       set({ address, isConnecting: false });
       // Auto-refresh balances after connecting
       await get().refreshBalances();
+      // Sync reward history from chain in background (rebuilds on fresh install)
+      syncRewardsIpc().catch(() => {});
     } catch (e) {
       set({
         error: `Failed to connect: ${e}`,
@@ -152,6 +156,8 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         txRequests,
         (msg) => set({ txStatus: msg })
       );
+      // Record the claim in local DB (dedup with sync via tx_hash)
+      await confirmClaimRewardsIpc(txHash).catch(() => {});
       set({ txStatus: `Rewards claimed! Tx: ${txHash.slice(0, 10)}…`, isSendingTx: false });
       await get().refreshBalances();
       return txHash;
