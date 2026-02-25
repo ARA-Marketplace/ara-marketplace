@@ -61,8 +61,8 @@ function Wallet() {
     try {
       const data = await getRewardPipeline();
       setPipeline(data);
-    } catch {
-      // Pipeline is supplementary — don't block the page
+    } catch (e) {
+      console.warn("Failed to fetch reward pipeline:", e);
     }
   }, []);
 
@@ -121,6 +121,17 @@ function Wallet() {
     });
     return () => { unlisten.then((f) => f()); };
   }, [address, refreshBalances, fetchPipeline, fetchRewardHistory]);
+
+  // Periodic refresh: pipeline queries on-chain data, so poll every 30s to catch
+  // purchases of creator's content (which the background sync doesn't detect).
+  useEffect(() => {
+    if (!address) return;
+    const interval = setInterval(() => {
+      refreshBalances();
+      fetchPipeline();
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [address, refreshBalances, fetchPipeline]);
 
   const handleLoadMore = () => {
     const newOffset = historyOffset + PAGE_SIZE;

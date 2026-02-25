@@ -365,6 +365,18 @@ pub async fn sync_rewards_impl(state: &AppState) -> Result<RewardSyncResult, Str
     let mut purchases_found = 0u32;
 
     let db = state.db.lock().await;
+
+    // Pre-load content IDs the wallet created, so we can detect sales of our content
+    let my_content_ids: std::collections::HashSet<String> = {
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT content_id FROM content WHERE LOWER(creator) = LOWER(?1) AND active = 1")
+            .unwrap_or_else(|_| db.conn().prepare("SELECT '' WHERE 0").unwrap());
+        stmt.query_map(rusqlite::params![&wallet_str], |row| row.get::<_, String>(0))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default()
+    };
+
     for indexed in &events {
         let tx_hash_str = indexed
             .tx_hash
@@ -382,8 +394,10 @@ pub async fn sync_rewards_impl(state: &AppState) -> Result<RewardSyncResult, Str
                 price_paid,
                 ..
             } => {
+                let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
+
+                // Track as buyer
                 if *buyer == wallet_addr {
-                    let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
                     let buyer_str = format!("{buyer:#x}");
                     if let Err(e) = db.upsert_purchase(
                         &cid,
@@ -396,6 +410,11 @@ pub async fn sync_rewards_impl(state: &AppState) -> Result<RewardSyncResult, Str
                     } else {
                         purchases_found += 1;
                     }
+                }
+                // Also count as relevant if someone bought our content (triggers UI refresh)
+                else if my_content_ids.contains(&cid) {
+                    purchases_found += 1;
+                    info!("Detected sale of our content {}: buyer={}", cid, buyer);
                 }
             }
             AraEvent::RewardsDistributed {
