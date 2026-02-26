@@ -161,7 +161,7 @@ fn detect_contract_change(db: &Database, config: &AppConfig) {
     let stored_marketplace = db.get_config("contract_marketplace");
     let current_marketplace = &config.ethereum.marketplace_address;
 
-    let needs_reset = match &stored_marketplace {
+    let mut needs_reset = match &stored_marketplace {
         Some(addr) => !addr.eq_ignore_ascii_case(current_marketplace),
         None => {
             // No stored address: either truly first run (fresh DB) or upgrading
@@ -172,20 +172,52 @@ fn detect_contract_change(db: &Database, config: &AppConfig) {
                 info!("Upgrading DB: no stored contract addresses but sync state exists — resetting");
                 true
             } else {
-                // Truly first run — just store addresses
+                // Truly first run — just store addresses and deployment block
                 let _ = db.set_config("contract_marketplace", current_marketplace);
                 let _ = db.set_config("contract_registry", &config.ethereum.registry_address);
                 let _ = db.set_config("contract_staking", &config.ethereum.staking_address);
                 let _ = db.set_config("contract_token", &config.ethereum.ara_token_address);
+                let _ = db.set_config("deployment_block", &config.ethereum.deployment_block.to_string());
                 false
             }
         }
     };
 
+    // Even if addresses match, detect stale sync state from an old deployment era.
+    // This catches the case where addresses were stored by a previous run but
+    // deployment_block has since advanced (contracts redeployed).
+    if !needs_reset {
+        let stale_sync = db
+            .get_config("last_synced_block")
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|block| block < config.ethereum.deployment_block)
+            .unwrap_or(false);
+
+        let stale_deployment = db
+            .get_config("deployment_block")
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|stored| stored != config.ethereum.deployment_block)
+            .unwrap_or(false);
+
+        if stale_sync {
+            info!(
+                "Stale sync detected: last_synced_block < deployment_block ({}). Resetting.",
+                config.ethereum.deployment_block
+            );
+            needs_reset = true;
+        } else if stale_deployment {
+            info!(
+                "Deployment block changed (new: {}). Resetting sync state.",
+                config.ethereum.deployment_block
+            );
+            needs_reset = true;
+        }
+    }
+
     if needs_reset {
         info!(
-            "Contract addresses changed (old marketplace: {:?}, new: {}). Resetting sync state.",
-            stored_marketplace, current_marketplace
+            "Resetting sync state (old marketplace: {:?}, new: {}). Will re-index from block {}.",
+            stored_marketplace, current_marketplace, config.ethereum.deployment_block
         );
 
         let conn = db.conn();
@@ -200,11 +232,12 @@ fn detect_contract_change(db: &Database, config: &AppConfig) {
         let _ = conn.execute("DELETE FROM seeding", []);
         let _ = conn.execute("DELETE FROM content_seeders", []);
 
-        // Store new addresses
+        // Store new addresses and deployment block
         let _ = db.set_config("contract_marketplace", current_marketplace);
         let _ = db.set_config("contract_registry", &config.ethereum.registry_address);
         let _ = db.set_config("contract_staking", &config.ethereum.staking_address);
         let _ = db.set_config("contract_token", &config.ethereum.ara_token_address);
+        let _ = db.set_config("deployment_block", &config.ethereum.deployment_block.to_string());
 
         info!("Sync state reset complete — will re-index from block {}", config.ethereum.deployment_block);
     }
