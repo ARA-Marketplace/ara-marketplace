@@ -302,6 +302,42 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
         }
     }
 
+    // Validate local DB against on-chain source of truth.
+    // If local DB has more active content than the registry has ever published,
+    // the DB contains stale data from old contracts — wipe and re-sync.
+    let local_active: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM content WHERE active = 1", [], |r| r.get(0))
+        .unwrap_or(0);
+
+    let on_chain_count = chain
+        .registry
+        .get_content_count()
+        .await
+        .map(|c| c.try_into().unwrap_or(u64::MAX))
+        .unwrap_or(u64::MAX);
+
+    if local_active as u64 > on_chain_count {
+        warn!(
+            "Stale DB detected: {} local rows but only {} on-chain. Clearing and re-syncing.",
+            local_active, on_chain_count
+        );
+        let _ = db.conn().execute("DELETE FROM content", []);
+        let _ = db.conn().execute("DELETE FROM purchases", []);
+        let _ = db.conn().execute("DELETE FROM rewards", []);
+        let _ = db.conn().execute("DELETE FROM delivery_receipts", []);
+        let _ = db.conn().execute("DELETE FROM seeding", []);
+        let _ = db.conn().execute("DELETE FROM content_seeders", []);
+        let _ = db.conn().execute("DELETE FROM config WHERE key = 'last_synced_block'", []);
+        let _ = db.conn().execute("DELETE FROM config WHERE key = 'rewards_sync_block'", []);
+        drop(db);
+
+        info!("DB cleared — re-syncing from deployment block");
+        // Recurse once to do a clean sync from deployment_block.
+        // The recursive call won't hit this branch again because the DB is empty.
+        return Box::pin(sync_content_impl(state)).await;
+    }
+
     // Save sync progress
     let _ = db.set_config("last_synced_block", &to_block.to_string());
     drop(db);

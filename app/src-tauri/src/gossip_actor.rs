@@ -226,19 +226,85 @@ impl GossipActor {
         Ok(Bytes::from(serde_json::to_vec(msg)?))
     }
 
-    /// Re-broadcast our SeederAnnounce when a new neighbor joins the topic.
+    /// Re-broadcast our SeederAnnounce and any pending delivery receipts
+    /// when a new neighbor joins the topic.  Receipt re-broadcast fixes the
+    /// race where the buyer broadcasts a receipt before the gossip bootstrap
+    /// connection to the publisher is established.
     async fn handle_neighbor_up(&self, content_hash: ContentHash) -> anyhow::Result<()> {
         let hash_hex = alloy::hex::encode(content_hash);
 
-        if let Some(sender) = self.active_topics.get(&content_hash) {
-            let msg = GossipMessage::SeederAnnounce {
-                content_hash,
-                node_id_bytes: *self.node_id.as_bytes(),
-            };
-            let encoded = self.encode_msg(&msg)?;
-            info!("Re-announcing seeding on NeighborUp for {}", hash_hex);
-            sender.broadcast(encoded).await?;
+        let Some(sender) = self.active_topics.get(&content_hash) else {
+            return Ok(());
+        };
+
+        // Re-announce ourselves as a seeder
+        let msg = GossipMessage::SeederAnnounce {
+            content_hash,
+            node_id_bytes: *self.node_id.as_bytes(),
+        };
+        let encoded = self.encode_msg(&msg)?;
+        info!("Re-announcing seeding on NeighborUp for {}", hash_hex);
+        sender.broadcast(encoded).await?;
+
+        // Re-broadcast delivery receipts stored in the DB for this content.
+        // Look up content_id from content_hash, then find any receipts.
+        let hash_hex_prefixed = format!("0x{}", hash_hex);
+        let receipts: Vec<(String, String, String, String, i64, u64)> = {
+            let db = self.db.lock().await;
+            // content_hash → content_id → delivery_receipts
+            let content_id: Option<String> = db.conn().query_row(
+                "SELECT content_id FROM content WHERE content_hash = ?1 LIMIT 1",
+                rusqlite::params![&hash_hex_prefixed],
+                |row| row.get(0),
+            ).ok();
+            if let Some(cid) = content_id {
+                let mut stmt = db.conn().prepare(
+                    "SELECT content_id, seeder_eth_address, buyer_eth_address, signature, timestamp, bytes_served
+                     FROM delivery_receipts WHERE content_id = ?1"
+                )?;
+                let rows: Vec<_> = stmt.query_map(rusqlite::params![&cid], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)? as u64,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+                rows
+            } else {
+                vec![]
+            }
+        };
+
+        if !receipts.is_empty() {
+            info!("Re-broadcasting {} delivery receipt(s) on NeighborUp for {}", receipts.len(), hash_hex);
         }
+        for (content_id_hex, seeder_hex, buyer_hex, sig_hex, ts, bytes_served) in receipts {
+            // Parse hex strings back to byte arrays for the gossip message
+            let content_id = parse_hex_32(content_id_hex.strip_prefix("0x").unwrap_or(&content_id_hex));
+            let seeder = parse_hex_20(seeder_hex.strip_prefix("0x").unwrap_or(&seeder_hex));
+            let buyer = parse_hex_20(buyer_hex.strip_prefix("0x").unwrap_or(&buyer_hex));
+            let sig = alloy::hex::decode(sig_hex.strip_prefix("0x").unwrap_or(&sig_hex)).unwrap_or_default();
+
+            if let (Some(cid), Some(s), Some(b)) = (content_id, seeder, buyer) {
+                let msg = GossipMessage::DeliveryReceipt {
+                    content_id: cid,
+                    seeder_eth_address: s,
+                    buyer_eth_address: b,
+                    signature: sig,
+                    timestamp: ts as u64,
+                    bytes_served,
+                };
+                if let Ok(encoded) = self.encode_msg(&msg) {
+                    let _ = sender.broadcast(encoded).await;
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -429,7 +495,7 @@ impl GossipActor {
     }
 
     async fn handle_broadcast_receipt(
-        &self,
+        &mut self,
         content_hash: ContentHash,
         content_id: [u8; 32],
         seeder_eth_address: [u8; 20],
@@ -438,6 +504,46 @@ impl GossipActor {
         timestamp: u64,
         bytes_served: u64,
     ) -> anyhow::Result<()> {
+        let hash_hex = alloy::hex::encode(content_hash);
+
+        // Auto-join the gossip topic if not already subscribed.
+        // This happens when a buyer broadcasts a receipt before starting to seed —
+        // they've downloaded the content but haven't joined the gossip topic yet.
+        if !self.active_topics.contains_key(&content_hash) {
+            info!("Auto-joining gossip topic for receipt broadcast on {}", hash_hex);
+
+            // Look up known seeders from DB to use as bootstrap peers
+            let bootstrap: Vec<NodeId> = {
+                let db = self.db.lock().await;
+                let hash_hex_prefixed = format!("0x{}", hash_hex);
+                let mut stmt = db.conn().prepare(
+                    "SELECT node_id FROM content_seeders WHERE content_hash = ?1"
+                ).unwrap_or_else(|_| db.conn().prepare("SELECT '' WHERE 0").unwrap());
+                stmt.query_map(rusqlite::params![&hash_hex_prefixed], |row| {
+                    row.get::<_, String>(0)
+                })
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(|r| r.ok())
+                .filter_map(|s| s.parse::<NodeId>().ok())
+                .filter(|id| *id != self.node_id)
+                .collect()
+            };
+
+            info!("Bootstrapping receipt topic {} with {} peers", hash_hex, bootstrap.len());
+            let topic_id = topic_for_content(&content_hash);
+            let topic = self.gossip.join_with_opts(topic_id, JoinOptions::with_bootstrap(bootstrap));
+            let (sender, receiver) = topic.split();
+
+            let known_seeders = self.known_seeders.clone();
+            let our_node_id = self.node_id;
+            let event_tx = self.event_tx.clone();
+            tokio::spawn(Self::recv_loop(receiver, known_seeders, our_node_id, content_hash, event_tx));
+
+            self.active_topics.insert(content_hash, sender);
+        }
+
         let msg = GossipMessage::DeliveryReceipt {
             content_id,
             seeder_eth_address,
@@ -446,13 +552,10 @@ impl GossipActor {
             timestamp,
             bytes_served,
         };
-        if let Some(sender) = self.active_topics.get(&content_hash) {
-            let encoded = self.encode_msg(&msg)?;
-            sender.broadcast(encoded).await?;
-            info!("Broadcast delivery receipt for content {}", alloy::hex::encode(content_hash));
-        } else {
-            warn!("Cannot broadcast receipt: not subscribed to topic for {}", alloy::hex::encode(content_hash));
-        }
+        let sender = self.active_topics.get(&content_hash).unwrap();
+        let encoded = self.encode_msg(&msg)?;
+        sender.broadcast(encoded).await?;
+        info!("Broadcast delivery receipt for content {}", hash_hex);
         Ok(())
     }
 
@@ -529,4 +632,16 @@ pub fn spawn(
     tokio::spawn(actor.run());
 
     tx
+}
+
+/// Parse a hex string to a [u8; 32], returning None on failure.
+fn parse_hex_32(hex: &str) -> Option<[u8; 32]> {
+    let bytes = alloy::hex::decode(hex).ok()?;
+    bytes.try_into().ok()
+}
+
+/// Parse a hex string to a [u8; 20], returning None on failure.
+fn parse_hex_20(hex: &str) -> Option<[u8; 20]> {
+    let bytes = alloy::hex::decode(hex).ok()?;
+    bytes.try_into().ok()
 }
