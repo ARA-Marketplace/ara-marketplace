@@ -437,6 +437,9 @@ pub async fn sync_rewards_impl(state: &AppState) -> Result<RewardSyncResult, Str
             } => {
                 let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
 
+                // Increment total_minted counter for sold-out detection
+                let _ = db.increment_total_minted(&cid);
+
                 // Track as buyer
                 if *buyer == wallet_addr {
                     let buyer_str = format!("{buyer:#x}");

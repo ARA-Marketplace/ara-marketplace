@@ -266,7 +266,8 @@ function ContentDetail() {
   };
 
   const handlePurchase = async () => {
-    if (!contentId || !isConnected) return;
+    if (!contentId) return;
+    if (!isConnected) { openModal(); return; }
     setPurchaseError(null);
     setDownloadProgress(null);
     try {
@@ -304,6 +305,10 @@ function ContentDetail() {
 
       setPurchaseTxHash(txHash !== "0x0" ? txHash : null);
       setPurchaseStep("done");
+
+      // Refresh edition info so "0/1 minted" updates to "1/1 minted" immediately
+      const decodedId = decodeURIComponent(contentId);
+      getEditionInfo(decodedId).then(setEdition).catch(() => {});
 
       // Auto-sign delivery receipt (gasless signature, no ETH cost).
       // Fires in background — if user rejects the wallet popup it falls back to manual button.
@@ -445,7 +450,7 @@ function ContentDetail() {
     );
   }
 
-  const canPurchase = isConnected && purchaseStep === "idle" && content.active && !isCreator;
+  const canPurchase = purchaseStep === "idle" && content.active && !isCreator;
 
   return (
     <div className="max-w-2xl">
@@ -730,12 +735,6 @@ function ContentDetail() {
               </div>
 
               <div className="mt-6 space-y-3">
-                {!isConnected && purchaseStep === "idle" && (
-                  <div className="alert-warning">
-                    Connect your wallet to purchase this content.
-                  </div>
-                )}
-
                 {purchaseError && (
                   <div className="alert-error">{purchaseError}</div>
                 )}
@@ -835,7 +834,9 @@ function ContentDetail() {
                       className="btn-primary-lg w-full"
                     >
                       {purchaseStep === "idle"
-                        ? `Purchase for ${content.price_eth} ETH`
+                        ? !isConnected
+                          ? "Connect Wallet to Purchase"
+                          : `Purchase for ${content.price_eth} ETH`
                         : purchaseStep === "confirming" && downloadProgress
                           ? "Downloading content..."
                           : STEP_LABELS[purchaseStep]}

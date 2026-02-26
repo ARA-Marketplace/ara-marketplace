@@ -66,6 +66,8 @@ export interface ContentDetail {
   metadata_uri: string;
   updated_at: number | null;
   categories: string[];
+  max_supply: number;
+  total_minted: number;
 }
 
 export interface PublishPrepareResult {

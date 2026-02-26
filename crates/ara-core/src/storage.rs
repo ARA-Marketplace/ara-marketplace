@@ -185,6 +185,9 @@ impl Database {
         let _ = self
             .conn
             .execute("ALTER TABLE content ADD COLUMN royalty_bps INTEGER NOT NULL DEFAULT 0", []);
+        let _ = self
+            .conn
+            .execute("ALTER TABLE content ADD COLUMN total_minted INTEGER NOT NULL DEFAULT 0", []);
 
         Ok(())
     }
@@ -399,6 +402,14 @@ impl Database {
             "INSERT OR IGNORE INTO purchases (content_id, buyer, price_paid_wei, tx_hash, purchased_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![content_id, buyer, price_paid_wei, tx_hash, purchased_at],
+        )
+    }
+
+    /// Increment the total_minted counter for a content item (called on ContentPurchased).
+    pub fn increment_total_minted(&self, content_id: &str) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "UPDATE content SET total_minted = total_minted + 1 WHERE content_id = ?1",
+            rusqlite::params![content_id],
         )
     }
 

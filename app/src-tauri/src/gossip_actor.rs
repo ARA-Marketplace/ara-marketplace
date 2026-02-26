@@ -174,6 +174,16 @@ impl GossipActor {
                             ) {
                                 warn!("Failed to store delivery receipt: {e}");
                             }
+                            // Credit bytes_served to our seeding entry (if we're seeding this content).
+                            // This is a fallback for cases where the iroh blob event handler missed
+                            // the transfer (e.g. timing race or internal blob metadata transfer).
+                            if bytes_served > 0 {
+                                let _ = db.conn().execute(
+                                    "UPDATE seeding SET bytes_served = MAX(bytes_served, ?1)
+                                     WHERE content_id = ?2",
+                                    rusqlite::params![bytes_served as i64, &content_id_hex],
+                                );
+                            }
                         }
                         Some(RecvEvent::SeederIdentityReceived { content_hash, node_id, eth_address_hex }) => {
                             let hash_hex = format!("0x{}", alloy::hex::encode(content_hash));

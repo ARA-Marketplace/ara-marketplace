@@ -179,6 +179,12 @@ function Marketplace() {
                   <span className="absolute top-2 left-2 px-2 py-0.5 bg-black/50 backdrop-blur-sm text-white text-[10px] font-semibold uppercase tracking-wider rounded-full">
                     {item.content_type}
                   </span>
+                  {/* Sold Out badge for limited editions */}
+                  {item.max_supply > 0 && item.total_minted >= item.max_supply && (
+                    <span className="absolute top-2 right-2 px-2 py-0.5 bg-red-600/80 backdrop-blur-sm text-white text-[10px] font-semibold uppercase tracking-wider rounded-full">
+                      Sold Out
+                    </span>
+                  )}
                 </div>
 
                 {/* Card body */}

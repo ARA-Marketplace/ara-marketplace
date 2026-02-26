@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   useWeb3Modal,
-  useWeb3ModalAccount,
   useWeb3ModalProvider,
 } from "@web3modal/ethers/react";
 import { useWalletStore } from "../store/walletStore";
@@ -36,9 +35,13 @@ function fmtDate(ts: number) {
   return `Block ${ts}`;
 }
 
+function fmtEth(val: string): string {
+  const n = parseFloat(val);
+  return isNaN(n) ? val : n.toFixed(3);
+}
+
 function Wallet() {
   const { open } = useWeb3Modal();
-  const { isConnected } = useWeb3ModalAccount();
   const { walletProvider } = useWeb3ModalProvider();
 
   const {
@@ -251,7 +254,7 @@ function Wallet() {
           {/* Balances */}
           <div className="grid grid-cols-2 gap-4">
             {[
-              { label: "ETH Balance",  value: `${ethBalance} ETH` },
+              { label: "ETH Balance",  value: `${fmtEth(ethBalance)} ETH` },
               { label: "ARA Balance",  value: `${araBalance} ARA` },
             ].map(({ label, value }) => (
               <div key={label} className="card p-5">

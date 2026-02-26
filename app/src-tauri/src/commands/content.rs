@@ -42,6 +42,8 @@ pub struct ContentDetail {
     pub updated_at: Option<i64>,
     /// Parsed categories list (from categories DB column, JSON array)
     pub categories: Vec<String>,
+    pub max_supply: i64,
+    pub total_minted: i64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1011,7 +1013,8 @@ pub async fn get_my_content(state: State<'_, AppState>) -> Result<Vec<ContentDet
         .prepare(
             "SELECT content_id, content_hash, creator, title, description,
                     content_type, price_wei, active, file_size_bytes,
-                    COALESCE(metadata_uri,''), updated_at, COALESCE(categories,'[]')
+                    COALESCE(metadata_uri,''), updated_at, COALESCE(categories,'[]'),
+                    COALESCE(max_supply,0), COALESCE(total_minted,0)
              FROM content WHERE LOWER(creator) = ?1
              ORDER BY created_at DESC",
         )
@@ -1038,6 +1041,8 @@ pub async fn get_my_content(state: State<'_, AppState>) -> Result<Vec<ContentDet
                 metadata_uri: row.get(9)?,
                 updated_at: row.get(10)?,
                 categories: serde_json::from_str(&cats_json).unwrap_or_default(),
+                max_supply: row.get(12)?,
+                total_minted: row.get(13)?,
             })
         })
         .map_err(|e| format!("DB query failed: {e}"))?;
@@ -1238,7 +1243,8 @@ pub async fn get_content_detail(
         .prepare(
             "SELECT content_id, content_hash, creator, title, description,
                     content_type, price_wei, active, file_size_bytes,
-                    COALESCE(metadata_uri,''), updated_at, COALESCE(categories,'[]')
+                    COALESCE(metadata_uri,''), updated_at, COALESCE(categories,'[]'),
+                    COALESCE(max_supply,0), COALESCE(total_minted,0)
              FROM content WHERE content_id = ?1",
         )
         .map_err(|e| format!("DB query failed: {e}"))?;
@@ -1264,6 +1270,8 @@ pub async fn get_content_detail(
                 metadata_uri: row.get(9)?,
                 updated_at: row.get(10)?,
                 categories: serde_json::from_str(&cats_json).unwrap_or_default(),
+                max_supply: row.get(12)?,
+                total_minted: row.get(13)?,
             })
         })
         .map_err(|e| format!("Content not found: {e}"))?;
@@ -1285,7 +1293,8 @@ pub async fn search_content(
         .prepare(
             "SELECT content_id, content_hash, creator, title, description,
                     content_type, price_wei, active, file_size_bytes,
-                    COALESCE(metadata_uri,''), updated_at, COALESCE(categories,'[]')
+                    COALESCE(metadata_uri,''), updated_at, COALESCE(categories,'[]'),
+                    COALESCE(max_supply,0), COALESCE(total_minted,0)
              FROM content WHERE active = 1
              AND (title LIKE ?1 OR description LIKE ?1
                   OR content_type LIKE ?1 OR COALESCE(categories,'') LIKE ?1)
@@ -1320,6 +1329,8 @@ pub async fn search_content(
                 metadata_uri: row.get(9)?,
                 updated_at: row.get(10)?,
                 categories: serde_json::from_str(&cats_json).unwrap_or_default(),
+                max_supply: row.get(12)?,
+                total_minted: row.get(13)?,
             })
         })
         .map_err(|e| format!("DB query failed: {e}"))?;
