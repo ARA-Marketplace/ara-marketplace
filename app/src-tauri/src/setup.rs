@@ -164,12 +164,21 @@ fn detect_contract_change(db: &Database, config: &AppConfig) {
     let needs_reset = match &stored_marketplace {
         Some(addr) => !addr.eq_ignore_ascii_case(current_marketplace),
         None => {
-            // First run or pre-migration DB — store addresses without resetting
-            let _ = db.set_config("contract_marketplace", current_marketplace);
-            let _ = db.set_config("contract_registry", &config.ethereum.registry_address);
-            let _ = db.set_config("contract_staking", &config.ethereum.staking_address);
-            let _ = db.set_config("contract_token", &config.ethereum.ara_token_address);
-            false
+            // No stored address: either truly first run (fresh DB) or upgrading
+            // from an older build that didn't track contract addresses.
+            // If last_synced_block exists, the DB has stale data from old contracts.
+            let has_stale_sync = db.get_config("last_synced_block").is_some();
+            if has_stale_sync {
+                info!("Upgrading DB: no stored contract addresses but sync state exists — resetting");
+                true
+            } else {
+                // Truly first run — just store addresses
+                let _ = db.set_config("contract_marketplace", current_marketplace);
+                let _ = db.set_config("contract_registry", &config.ethereum.registry_address);
+                let _ = db.set_config("contract_staking", &config.ethereum.staking_address);
+                let _ = db.set_config("contract_token", &config.ethereum.ara_token_address);
+                false
+            }
         }
     };
 
