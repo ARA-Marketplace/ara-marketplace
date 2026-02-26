@@ -148,6 +148,9 @@ impl Database {
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_rewards_content_tx ON rewards(content_id, tx_hash)",
             [],
         );
+        // Migrate: old code inserted rewards with claimed=0 even for on-chain claims.
+        // In the per-receipt model every recorded reward is a completed claim.
+        let _ = self.conn.execute("UPDATE rewards SET claimed = 1 WHERE claimed = 0", []);
         // updated_at and categories are new columns — silently ignored if already present
         let _ = self
             .conn

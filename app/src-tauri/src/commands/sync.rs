@@ -319,20 +319,20 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
 
     if local_active as u64 > on_chain_count {
         warn!(
-            "Stale DB detected: {} local rows but only {} on-chain. Clearing and re-syncing.",
+            "Stale DB detected: {} local rows but only {} on-chain. Clearing content and re-syncing.",
             local_active, on_chain_count
         );
         let _ = db.conn().execute("DELETE FROM content", []);
         let _ = db.conn().execute("DELETE FROM purchases", []);
-        let _ = db.conn().execute("DELETE FROM rewards", []);
-        let _ = db.conn().execute("DELETE FROM delivery_receipts", []);
         let _ = db.conn().execute("DELETE FROM seeding", []);
         let _ = db.conn().execute("DELETE FROM content_seeders", []);
         let _ = db.conn().execute("DELETE FROM config WHERE key = 'last_synced_block'", []);
-        let _ = db.conn().execute("DELETE FROM config WHERE key = 'rewards_sync_block'", []);
+        // Note: delivery_receipts and rewards are NOT wiped here.
+        // Receipts arrive via gossip and cannot be recovered from the chain.
+        // Rewards sync handles its own checkpoint (rewards_sync_block) separately.
         drop(db);
 
-        info!("DB cleared — re-syncing from deployment block");
+        info!("Content tables cleared — re-syncing from deployment block");
         // Recurse once to do a clean sync from deployment_block.
         // The recursive call won't hit this branch again because the DB is empty.
         return Box::pin(sync_content_impl(state)).await;
