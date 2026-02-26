@@ -58,6 +58,10 @@ pub fn init(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::open(&config.storage.db_path)
         .unwrap_or_else(|_| Database::open_in_memory().expect("Failed to create in-memory DB"));
 
+    // Detect contract redeployment: if stored addresses differ from config,
+    // reset all sync state and clear stale data from old contracts.
+    detect_contract_change(&db, &config);
+
     // Startup cleanup: remove stale unconfirmed publish attempts (active=0).
     // These are leftovers from publishes that were never signed in MetaMask.
     cleanup_stale_rows(db.conn());
@@ -147,6 +151,54 @@ pub fn init(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Ara Marketplace initialized successfully");
     Ok(())
+}
+
+/// Detect when contracts have been redeployed to new addresses.
+/// Compares stored addresses in the DB config table against the current AppConfig.
+/// If any address changed, wipe sync checkpoints and stale on-chain data so the
+/// app re-indexes from the new deployment block.
+fn detect_contract_change(db: &Database, config: &AppConfig) {
+    let stored_marketplace = db.get_config("contract_marketplace");
+    let current_marketplace = &config.ethereum.marketplace_address;
+
+    let needs_reset = match &stored_marketplace {
+        Some(addr) => !addr.eq_ignore_ascii_case(current_marketplace),
+        None => {
+            // First run or pre-migration DB — store addresses without resetting
+            let _ = db.set_config("contract_marketplace", current_marketplace);
+            let _ = db.set_config("contract_registry", &config.ethereum.registry_address);
+            let _ = db.set_config("contract_staking", &config.ethereum.staking_address);
+            let _ = db.set_config("contract_token", &config.ethereum.ara_token_address);
+            false
+        }
+    };
+
+    if needs_reset {
+        info!(
+            "Contract addresses changed (old marketplace: {:?}, new: {}). Resetting sync state.",
+            stored_marketplace, current_marketplace
+        );
+
+        let conn = db.conn();
+        // Clear sync checkpoints so we re-index from deployment_block
+        let _ = conn.execute("DELETE FROM config WHERE key = 'last_synced_block'", []);
+        let _ = conn.execute("DELETE FROM config WHERE key = 'rewards_sync_block'", []);
+        // Clear stale on-chain data from old contracts
+        let _ = conn.execute("DELETE FROM content", []);
+        let _ = conn.execute("DELETE FROM purchases", []);
+        let _ = conn.execute("DELETE FROM rewards", []);
+        let _ = conn.execute("DELETE FROM delivery_receipts", []);
+        let _ = conn.execute("DELETE FROM seeding", []);
+        let _ = conn.execute("DELETE FROM content_seeders", []);
+
+        // Store new addresses
+        let _ = db.set_config("contract_marketplace", current_marketplace);
+        let _ = db.set_config("contract_registry", &config.ethereum.registry_address);
+        let _ = db.set_config("contract_staking", &config.ethereum.staking_address);
+        let _ = db.set_config("contract_token", &config.ethereum.ara_token_address);
+
+        info!("Sync state reset complete — will re-index from block {}", config.ethereum.deployment_block);
+    }
 }
 
 /// Remove stale unconfirmed rows (active=0) left over from publish attempts
