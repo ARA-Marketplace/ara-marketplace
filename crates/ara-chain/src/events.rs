@@ -5,7 +5,7 @@ use alloy::sol_types::SolEvent;
 use anyhow::Result;
 use tracing::info;
 
-use crate::contracts::{IAraStaking, IContentRegistry, IMarketplace};
+use crate::contracts::{IAraContent, IAraStaking, IMarketplace};
 
 /// Decoded event from the Ara Marketplace contracts.
 #[derive(Debug, Clone)]
@@ -45,6 +45,14 @@ pub enum AraEvent {
         total_amount: U256,
         receipt_count: U256,
     },
+    ResalePurchased {
+        content_id: FixedBytes<32>,
+        buyer: Address,
+        seller: Address,
+        price: U256,
+        royalty_amount: U256,
+        seeder_reward: U256,
+    },
     Staked {
         user: Address,
         amount: U256,
@@ -77,7 +85,7 @@ pub struct IndexedEvent {
 /// Fetches and decodes on-chain events from the Ara contracts.
 /// Returns typed events for the caller to store/process.
 pub struct EventIndexer<P> {
-    registry_address: Address,
+    content_token_address: Address,
     marketplace_address: Address,
     staking_address: Address,
     provider: P,
@@ -85,13 +93,13 @@ pub struct EventIndexer<P> {
 
 impl<P: Provider + Clone> EventIndexer<P> {
     pub fn new(
-        registry_address: Address,
+        content_token_address: Address,
         marketplace_address: Address,
         staking_address: Address,
         provider: P,
     ) -> Self {
         Self {
-            registry_address,
+            content_token_address,
             marketplace_address,
             staking_address,
             provider,
@@ -109,7 +117,7 @@ impl<P: Provider + Clone> EventIndexer<P> {
 
         let mut filter = Filter::new()
             .address(vec![
-                self.registry_address,
+                self.content_token_address,
                 self.marketplace_address,
                 self.staking_address,
             ])
@@ -153,7 +161,7 @@ impl<P: Provider + Clone> EventIndexer<P> {
         to_block: Option<u64>,
     ) -> Result<Vec<IndexedEvent>> {
         let mut filter = Filter::new()
-            .address(self.registry_address)
+            .address(self.content_token_address)
             .from_block(from_block);
 
         if let Some(to) = to_block {
@@ -220,8 +228,8 @@ impl<P: Provider + Clone> EventIndexer<P> {
 
     /// Try to decode a raw log into a typed AraEvent.
     fn decode_log(&self, log: &alloy::primitives::Log) -> Option<AraEvent> {
-        // Try ContentRegistry events
-        if let Ok(e) = IContentRegistry::ContentPublished::decode_log(log) {
+        // Try AraContent events
+        if let Ok(e) = IAraContent::ContentPublished::decode_log(log) {
             return Some(AraEvent::ContentPublished {
                 content_id: e.contentId,
                 creator: e.creator,
@@ -231,14 +239,14 @@ impl<P: Provider + Clone> EventIndexer<P> {
                 file_size: e.fileSize,
             });
         }
-        if let Ok(e) = IContentRegistry::ContentUpdated::decode_log(log) {
+        if let Ok(e) = IAraContent::ContentUpdated::decode_log(log) {
             return Some(AraEvent::ContentUpdated {
                 content_id: e.contentId,
                 new_price_wei: e.newPriceWei,
                 new_metadata_uri: e.newMetadataURI.clone(),
             });
         }
-        if let Ok(e) = IContentRegistry::ContentDelisted::decode_log(log) {
+        if let Ok(e) = IAraContent::ContentDelisted::decode_log(log) {
             return Some(AraEvent::ContentDelisted {
                 content_id: e.contentId,
             });
@@ -268,6 +276,16 @@ impl<P: Provider + Clone> EventIndexer<P> {
                 seeder: e.seeder,
                 total_amount: e.totalAmount,
                 receipt_count: e.receiptCount,
+            });
+        }
+        if let Ok(e) = IMarketplace::ResalePurchased::decode_log(log) {
+            return Some(AraEvent::ResalePurchased {
+                content_id: e.contentId,
+                buyer: e.buyer,
+                seller: e.seller,
+                price: e.price,
+                royalty_amount: e.royaltyAmount,
+                seeder_reward: e.seederReward,
             });
         }
 

@@ -2,13 +2,15 @@
 pragma solidity ^0.8.24;
 
 import {IAraToken} from "./interfaces/IAraToken.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 
 /// @title AraStaking
 /// @notice Manages ARA token staking for publishers and seeders.
 ///         Publishers must stake a minimum amount to list content.
 ///         Seeders allocate stake to specific content to earn rewards.
-contract AraStaking {
-    IAraToken public immutable araToken;
+contract AraStaking is Initializable, UUPSUpgradeable {
+    IAraToken public araToken;
 
     /// @notice General staked balance per user (not allocated to any content)
     mapping(address => uint256) public stakedBalance;
@@ -42,7 +44,13 @@ contract AraStaking {
         _;
     }
 
-    constructor(address _araToken, uint256 _publisherMinStake, uint256 _seederMinStake) {
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    /// @notice Initialize the contract (called once via proxy)
+    function initialize(address _araToken, uint256 _publisherMinStake, uint256 _seederMinStake) external initializer {
         araToken = IAraToken(_araToken);
         publisherMinStake = _publisherMinStake;
         seederMinStake = _seederMinStake;
@@ -74,7 +82,7 @@ contract AraStaking {
 
     /// @notice Allocate staked ARA from the general pool to a specific content.
     ///         This signals intent to seed that content and earn rewards.
-    /// @param contentId The content identifier (from ContentRegistry)
+    /// @param contentId The content identifier
     /// @param amount Amount to allocate from general stake to this content
     function stakeForContent(bytes32 contentId, uint256 amount) external {
         if (amount == 0) revert ZeroAmount();
@@ -126,14 +134,18 @@ contract AraStaking {
         seederMinStake = newMinStake;
     }
 
+    /// @notice Transfer ownership
+    function transferOwnership(address newOwner) external onlyOwner {
+        owner = newOwner;
+    }
+
     /// @dev Sum all content stakes for a user (expensive, for view only).
-    ///      In practice, isEligiblePublisher checks general + content stake total.
-    ///      This is a simplified version — a real implementation would need to
-    ///      track total content stake separately for gas efficiency.
     function _totalContentStake(address) internal pure returns (uint256) {
         // NOTE: Cannot iterate mappings in Solidity. For publisher eligibility,
         // we rely on general stakedBalance only. Content stake is separate and
         // used for per-content seeder eligibility.
         return 0;
     }
+
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 }

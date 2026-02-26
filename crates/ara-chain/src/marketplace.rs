@@ -6,7 +6,7 @@ use tracing::info;
 
 use crate::contracts::IMarketplace;
 
-/// Wrapper for Marketplace contract interactions (purchase, per-receipt reward claiming).
+/// Wrapper for Marketplace contract interactions (purchase, per-receipt reward claiming, resales).
 pub struct MarketplaceClient<P> {
     address: Address,
     provider: P,
@@ -66,5 +66,38 @@ impl<P> MarketplaceClient<P> {
     ) -> Vec<u8> {
         IMarketplace::claimDeliveryRewardsCall { claims }
             .abi_encode()
+    }
+
+    /// Encode calldata for `listForResale(contentId, price)`.
+    pub fn list_for_resale_calldata(
+        content_id: FixedBytes<32>,
+        price: U256,
+    ) -> Vec<u8> {
+        IMarketplace::listForResaleCall {
+            contentId: content_id,
+            price,
+        }
+        .abi_encode()
+    }
+
+    /// Encode calldata for `cancelListing(contentId)`.
+    pub fn cancel_listing_calldata(content_id: FixedBytes<32>) -> Vec<u8> {
+        IMarketplace::cancelListingCall {
+            contentId: content_id,
+        }
+        .abi_encode()
+    }
+
+    /// Encode calldata for `buyResale(contentId, seller)`.
+    /// The frontend sends this with the listing price as ETH value.
+    pub fn buy_resale_calldata(
+        content_id: FixedBytes<32>,
+        seller: Address,
+    ) -> Vec<u8> {
+        IMarketplace::buyResaleCall {
+            contentId: content_id,
+            seller,
+        }
+        .abi_encode()
     }
 }

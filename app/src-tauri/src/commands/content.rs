@@ -4,8 +4,8 @@ use crate::state::AppState;
 use alloy::primitives::{Address, FixedBytes, TxHash, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::sol_types::SolEvent;
-use ara_chain::contracts::IContentRegistry;
-use ara_chain::registry::RegistryClient;
+use ara_chain::contracts::IAraContent;
+use ara_chain::content_token::ContentTokenClient;
 use ara_p2p::content::ContentManager;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -231,6 +231,8 @@ pub async fn publish_content(
     description: String,
     content_type: String,
     price_eth: String,
+    max_supply: Option<u64>,
+    royalty_bps: Option<u32>,
     categories: Option<Vec<String>>,
     main_preview_image_path: Option<String>,
     main_preview_trailer_path: Option<String>,
@@ -401,11 +403,13 @@ pub async fn publish_content(
             }
         }
 
-        let calldata = RegistryClient::<()>::publish_content_calldata(
+        let calldata = ContentTokenClient::<()>::publish_content_calldata(
             content_hash_fixed,
             metadata_uri.clone(),
             price_wei,
             U256::from(file_size),
+            U256::from(max_supply.unwrap_or(0)),
+            royalty_bps.unwrap_or(1000) as u128, // default 10% royalty
         );
 
         vec![TransactionRequest {
@@ -554,7 +558,7 @@ async fn extract_content_id_from_receipt(
         .ok_or_else(|| format!("Transaction receipt not found for {tx_hash}"))?;
 
     for log in receipt.inner.logs() {
-        if let Ok(event) = IContentRegistry::ContentPublished::decode_log(&log.inner) {
+        if let Ok(event) = IAraContent::ContentPublished::decode_log(&log.inner) {
             let content_id = format!("0x{}", alloy::hex::encode(event.contentId.as_slice()));
             info!("Extracted contentId from event: {}", content_id);
             return Ok(content_id);
@@ -642,7 +646,7 @@ pub async fn update_content(
     let content_id_bytes = parse_content_hash_bytes(&content_id)?;
     let content_id_fixed = FixedBytes::from(content_id_bytes);
 
-    let calldata = RegistryClient::<()>::update_content_calldata(
+    let calldata = ContentTokenClient::<()>::update_content_calldata(
         content_id_fixed,
         price_wei,
         metadata_uri,
@@ -773,7 +777,7 @@ pub async fn update_content_file(
     let new_hash_fixed = FixedBytes::from(new_hash_bytes);
 
     let calldata =
-        RegistryClient::<()>::update_content_file_calldata(content_id_fixed, new_hash_fixed);
+        ContentTokenClient::<()>::update_content_file_calldata(content_id_fixed, new_hash_fixed);
 
     Ok(UpdateFileResult {
         new_content_hash: new_hash_hex,
@@ -1090,7 +1094,7 @@ pub async fn delist_content(
 
     let content_id_bytes = parse_content_hash_bytes(&content_id)?;
     let content_id_fixed = FixedBytes::from(content_id_bytes);
-    let calldata = RegistryClient::<()>::delist_content_calldata(content_id_fixed);
+    let calldata = ContentTokenClient::<()>::delist_content_calldata(content_id_fixed);
 
     Ok(vec![TransactionRequest {
         to: format!("{registry_addr:#x}"),

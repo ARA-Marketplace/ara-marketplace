@@ -80,6 +80,8 @@ export async function publishContent(params: {
   description: string;
   contentType: string;
   priceEth: string;
+  maxSupply?: number;
+  royaltyBps?: number;
   categories?: string[];
   mainPreviewImagePath?: string;
   mainPreviewTrailerPath?: string;

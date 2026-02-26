@@ -2,8 +2,9 @@
 pragma solidity ^0.8.24;
 
 import {Test, console} from "forge-std/Test.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {AraStaking} from "../../src/AraStaking.sol";
-import {ContentRegistry} from "../../src/ContentRegistry.sol";
+import {AraContent} from "../../src/AraContent.sol";
 import {Marketplace} from "../../src/Marketplace.sol";
 import {IAraToken} from "../../src/interfaces/IAraToken.sol";
 
@@ -14,21 +15,21 @@ contract FullFlowForkTest is Test {
     address constant ARA_TOKEN = 0xa92E7c82B11d10716aB534051B271D2f6aEf7Df5;
 
     AraStaking public staking;
-    ContentRegistry public registry;
+    AraContent public contentToken;
     Marketplace public marketplace;
 
     address public deployer;
     address public creator;
     address public seeder;
 
-    // Buyer with known private key (for EIP-712 receipt signing)
     uint256 public buyerPrivKey = 0xBEEF;
     address public buyer;
 
-    uint256 public constant PUBLISHER_MIN = 1000 ether; // 1000 ARA
-    uint256 public constant SEEDER_MIN = 100 ether; // 100 ARA
+    uint256 public constant PUBLISHER_MIN = 1000 ether;
+    uint256 public constant SEEDER_MIN = 100 ether;
     uint256 public constant CREATOR_SHARE_BPS = 8500;
-    uint256 public constant FILE_SIZE = 1_000_000; // 1 MB
+    uint256 public constant RESALE_REWARD_BPS = 500;
+    uint256 public constant FILE_SIZE = 1_000_000;
 
     function setUp() public {
         deployer = makeAddr("deployer");
@@ -37,20 +38,36 @@ contract FullFlowForkTest is Test {
         seeder = makeAddr("seeder");
 
         vm.startPrank(deployer);
-        staking = new AraStaking(ARA_TOKEN, PUBLISHER_MIN, SEEDER_MIN);
-        registry = new ContentRegistry(address(staking));
-        marketplace = new Marketplace(address(registry), address(staking), CREATOR_SHARE_BPS);
+
+        AraStaking stakingImpl = new AraStaking();
+        AraContent contentImpl = new AraContent();
+        Marketplace marketplaceImpl = new Marketplace();
+
+        ERC1967Proxy stakingProxy = new ERC1967Proxy(
+            address(stakingImpl), abi.encodeCall(AraStaking.initialize, (ARA_TOKEN, PUBLISHER_MIN, SEEDER_MIN))
+        );
+        staking = AraStaking(address(stakingProxy));
+
+        ERC1967Proxy contentProxy =
+            new ERC1967Proxy(address(contentImpl), abi.encodeCall(AraContent.initialize, (address(stakingProxy))));
+        contentToken = AraContent(address(contentProxy));
+
+        ERC1967Proxy marketplaceProxy = new ERC1967Proxy(
+            address(marketplaceImpl),
+            abi.encodeCall(
+                Marketplace.initialize,
+                (address(contentProxy), address(stakingProxy), CREATOR_SHARE_BPS, RESALE_REWARD_BPS)
+            )
+        );
+        marketplace = Marketplace(payable(address(marketplaceProxy)));
+
+        contentToken.setMinter(address(marketplace));
         vm.stopPrank();
 
-        // Fund buyer with ETH
         vm.deal(buyer, 10 ether);
-
-        // Use deal to give ARA tokens to test accounts
         deal(ARA_TOKEN, creator, 10_000 ether);
         deal(ARA_TOKEN, seeder, 5_000 ether);
     }
-
-    // --- EIP-712 helpers ---
 
     function _receiptHash(bytes32 cId, address seederAddr, uint256 bytesServedVal, uint256 ts)
         internal
@@ -73,18 +90,16 @@ contract FullFlowForkTest is Test {
     }
 
     function test_FullFlowOnFork() public {
-        // 1. Creator stakes ARA
         vm.startPrank(creator);
         IAraToken(ARA_TOKEN).approve(address(staking), PUBLISHER_MIN);
         staking.stake(PUBLISHER_MIN);
         assertTrue(staking.isEligiblePublisher(creator));
 
-        // 2. Creator publishes content (with file size)
         bytes32 contentHash = keccak256("my-awesome-game");
-        bytes32 contentId = registry.publishContent(contentHash, "ipfs://QmMetadata", 0.1 ether, FILE_SIZE);
+        bytes32 contentId =
+            contentToken.publishContent(contentHash, "ipfs://QmMetadata", 0.1 ether, FILE_SIZE, 0, 1000);
         vm.stopPrank();
 
-        // 3. Seeder stakes for the content
         vm.startPrank(seeder);
         IAraToken(ARA_TOKEN).approve(address(staking), SEEDER_MIN);
         staking.stake(SEEDER_MIN);
@@ -92,18 +107,16 @@ contract FullFlowForkTest is Test {
         assertTrue(staking.isEligibleSeeder(seeder, contentId));
         vm.stopPrank();
 
-        // 4. Buyer purchases content
         uint256 creatorBalBefore = creator.balance;
         vm.prank(buyer);
         marketplace.purchase{value: 0.1 ether}(contentId);
         assertTrue(marketplace.hasPurchased(contentId, buyer));
+        assertEq(contentToken.balanceOf(buyer, uint256(contentId)), 1);
 
-        // Verify payment split
         uint256 creatorPayment = (0.1 ether * 8500) / 10_000;
         assertEq(creator.balance - creatorBalBefore, creatorPayment);
         assertEq(marketplace.getBuyerReward(contentId, buyer), 0.1 ether - creatorPayment);
 
-        // 5. Seeder claims reward with buyer-signed delivery receipt
         uint256 ts = block.timestamp;
         bytes memory sig = _signReceipt(buyerPrivKey, contentId, seeder, FILE_SIZE, ts);
 

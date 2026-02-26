@@ -1,8 +1,8 @@
-use alloy::primitives::{address, fixed_bytes, Address, U256};
+use alloy::primitives::{address, fixed_bytes, Address, Uint, U256};
 use alloy::sol_types::SolCall;
-use ara_chain::contracts::{IAraStaking, IAraToken, IContentRegistry, IMarketplace};
+use ara_chain::contracts::{IAraStaking, IAraToken, IAraContent, IMarketplace};
+use ara_chain::content_token::ContentTokenClient;
 use ara_chain::marketplace::MarketplaceClient;
-use ara_chain::registry::RegistryClient;
 use ara_chain::staking::StakingClient;
 use ara_chain::token::TokenClient;
 
@@ -69,31 +69,40 @@ fn test_stake_for_content_calldata() {
     assert_eq!(decoded.amount, amount);
 }
 
-/// Verify publishContent calldata encoding (includes string parameter).
+/// Verify publishContent calldata encoding (includes string + maxSupply/royaltyBps params).
 #[test]
 fn test_publish_content_calldata() {
     let content_hash =
         fixed_bytes!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
     let metadata_uri = "ipfs://QmTest123".to_string();
     let price_wei = U256::from(100_000_000_000_000_000u128); // 0.1 ETH
+    let file_size = U256::from(1_000_000u64);
+    let max_supply = U256::from(100u64);
+    let royalty_bps = 1000u128; // 10%
 
-    let calldata = RegistryClient::<()>::publish_content_calldata(
+    let calldata = ContentTokenClient::<()>::publish_content_calldata(
         content_hash,
         metadata_uri.clone(),
         price_wei,
+        file_size,
+        max_supply,
+        royalty_bps,
     );
 
     // Verify selector
     assert_eq!(
         &calldata[..4],
-        IContentRegistry::publishContentCall::SELECTOR.as_slice()
+        IAraContent::publishContentCall::SELECTOR.as_slice()
     );
 
     // Verify round-trip
-    let decoded = IContentRegistry::publishContentCall::abi_decode(&calldata).unwrap();
+    let decoded = IAraContent::publishContentCall::abi_decode(&calldata).unwrap();
     assert_eq!(decoded.contentHash, content_hash);
     assert_eq!(decoded.metadataURI, metadata_uri);
     assert_eq!(decoded.priceWei, price_wei);
+    assert_eq!(decoded.fileSize, file_size);
+    assert_eq!(decoded.maxSupply, max_supply);
+    assert_eq!(decoded.royaltyBps, Uint::<96, 2>::from(royalty_bps));
 }
 
 /// Verify purchase calldata encoding.
@@ -107,35 +116,30 @@ fn test_purchase_calldata() {
     assert_eq!(decoded.contentId, content_id);
 }
 
-/// Verify claimRewards calldata encoding (no parameters).
+/// Verify listForResale calldata encoding.
 #[test]
-fn test_claim_rewards_calldata() {
-    let calldata = MarketplaceClient::<()>::claim_rewards_calldata();
-    // claimRewards() has no parameters, just a 4-byte selector
-    assert_eq!(calldata.len(), 4);
-}
-
-/// Verify distributeRewards calldata encoding (complex: arrays).
-#[test]
-fn test_distribute_rewards_calldata() {
+fn test_list_for_resale_calldata() {
     let content_id =
         fixed_bytes!("1111111111111111111111111111111111111111111111111111111111111111");
-    let seeders = vec![
-        address!("0000000000000000000000000000000000000001"),
-        address!("0000000000000000000000000000000000000002"),
-    ];
-    let weights = vec![U256::from(70u64), U256::from(30u64)];
+    let price = U256::from(50_000_000_000_000_000u128); // 0.05 ETH
 
-    let calldata = MarketplaceClient::<()>::distribute_rewards_calldata(
-        content_id,
-        seeders.clone(),
-        weights.clone(),
-    );
-
-    let decoded = IMarketplace::distributeRewardsCall::abi_decode(&calldata).unwrap();
+    let calldata = MarketplaceClient::<()>::list_for_resale_calldata(content_id, price);
+    let decoded = IMarketplace::listForResaleCall::abi_decode(&calldata).unwrap();
     assert_eq!(decoded.contentId, content_id);
-    assert_eq!(decoded.seeders, seeders);
-    assert_eq!(decoded.weights, weights);
+    assert_eq!(decoded.price, price);
+}
+
+/// Verify buyResale calldata encoding.
+#[test]
+fn test_buy_resale_calldata() {
+    let content_id =
+        fixed_bytes!("2222222222222222222222222222222222222222222222222222222222222222");
+    let seller = address!("0000000000000000000000000000000000000099");
+
+    let calldata = MarketplaceClient::<()>::buy_resale_calldata(content_id, seller);
+    let decoded = IMarketplace::buyResaleCall::abi_decode(&calldata).unwrap();
+    assert_eq!(decoded.contentId, content_id);
+    assert_eq!(decoded.seller, seller);
 }
 
 /// Verify ContractAddresses with real ARA token address.

@@ -32,8 +32,8 @@ sol! {
     }
 
     #[sol(rpc)]
-    interface IContentRegistry {
-        function publishContent(bytes32 contentHash, string metadataURI, uint256 priceWei, uint256 fileSize) external returns (bytes32 contentId);
+    interface IAraContent {
+        function publishContent(bytes32 contentHash, string metadataURI, uint256 priceWei, uint256 fileSize, uint256 maxSupply, uint96 royaltyBps) external returns (bytes32 contentId);
         function updateContent(bytes32 contentId, uint256 newPriceWei, string newMetadataURI) external;
         function updateContentFile(bytes32 contentId, bytes32 newContentHash) external;
         function updateFileSize(bytes32 contentId, uint256 newFileSize) external;
@@ -44,8 +44,11 @@ sol! {
         function getCreator(bytes32 contentId) external view returns (address);
         function getFileSize(bytes32 contentId) external view returns (uint256);
         function isActive(bytes32 contentId) external view returns (bool);
+        function getMaxSupply(bytes32 contentId) external view returns (uint256);
+        function getTotalMinted(bytes32 contentId) external view returns (uint256);
+        function balanceOf(address account, uint256 id) external view returns (uint256);
 
-        event ContentPublished(bytes32 indexed contentId, address indexed creator, bytes32 contentHash, string metadataURI, uint256 priceWei, uint256 fileSize);
+        event ContentPublished(bytes32 indexed contentId, address indexed creator, bytes32 contentHash, string metadataURI, uint256 priceWei, uint256 fileSize, uint256 maxSupply);
         event ContentUpdated(bytes32 indexed contentId, uint256 newPriceWei, string newMetadataURI);
         event ContentFileUpdated(bytes32 indexed contentId, bytes32 oldHash, bytes32 newHash, address indexed creator);
         event ContentDelisted(bytes32 indexed contentId);
@@ -69,9 +72,15 @@ sol! {
         function buyerRewardPaid(bytes32 contentId, address buyer) external view returns (uint256);
         function getBuyerReward(bytes32 contentId, address buyer) external view returns (uint256);
         function totalRewardsClaimed() external view returns (uint256);
+        function listForResale(bytes32 contentId, uint256 price) external;
+        function cancelListing(bytes32 contentId) external;
+        function buyResale(bytes32 contentId, address seller) external payable;
 
         event ContentPurchased(bytes32 indexed contentId, address indexed buyer, uint256 pricePaid, uint256 creatorPayment, uint256 rewardAmount);
         event DeliveryRewardClaimed(bytes32 indexed contentId, address indexed seeder, address buyer, uint256 amount, uint256 bytesServed);
         event RewardsClaimed(address indexed seeder, uint256 totalAmount, uint256 receiptCount);
+        event ContentListed(bytes32 indexed contentId, address indexed seller, uint256 price);
+        event ListingCancelled(bytes32 indexed contentId, address indexed seller);
+        event ResalePurchased(bytes32 indexed contentId, address indexed buyer, address indexed seller, uint256 price, uint256 royaltyAmount, uint256 seederReward);
     }
 }

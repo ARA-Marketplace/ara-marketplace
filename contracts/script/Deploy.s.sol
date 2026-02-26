@@ -2,12 +2,13 @@
 pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {AraStaking} from "../src/AraStaking.sol";
-import {ContentRegistry} from "../src/ContentRegistry.sol";
+import {AraContent} from "../src/AraContent.sol";
 import {Marketplace} from "../src/Marketplace.sol";
 import {MockARAToken} from "../src/MockARAToken.sol";
 
-/// @notice Deploy all Ara Marketplace contracts to any network.
+/// @notice Deploy all Ara Marketplace contracts with UUPS proxies.
 /// Usage:
 ///   Sepolia: forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast --verify
 ///   Mainnet: forge script script/Deploy.s.sol --rpc-url $ETH_RPC_URL --broadcast --verify
@@ -16,6 +17,7 @@ contract DeployScript is Script {
     address constant ARA_TOKEN_MAINNET = 0xa92E7c82B11d10716aB534051B271D2f6aEf7Df5;
 
     uint256 constant CREATOR_SHARE_BPS = 8500; // 85% to creator
+    uint256 constant RESALE_REWARD_BPS = 500; // 5% of resale price to seeders
 
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
@@ -25,7 +27,7 @@ contract DeployScript is Script {
 
         if (block.chainid == 1) {
             // Mainnet: use existing ARA token, production stakes
-            _deploy(ARA_TOKEN_MAINNET, 1000 ether, 100 ether, CREATOR_SHARE_BPS, deployer);
+            _deploy(ARA_TOKEN_MAINNET, 1000 ether, 100 ether, CREATOR_SHARE_BPS, RESALE_REWARD_BPS);
         } else {
             // Testnet: deploy mintable mock token, low stakes for easy testing
             MockARAToken mock = new MockARAToken(deployer);
@@ -36,7 +38,7 @@ contract DeployScript is Script {
             console.log("Minted 10,000,000 tARA to deployer:", deployer);
 
             // 10 tARA to publish, 1 tARA to seed
-            _deploy(address(mock), 10 ether, 1 ether, CREATOR_SHARE_BPS, deployer);
+            _deploy(address(mock), 10 ether, 1 ether, CREATOR_SHARE_BPS, RESALE_REWARD_BPS);
         }
 
         vm.stopBroadcast();
@@ -47,28 +49,58 @@ contract DeployScript is Script {
         uint256 publisherMinStake,
         uint256 seederMinStake,
         uint256 creatorShareBps,
-        address /*deployer*/
+        uint256 resaleRewardBps
     ) internal {
-        AraStaking staking = new AraStaking(araToken, publisherMinStake, seederMinStake);
-        ContentRegistry registry = new ContentRegistry(address(staking));
-        Marketplace marketplace = new Marketplace(address(registry), address(staking), creatorShareBps);
+        // 1. Deploy implementation contracts
+        AraStaking stakingImpl = new AraStaking();
+        AraContent contentImpl = new AraContent();
+        Marketplace marketplaceImpl = new Marketplace();
+
+        console.log("Implementations deployed:");
+        console.log("  AraStaking impl:  ", address(stakingImpl));
+        console.log("  AraContent impl:  ", address(contentImpl));
+        console.log("  Marketplace impl: ", address(marketplaceImpl));
+
+        // 2. Deploy proxies with initialize() calldata
+        ERC1967Proxy stakingProxy = new ERC1967Proxy(
+            address(stakingImpl),
+            abi.encodeCall(AraStaking.initialize, (araToken, publisherMinStake, seederMinStake))
+        );
+
+        ERC1967Proxy contentProxy = new ERC1967Proxy(
+            address(contentImpl), abi.encodeCall(AraContent.initialize, (address(stakingProxy)))
+        );
+
+        ERC1967Proxy marketplaceProxy = new ERC1967Proxy(
+            address(marketplaceImpl),
+            abi.encodeCall(
+                Marketplace.initialize,
+                (address(contentProxy), address(stakingProxy), creatorShareBps, resaleRewardBps)
+            )
+        );
+
+        // 3. Set marketplace as authorized minter on content token
+        AraContent(address(contentProxy)).setMinter(address(marketplaceProxy));
 
         console.log("");
-        console.log("=== Deployment Summary ===");
+        console.log("=== Deployment Summary (UUPS Proxies) ===");
         console.log("Chain ID:            ", block.chainid);
         console.log("ARA Token:           ", araToken);
-        console.log("AraStaking:          ", address(staking));
-        console.log("ContentRegistry:     ", address(registry));
-        console.log("Marketplace:         ", address(marketplace));
+        console.log("AraStaking (proxy):  ", address(stakingProxy));
+        console.log("AraContent (proxy):  ", address(contentProxy));
+        console.log("Marketplace (proxy): ", address(marketplaceProxy));
         console.log("Creator Share:        85%");
+        console.log("Resale Seeder Share:  5%");
         console.log("Publisher Min Stake: ", publisherMinStake / 1 ether, "ARA");
         console.log("Seeder Min Stake:    ", seederMinStake / 1 ether, "ARA");
         console.log("");
         console.log("=== Paste into AppConfig::default() ===");
         console.log("chain_id:             11155111");
         console.log("ara_token_address:   ", araToken);
-        console.log("staking_address:     ", address(staking));
-        console.log("registry_address:    ", address(registry));
-        console.log("marketplace_address: ", address(marketplace));
+        console.log("staking_address:     ", address(stakingProxy));
+        console.log("registry_address:    ", address(contentProxy));
+        console.log("marketplace_address: ", address(marketplaceProxy));
+        console.log("");
+        console.log("NOTE: Config uses PROXY addresses (permanent). Implementation addresses are irrelevant.");
     }
 }

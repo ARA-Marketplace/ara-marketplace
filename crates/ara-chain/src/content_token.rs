@@ -1,18 +1,18 @@
-use alloy::primitives::{Address, FixedBytes, U256};
+use alloy::primitives::{Address, FixedBytes, Uint, U256};
 use alloy::providers::Provider;
 use alloy::sol_types::SolCall;
 use anyhow::Result;
 
-use crate::contracts::IContentRegistry;
+use crate::contracts::IAraContent;
 
-/// Wrapper for ContentRegistry contract interactions.
+/// Wrapper for AraContent (ERC-1155) contract interactions.
 /// Handles content publishing, updates, and queries.
-pub struct RegistryClient<P> {
+pub struct ContentTokenClient<P> {
     address: Address,
     provider: P,
 }
 
-impl<P: Provider + Clone> RegistryClient<P> {
+impl<P: Provider + Clone> ContentTokenClient<P> {
     pub fn new(address: Address, provider: P) -> Self {
         Self { address, provider }
     }
@@ -21,7 +21,7 @@ impl<P: Provider + Clone> RegistryClient<P> {
 
     /// Get the total number of published content items.
     pub async fn get_content_count(&self) -> Result<U256> {
-        let contract = IContentRegistry::new(self.address, &self.provider);
+        let contract = IAraContent::new(self.address, &self.provider);
         let result = contract.getContentCount().call().await?;
         Ok(result)
     }
@@ -31,52 +31,56 @@ impl<P: Provider + Clone> RegistryClient<P> {
         &self,
         content_id: FixedBytes<32>,
     ) -> Result<FixedBytes<32>> {
-        let contract = IContentRegistry::new(self.address, &self.provider);
+        let contract = IAraContent::new(self.address, &self.provider);
         let result = contract.getContentHash(content_id).call().await?;
         Ok(result)
     }
 
     /// Get the price (in wei) for a content item.
     pub async fn get_price(&self, content_id: FixedBytes<32>) -> Result<U256> {
-        let contract = IContentRegistry::new(self.address, &self.provider);
+        let contract = IAraContent::new(self.address, &self.provider);
         let result = contract.getPrice(content_id).call().await?;
         Ok(result)
     }
 
     /// Get the creator address for a content item.
     pub async fn get_creator(&self, content_id: FixedBytes<32>) -> Result<Address> {
-        let contract = IContentRegistry::new(self.address, &self.provider);
+        let contract = IAraContent::new(self.address, &self.provider);
         let result = contract.getCreator(content_id).call().await?;
         Ok(result)
     }
 
     /// Check if a content item is currently active (not delisted).
     pub async fn is_active(&self, content_id: FixedBytes<32>) -> Result<bool> {
-        let contract = IContentRegistry::new(self.address, &self.provider);
+        let contract = IAraContent::new(self.address, &self.provider);
         let result = contract.isActive(content_id).call().await?;
         Ok(result)
     }
 
-    /// Get the registry contract address.
+    /// Get the content token contract address.
     pub fn address(&self) -> Address {
         self.address
     }
 }
 
 // Calldata encoding — no provider needed.
-impl<P> RegistryClient<P> {
-    /// Encode calldata for `publishContent(contentHash, metadataURI, priceWei, fileSize)`.
+impl<P> ContentTokenClient<P> {
+    /// Encode calldata for `publishContent(contentHash, metadataURI, priceWei, fileSize, maxSupply, royaltyBps)`.
     pub fn publish_content_calldata(
         content_hash: FixedBytes<32>,
         metadata_uri: String,
         price_wei: U256,
         file_size: U256,
+        max_supply: U256,
+        royalty_bps: u128,
     ) -> Vec<u8> {
-        IContentRegistry::publishContentCall {
+        IAraContent::publishContentCall {
             contentHash: content_hash,
             metadataURI: metadata_uri,
             priceWei: price_wei,
             fileSize: file_size,
+            maxSupply: max_supply,
+            royaltyBps: Uint::<96, 2>::from(royalty_bps),
         }
         .abi_encode()
     }
@@ -87,7 +91,7 @@ impl<P> RegistryClient<P> {
         new_price_wei: U256,
         new_metadata_uri: String,
     ) -> Vec<u8> {
-        IContentRegistry::updateContentCall {
+        IAraContent::updateContentCall {
             contentId: content_id,
             newPriceWei: new_price_wei,
             newMetadataURI: new_metadata_uri,
@@ -101,7 +105,7 @@ impl<P> RegistryClient<P> {
         content_id: FixedBytes<32>,
         new_content_hash: FixedBytes<32>,
     ) -> Vec<u8> {
-        IContentRegistry::updateContentFileCall {
+        IAraContent::updateContentFileCall {
             contentId: content_id,
             newContentHash: new_content_hash,
         }
@@ -110,7 +114,7 @@ impl<P> RegistryClient<P> {
 
     /// Encode calldata for `delistContent(contentId)`.
     pub fn delist_content_calldata(content_id: FixedBytes<32>) -> Vec<u8> {
-        IContentRegistry::delistContentCall {
+        IAraContent::delistContentCall {
             contentId: content_id,
         }
         .abi_encode()

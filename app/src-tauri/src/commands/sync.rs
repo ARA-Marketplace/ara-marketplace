@@ -474,6 +474,35 @@ pub async fn sync_rewards_impl(state: &AppState) -> Result<RewardSyncResult, Str
                     }
                 }
             }
+            AraEvent::ResalePurchased {
+                content_id,
+                buyer,
+                price,
+                ..
+            } => {
+                let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
+
+                // Track as buyer (resale purchases are also purchases from reward perspective)
+                if *buyer == wallet_addr {
+                    let buyer_str = format!("{buyer:#x}");
+                    if let Err(e) = db.upsert_purchase(
+                        &cid,
+                        &buyer_str,
+                        &price.to_string(),
+                        &tx_hash_str,
+                        approx_timestamp,
+                    ) {
+                        warn!("Failed to upsert resale purchase {}: {}", cid, e);
+                    } else {
+                        purchases_found += 1;
+                    }
+                }
+                // Also count if someone resold our content
+                else if my_content_ids.contains(&cid) {
+                    purchases_found += 1;
+                    info!("Detected resale of our content {}: buyer={}", cid, buyer);
+                }
+            }
             AraEvent::RewardsClaimed { seeder, .. } => {
                 // Aggregate event — skip recording to avoid double-counting.
                 // Individual DeliveryRewardClaimed events above already capture

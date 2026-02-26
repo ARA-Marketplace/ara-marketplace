@@ -2,9 +2,9 @@ use alloy::primitives::{Address, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use anyhow::Result;
 
+use crate::content_token::ContentTokenClient;
 use crate::events::EventIndexer;
 use crate::marketplace::MarketplaceClient;
-use crate::registry::RegistryClient;
 use crate::staking::StakingClient;
 use crate::token::TokenClient;
 
@@ -23,7 +23,7 @@ pub struct AraChain<P> {
     provider: P,
     pub token: TokenClient<P>,
     pub staking: StakingClient<P>,
-    pub registry: RegistryClient<P>,
+    pub registry: ContentTokenClient<P>,
     pub marketplace: MarketplaceClient<P>,
     pub events: EventIndexer<P>,
 }
@@ -33,7 +33,7 @@ impl<P: Provider + Clone> AraChain<P> {
         Self {
             token: TokenClient::new(addresses.ara_token, provider.clone()),
             staking: StakingClient::new(addresses.staking, provider.clone()),
-            registry: RegistryClient::new(addresses.registry, provider.clone()),
+            registry: ContentTokenClient::new(addresses.registry, provider.clone()),
             marketplace: MarketplaceClient::new(addresses.marketplace, provider.clone()),
             events: EventIndexer::new(
                 addresses.registry,
