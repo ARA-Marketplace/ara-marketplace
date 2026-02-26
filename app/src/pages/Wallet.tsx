@@ -346,7 +346,7 @@ function Wallet() {
               Lifetime Earnings
             </p>
             <p className="text-[10px] text-slate-400 dark:text-slate-600 mb-2">
-              Total rewards collected
+              Total rewards earned
             </p>
             <p className="text-2xl font-bold text-slate-900 dark:text-slate-100">
               {pipeline?.lifetime_earnings_eth ?? rewardHistory?.total_earned_eth ?? "0.0"} <span className="text-sm font-normal text-slate-500">ETH</span>

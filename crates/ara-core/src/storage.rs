@@ -151,6 +151,13 @@ impl Database {
         // Migrate: old code inserted rewards with claimed=0 even for on-chain claims.
         // In the per-receipt model every recorded reward is a completed claim.
         let _ = self.conn.execute("UPDATE rewards SET claimed = 1 WHERE claimed = 0", []);
+        // Reset rewards sync checkpoint so the background sync re-processes claim events
+        // with the corrected index and claimed flag. Idempotent: only fires once because
+        // subsequent syncs will re-insert rows that INSERT OR IGNORE will skip.
+        let _ = self.conn.execute(
+            "DELETE FROM config WHERE key = 'rewards_sync_block'",
+            [],
+        );
         // updated_at and categories are new columns — silently ignored if already present
         let _ = self
             .conn
