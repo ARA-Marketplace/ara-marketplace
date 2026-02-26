@@ -10,7 +10,6 @@ pub struct Balances {
     pub eth_balance: String,
     pub ara_balance: String,
     pub ara_staked: String,
-    pub claimable_rewards: String,
 }
 
 #[tauri::command]
@@ -71,26 +70,15 @@ pub async fn get_balances(state: State<'_, AppState>) -> Result<Balances, String
             U256::ZERO
         });
 
-    // Query claimable rewards (may fail if marketplace not deployed)
-    let claimable_rewards = chain
-        .marketplace
-        .claimable_rewards(address)
-        .await
-        .unwrap_or_else(|e| {
-            warn!("Rewards query failed (contract may not be deployed): {e}");
-            U256::ZERO
-        });
-
     info!(
-        "Balances for {}: ETH={}, ARA={}, staked={}, rewards={}",
-        address_str, eth_balance, ara_balance, ara_staked, claimable_rewards
+        "Balances for {}: ETH={}, ARA={}, staked={}",
+        address_str, eth_balance, ara_balance, ara_staked
     );
 
     Ok(Balances {
         eth_balance: format_wei(eth_balance),
         ara_balance: format_wei(ara_balance),
         ara_staked: format_wei(ara_staked),
-        claimable_rewards: format_wei(claimable_rewards),
     })
 }
 

@@ -22,6 +22,9 @@ contract ContentRegistry {
     /// @notice contentId => Content
     mapping(bytes32 => Content) public contents;
 
+    /// @notice contentId => file size in bytes (for proportional reward calculation)
+    mapping(bytes32 => uint256) public fileSizes;
+
     /// @notice creator => list of contentIds
     mapping(address => bytes32[]) public creatorContents;
 
@@ -36,7 +39,8 @@ contract ContentRegistry {
         address indexed creator,
         bytes32 contentHash,
         string metadataURI,
-        uint256 priceWei
+        uint256 priceWei,
+        uint256 fileSize
     );
     event ContentUpdated(bytes32 indexed contentId, uint256 newPriceWei, string newMetadataURI);
     event ContentFileUpdated(bytes32 indexed contentId, bytes32 oldHash, bytes32 newHash, address indexed creator);
@@ -47,6 +51,7 @@ contract ContentRegistry {
     error NotContentCreator();
     error ContentNotActive();
     error ZeroPrice();
+    error ZeroFileSize();
 
     constructor(address _staking) {
         staking = AraStaking(_staking);
@@ -56,13 +61,15 @@ contract ContentRegistry {
     /// @param contentHash BLAKE3 hash of the content blob (from iroh)
     /// @param metadataURI URI pointing to content metadata JSON
     /// @param priceWei Price in wei that buyers must pay
+    /// @param fileSize Size of the content file in bytes
     /// @return contentId The unique identifier for this content
-    function publishContent(bytes32 contentHash, string calldata metadataURI, uint256 priceWei)
+    function publishContent(bytes32 contentHash, string calldata metadataURI, uint256 priceWei, uint256 fileSize)
         external
         returns (bytes32 contentId)
     {
         if (!staking.isEligiblePublisher(msg.sender)) revert InsufficientStake();
         if (priceWei == 0) revert ZeroPrice();
+        if (fileSize == 0) revert ZeroFileSize();
 
         uint256 nonce = publisherNonce[msg.sender];
         contentId = keccak256(abi.encodePacked(contentHash, msg.sender, nonce));
@@ -78,10 +85,12 @@ contract ContentRegistry {
             active: true
         });
 
+        fileSizes[contentId] = fileSize;
+
         creatorContents[msg.sender].push(contentId);
         allContentIds.push(contentId);
 
-        emit ContentPublished(contentId, msg.sender, contentHash, metadataURI, priceWei);
+        emit ContentPublished(contentId, msg.sender, contentHash, metadataURI, priceWei, fileSize);
     }
 
     /// @notice Update content metadata and/or price. Only the creator can update.
@@ -106,6 +115,15 @@ contract ContentRegistry {
         bytes32 oldHash = c.contentHash;
         c.contentHash = newContentHash;
         emit ContentFileUpdated(contentId, oldHash, newContentHash, msg.sender);
+    }
+
+    /// @notice Update file size for existing content (e.g. after file update). Creator only.
+    function updateFileSize(bytes32 contentId, uint256 newFileSize) external {
+        Content storage c = contents[contentId];
+        if (c.creator != msg.sender) revert NotContentCreator();
+        if (!c.active) revert ContentNotActive();
+        if (newFileSize == 0) revert ZeroFileSize();
+        fileSizes[contentId] = newFileSize;
     }
 
     /// @notice Delist content from the marketplace. Only the creator can delist.
@@ -144,5 +162,10 @@ contract ContentRegistry {
     /// @notice Check if content is active (listed)
     function isActive(bytes32 contentId) external view returns (bool) {
         return contents[contentId].active;
+    }
+
+    /// @notice Get a content's file size in bytes
+    function getFileSize(bytes32 contentId) external view returns (uint256) {
+        return fileSizes[contentId];
     }
 }

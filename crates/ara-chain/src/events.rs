@@ -16,6 +16,7 @@ pub enum AraEvent {
         content_hash: FixedBytes<32>,
         metadata_uri: String,
         price_wei: U256,
+        file_size: U256,
     },
     ContentUpdated {
         content_id: FixedBytes<32>,
@@ -30,17 +31,19 @@ pub enum AraEvent {
         buyer: Address,
         price_paid: U256,
         creator_payment: U256,
-        pool_contribution: U256,
+        reward_amount: U256,
     },
-    RewardsDistributed {
+    DeliveryRewardClaimed {
         content_id: FixedBytes<32>,
-        seeders: Vec<Address>,
-        amounts: Vec<U256>,
-        total_amount: U256,
-    },
-    RewardClaimed {
         seeder: Address,
+        buyer: Address,
         amount: U256,
+        bytes_served: U256,
+    },
+    RewardsClaimed {
+        seeder: Address,
+        total_amount: U256,
+        receipt_count: U256,
     },
     Staked {
         user: Address,
@@ -225,6 +228,7 @@ impl<P: Provider + Clone> EventIndexer<P> {
                 content_hash: e.contentHash,
                 metadata_uri: e.metadataURI.clone(),
                 price_wei: e.priceWei,
+                file_size: e.fileSize,
             });
         }
         if let Ok(e) = IContentRegistry::ContentUpdated::decode_log(log) {
@@ -247,21 +251,23 @@ impl<P: Provider + Clone> EventIndexer<P> {
                 buyer: e.buyer,
                 price_paid: e.pricePaid,
                 creator_payment: e.creatorPayment,
-                pool_contribution: e.poolContribution,
+                reward_amount: e.rewardAmount,
             });
         }
-        if let Ok(e) = IMarketplace::RewardsDistributed::decode_log(log) {
-            return Some(AraEvent::RewardsDistributed {
+        if let Ok(e) = IMarketplace::DeliveryRewardClaimed::decode_log(log) {
+            return Some(AraEvent::DeliveryRewardClaimed {
                 content_id: e.contentId,
-                seeders: e.seeders.clone(),
-                amounts: e.amounts.clone(),
-                total_amount: e.totalAmount,
+                seeder: e.seeder,
+                buyer: e.buyer,
+                amount: e.amount,
+                bytes_served: e.bytesServed,
             });
         }
-        if let Ok(e) = IMarketplace::RewardClaimed::decode_log(log) {
-            return Some(AraEvent::RewardClaimed {
+        if let Ok(e) = IMarketplace::RewardsClaimed::decode_log(log) {
+            return Some(AraEvent::RewardsClaimed {
                 seeder: e.seeder,
-                amount: e.amount,
+                total_amount: e.totalAmount,
+                receipt_count: e.receiptCount,
             });
         }
 

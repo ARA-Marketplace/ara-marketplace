@@ -307,6 +307,8 @@ function ContentDetail() {
       const marketplaceAddr = await getMarketplaceAddress();
       if (!marketplaceAddr) throw new Error("Marketplace not configured");
       const timestamp = Math.floor(Date.now() / 1000);
+      // bytesServed = full file size (single-seeder delivery for now)
+      const bytesServed = meta?.file_size ?? 0;
       const typedData = {
         types: {
           EIP712Domain: [
@@ -318,6 +320,7 @@ function ContentDetail() {
           DeliveryReceipt: [
             { name: "contentId", type: "bytes32" },
             { name: "seederEthAddress", type: "address" },
+            { name: "bytesServed", type: "uint256" },
             { name: "timestamp", type: "uint256" },
           ],
         },
@@ -331,7 +334,8 @@ function ContentDetail() {
         message: {
           contentId: content.content_id,
           seederEthAddress: content.creator,
-          timestamp,
+          bytesServed: String(bytesServed),
+          timestamp: String(timestamp),
         },
       };
       const signature = await (walletProvider as {
@@ -346,6 +350,7 @@ function ContentDetail() {
         buyerEthAddress: address,
         signature,
         timestamp,
+        bytesServed,
       });
       setReceiptStep("done");
     } catch {

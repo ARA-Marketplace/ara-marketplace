@@ -65,16 +65,18 @@ impl<P: Provider + Clone> RegistryClient<P> {
 
 // Calldata encoding — no provider needed.
 impl<P> RegistryClient<P> {
-    /// Encode calldata for `publishContent(contentHash, metadataURI, priceWei)`.
+    /// Encode calldata for `publishContent(contentHash, metadataURI, priceWei, fileSize)`.
     pub fn publish_content_calldata(
         content_hash: FixedBytes<32>,
         metadata_uri: String,
         price_wei: U256,
+        file_size: U256,
     ) -> Vec<u8> {
         IContentRegistry::publishContentCall {
             contentHash: content_hash,
             metadataURI: metadata_uri,
             priceWei: price_wei,
+            fileSize: file_size,
         }
         .abi_encode()
     }

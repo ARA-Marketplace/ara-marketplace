@@ -61,10 +61,10 @@ Two-step pattern used throughout:
 
 | Contract | Address | Purpose |
 |----------|---------|---------|
-| MockARAToken | `0xE8486e01aA1Da716448a3893792837AF9f1bBFa2` | ERC-20 test token (mintable, 18 decimals) |
-| AraStaking | `0x119554583bDB704CdA18f674054C2C7EF4C2A60c` | Stake ARA to publish (10 ARA min) or seed (1 ARA/content) |
-| ContentRegistry | `0x2ECb7C21A99BcB52CD202a94484C935b31cB0Ea0` | Register content on-chain (nonce-based IDs) |
-| Marketplace | `0xA4bBCCBFc6F7C12ad80c45C0aed386289636Bb6E` | ETH purchases, 85% to creator, 15% reward pool |
+| MockARAToken | `0x40A13EF876e3dCf968b4dC372a92ADdCa95b8A3b` | ERC-20 test token (mintable, 18 decimals) |
+| AraStaking | `0xCbb3958d9D6DaAc22518C90CA663CE027AD0D39F` | Stake ARA to publish (10 ARA min) or seed (1 ARA/content) |
+| ContentRegistry | `0x4db94B57425189EEC4C8674Fa5E8f4AC24105b32` | Register content on-chain (nonce-based IDs, fileSize tracking) |
+| Marketplace | `0x8Fe6db4d530538F1f419a8FD39D3C09eE18F1Cc7` | ETH purchases, 85% to creator, 15% per-receipt seeder rewards |
 
 ### Reward System (Two-Tier Distribution)
 

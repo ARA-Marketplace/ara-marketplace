@@ -1,7 +1,7 @@
 use crate::commands::types::{format_wei, hex_encode, parse_token_amount, TransactionRequest};
 use crate::gossip_actor::GossipCmd;
 use crate::state::AppState;
-use alloy::primitives::{Address, FixedBytes, TxHash};
+use alloy::primitives::{Address, FixedBytes, TxHash, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::sol_types::SolEvent;
 use ara_chain::contracts::IContentRegistry;
@@ -405,6 +405,7 @@ pub async fn publish_content(
             content_hash_fixed,
             metadata_uri.clone(),
             price_wei,
+            U256::from(file_size),
         );
 
         vec![TransactionRequest {

@@ -11,6 +11,8 @@ pub struct DeliveryReceipt {
     /// Hex-encoded 65-byte EIP-712 ECDSA signature
     pub signature: String,
     pub timestamp: i64,
+    /// Number of bytes this seeder delivered (for proportional reward claiming)
+    pub bytes_served: u64,
 }
 
 /// A reward event row (distribution or claim) from the local DB cache.
@@ -114,6 +116,7 @@ impl Database {
                 buyer_eth_address TEXT NOT NULL,
                 signature TEXT NOT NULL,
                 timestamp INTEGER NOT NULL,
+                bytes_served INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (content_id, seeder_eth_address, buyer_eth_address)
             );
             ",
@@ -150,6 +153,10 @@ impl Database {
         let _ = self
             .conn
             .execute("ALTER TABLE content ADD COLUMN categories TEXT", []);
+        // bytes_served column for delivery receipts — silently ignored if already present
+        let _ = self
+            .conn
+            .execute("ALTER TABLE delivery_receipts ADD COLUMN bytes_served INTEGER NOT NULL DEFAULT 0", []);
 
         Ok(())
     }
@@ -201,19 +208,20 @@ impl Database {
         buyer_eth_address: &str,
         signature: &str,
         timestamp: i64,
+        bytes_served: u64,
     ) -> rusqlite::Result<usize> {
         self.conn.execute(
             "INSERT OR IGNORE INTO delivery_receipts
-             (content_id, seeder_eth_address, buyer_eth_address, signature, timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![content_id, seeder_eth_address, buyer_eth_address, signature, timestamp],
+             (content_id, seeder_eth_address, buyer_eth_address, signature, timestamp, bytes_served)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![content_id, seeder_eth_address, buyer_eth_address, signature, timestamp, bytes_served as i64],
         )
     }
 
     /// Get all delivery receipts for a content item.
     pub fn get_receipts_for_content(&self, content_id: &str) -> Result<Vec<DeliveryReceipt>> {
         let mut stmt = self.conn.prepare(
-            "SELECT seeder_eth_address, buyer_eth_address, signature, timestamp
+            "SELECT seeder_eth_address, buyer_eth_address, signature, timestamp, bytes_served
              FROM delivery_receipts WHERE content_id = ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![content_id], |row| {
@@ -223,6 +231,26 @@ impl Database {
                 buyer_eth_address: row.get(1)?,
                 signature: row.get(2)?,
                 timestamp: row.get(3)?,
+                bytes_served: row.get::<_, i64>(4)? as u64,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    /// Get all delivery receipts where the given address is the seeder.
+    pub fn get_receipts_for_seeder(&self, seeder_eth_address: &str) -> Result<Vec<DeliveryReceipt>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT content_id, seeder_eth_address, buyer_eth_address, signature, timestamp, bytes_served
+             FROM delivery_receipts WHERE LOWER(seeder_eth_address) = LOWER(?1)",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![seeder_eth_address], |row| {
+            Ok(DeliveryReceipt {
+                content_id: row.get(0)?,
+                seeder_eth_address: row.get(1)?,
+                buyer_eth_address: row.get(2)?,
+                signature: row.get(3)?,
+                timestamp: row.get(4)?,
+                bytes_served: row.get::<_, i64>(5)? as u64,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)

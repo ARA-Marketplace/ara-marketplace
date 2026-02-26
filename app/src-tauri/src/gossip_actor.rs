@@ -39,6 +39,7 @@ pub enum GossipCmd {
         buyer_eth_address: [u8; 20],
         signature: Vec<u8>,
         timestamp: u64,
+        bytes_served: u64,
     },
     /// Broadcast this node's Ethereum address on all active seeding topics.
     /// Lets creators map iroh NodeId → ETH address for reward distribution.
@@ -67,6 +68,7 @@ enum RecvEvent {
         buyer_eth_address_hex: String,
         signature_hex: String,
         timestamp: i64,
+        bytes_served: u64,
     },
     /// A seeder identity mapping was received — update the DB with NodeId → ETH address.
     SeederIdentityReceived {
@@ -118,11 +120,11 @@ impl GossipActor {
                         }
                         Some(GossipCmd::BroadcastDeliveryReceipt {
                             content_hash, content_id, seeder_eth_address,
-                            buyer_eth_address, signature, timestamp,
+                            buyer_eth_address, signature, timestamp, bytes_served,
                         }) => {
                             if let Err(e) = self.handle_broadcast_receipt(
                                 content_hash, content_id, seeder_eth_address,
-                                buyer_eth_address, signature, timestamp,
+                                buyer_eth_address, signature, timestamp, bytes_served,
                             ).await {
                                 warn!("Broadcast delivery receipt failed: {e}");
                             }
@@ -159,7 +161,7 @@ impl GossipActor {
                         }
                         Some(RecvEvent::DeliveryReceiptReceived {
                             content_id_hex, seeder_eth_address_hex,
-                            buyer_eth_address_hex, signature_hex, timestamp,
+                            buyer_eth_address_hex, signature_hex, timestamp, bytes_served,
                         }) => {
                             let db = self.db.lock().await;
                             if let Err(e) = db.insert_delivery_receipt(
@@ -168,6 +170,7 @@ impl GossipActor {
                                 &buyer_eth_address_hex,
                                 &signature_hex,
                                 timestamp,
+                                bytes_served,
                             ) {
                                 warn!("Failed to store delivery receipt: {e}");
                             }
@@ -341,8 +344,9 @@ impl GossipActor {
                             buyer_eth_address,
                             signature,
                             timestamp,
+                            bytes_served,
                         }) => {
-                            // Store receipt — signature is verified later during distribute_rewards
+                            // Store receipt — signature is verified on-chain when seeder claims rewards
                             let content_id_hex = format!("0x{}", alloy::hex::encode(content_id));
                             let seeder_hex = alloy::primitives::Address::from(seeder_eth_address).to_checksum(None);
                             let buyer_hex = alloy::primitives::Address::from(buyer_eth_address).to_checksum(None);
@@ -353,6 +357,7 @@ impl GossipActor {
                                 buyer_eth_address_hex: buyer_hex,
                                 signature_hex: sig_hex,
                                 timestamp: timestamp as i64,
+                                bytes_served,
                             });
                         }
                         Ok(GossipMessage::SeederIdentity { node_id, eth_address, .. }) => {
@@ -431,6 +436,7 @@ impl GossipActor {
         buyer_eth_address: [u8; 20],
         signature: Vec<u8>,
         timestamp: u64,
+        bytes_served: u64,
     ) -> anyhow::Result<()> {
         let msg = GossipMessage::DeliveryReceipt {
             content_id,
@@ -438,6 +444,7 @@ impl GossipActor {
             buyer_eth_address,
             signature,
             timestamp,
+            bytes_served,
         };
         if let Some(sender) = self.active_topics.get(&content_hash) {
             let encoded = self.encode_msg(&msg)?;

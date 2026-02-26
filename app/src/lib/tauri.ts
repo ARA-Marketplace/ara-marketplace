@@ -16,7 +16,6 @@ export interface Balances {
   eth_balance: string;
   ara_balance: string;
   ara_staked: string;
-  claimable_rewards: string;
 }
 
 export async function getBalances(): Promise<Balances> {
@@ -285,15 +284,10 @@ export interface StakeInfo {
     amount_staked: string;
     is_eligible_seeder: boolean;
   }>;
-  claimable_rewards_eth: string;
 }
 
 export async function getStakeInfo(): Promise<StakeInfo> {
   return invoke("get_stake_info");
-}
-
-export async function claimRewards(): Promise<TransactionRequest[]> {
-  return invoke("claim_rewards");
 }
 
 // Sync — pull content listings from on-chain events
@@ -318,28 +312,13 @@ export async function broadcastDeliveryReceipt(params: {
   buyerEthAddress: string;
   signature: string;
   timestamp: number;
+  bytesServed: number;
 }): Promise<void> {
   return invoke("broadcast_delivery_receipt", params);
 }
 
 export async function getReceiptCount(contentId: string): Promise<number> {
   return invoke("get_receipt_count", { contentId });
-}
-
-export async function getRewardPool(contentId: string): Promise<string> {
-  return invoke("get_reward_pool", { contentId });
-}
-
-export async function prepareDistributeRewards(
-  contentId: string
-): Promise<TransactionRequest[]> {
-  return invoke("prepare_distribute_rewards", { contentId });
-}
-
-export async function preparePublicDistribute(
-  contentId: string
-): Promise<TransactionRequest[]> {
-  return invoke("prepare_public_distribute", { contentId });
 }
 
 // Reward history and confirmation
@@ -356,7 +335,6 @@ export interface RewardHistoryResponse {
   items: RewardHistoryItem[];
   total_earned_eth: string;
   total_claimed_eth: string;
-  claimable_eth: string;
 }
 
 export async function getRewardHistory(
@@ -364,13 +342,6 @@ export async function getRewardHistory(
   offset?: number
 ): Promise<RewardHistoryResponse> {
   return invoke("get_reward_history", { limit, offset });
-}
-
-export async function confirmDistributeRewards(
-  contentId: string,
-  txHash: string
-): Promise<void> {
-  return invoke("confirm_distribute_rewards", { contentId, txHash });
 }
 
 export async function confirmClaimRewards(txHash: string): Promise<void> {
@@ -390,10 +361,8 @@ export async function syncRewards(): Promise<RewardSyncResult> {
 
 // Reward pipeline and one-click collect
 export interface RewardPipelineResponse {
-  in_pools_eth: string;
-  pool_count: number;
-  ready_to_claim_eth: string;
-  withdrawn_eth: string;
+  available_eth: string;
+  receipt_count: number;
   lifetime_earnings_eth: string;
 }
 
@@ -401,6 +370,6 @@ export async function getRewardPipeline(): Promise<RewardPipelineResponse> {
   return invoke("get_reward_pipeline");
 }
 
-export async function prepareCollectRewards(): Promise<TransactionRequest[]> {
-  return invoke("prepare_collect_rewards");
+export async function prepareClaimRewards(): Promise<TransactionRequest[]> {
+  return invoke("prepare_claim_rewards");
 }

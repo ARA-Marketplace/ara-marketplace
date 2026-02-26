@@ -33,17 +33,19 @@ sol! {
 
     #[sol(rpc)]
     interface IContentRegistry {
-        function publishContent(bytes32 contentHash, string metadataURI, uint256 priceWei) external returns (bytes32 contentId);
+        function publishContent(bytes32 contentHash, string metadataURI, uint256 priceWei, uint256 fileSize) external returns (bytes32 contentId);
         function updateContent(bytes32 contentId, uint256 newPriceWei, string newMetadataURI) external;
         function updateContentFile(bytes32 contentId, bytes32 newContentHash) external;
+        function updateFileSize(bytes32 contentId, uint256 newFileSize) external;
         function delistContent(bytes32 contentId) external;
         function getContentCount() external view returns (uint256);
         function getContentHash(bytes32 contentId) external view returns (bytes32);
         function getPrice(bytes32 contentId) external view returns (uint256);
         function getCreator(bytes32 contentId) external view returns (address);
+        function getFileSize(bytes32 contentId) external view returns (uint256);
         function isActive(bytes32 contentId) external view returns (bool);
 
-        event ContentPublished(bytes32 indexed contentId, address indexed creator, bytes32 contentHash, string metadataURI, uint256 priceWei);
+        event ContentPublished(bytes32 indexed contentId, address indexed creator, bytes32 contentHash, string metadataURI, uint256 priceWei, uint256 fileSize);
         event ContentUpdated(bytes32 indexed contentId, uint256 newPriceWei, string newMetadataURI);
         event ContentFileUpdated(bytes32 indexed contentId, bytes32 oldHash, bytes32 newHash, address indexed creator);
         event ContentDelisted(bytes32 indexed contentId);
@@ -51,28 +53,25 @@ sol! {
 
     #[sol(rpc)]
     interface IMarketplace {
-        struct SignedReceipt {
+        struct ClaimParams {
+            bytes32 contentId;
+            address buyer;
+            uint256 bytesServed;
             uint256 timestamp;
             bytes signature;
         }
 
-        struct SeederBundle {
-            address seeder;
-            SignedReceipt[] receipts;
-        }
-
         function purchase(bytes32 contentId) external payable;
-        function distributeRewards(bytes32 contentId, address[] seeders, uint256[] weights) external;
-        function publicDistributeWithProofs(bytes32 contentId, SeederBundle[] bundles) external;
-        function claimRewards() external;
+        function claimDeliveryReward(bytes32 contentId, address buyer, uint256 bytesServed, uint256 timestamp, bytes signature) external;
+        function claimDeliveryRewards(ClaimParams[] claims) external;
         function hasPurchased(bytes32 contentId, address buyer) external view returns (bool);
-        function rewardPool(bytes32 contentId) external view returns (uint256);
-        function claimableRewards(address seeder) external view returns (uint256);
-        function lastPurchaseTime(bytes32 contentId) external view returns (uint256);
-        function distributionWindow() external view returns (uint256);
+        function buyerReward(bytes32 contentId, address buyer) external view returns (uint256);
+        function buyerRewardPaid(bytes32 contentId, address buyer) external view returns (uint256);
+        function getBuyerReward(bytes32 contentId, address buyer) external view returns (uint256);
+        function totalRewardsClaimed() external view returns (uint256);
 
-        event ContentPurchased(bytes32 indexed contentId, address indexed buyer, uint256 pricePaid, uint256 creatorPayment, uint256 poolContribution);
-        event RewardsDistributed(bytes32 indexed contentId, address[] seeders, uint256[] amounts, uint256 totalAmount);
-        event RewardClaimed(address indexed seeder, uint256 amount);
+        event ContentPurchased(bytes32 indexed contentId, address indexed buyer, uint256 pricePaid, uint256 creatorPayment, uint256 rewardAmount);
+        event DeliveryRewardClaimed(bytes32 indexed contentId, address indexed seeder, address buyer, uint256 amount, uint256 bytesServed);
+        event RewardsClaimed(address indexed seeder, uint256 totalAmount, uint256 receiptCount);
     }
 }

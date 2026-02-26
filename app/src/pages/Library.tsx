@@ -5,7 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   getLibrary, getPublishedContent, startSeeding, stopSeeding,
   delistContent, confirmDelist, openDownloadedContent, openContentFolder,
-  getReceiptCount, getRewardPool,
+  getReceiptCount,
   updateContentFile, confirmContentFileUpdate,
   type LibraryItem, type PublishedItem,
 } from "../lib/tauri";
@@ -47,7 +47,7 @@ function Library() {
   const [delistingId, setDelistingId] = useState<string | null>(null);
   const [delistError, setDelistError] = useState<string | null>(null);
   const [pubTogglingId, setPubTogglingId] = useState<string | null>(null);
-  const [rewardData, setRewardData] = useState<Record<string, { receipts: number; pool: string; poolError?: boolean }>>({});
+  const [rewardData, setRewardData] = useState<Record<string, { receipts: number }>>({});
   const [updatingFileId, setUpdatingFileId] = useState<string | null>(null);
   const [updateFileError, setUpdateFileError] = useState<string | null>(null);
 
@@ -65,13 +65,8 @@ function Library() {
         setPublishedItems(its);
         const entries = await Promise.all(
           its.map(async (item) => {
-            const [receipts, poolResult] = await Promise.all([
-              getReceiptCount(item.content_id).catch(() => 0),
-              getRewardPool(item.content_id)
-                .then((pool) => ({ pool, poolError: false }))
-                .catch(() => ({ pool: "", poolError: true })),
-            ]);
-            return [item.content_id, { receipts, pool: poolResult.pool, poolError: poolResult.poolError }] as const;
+            const receipts = await getReceiptCount(item.content_id).catch(() => 0);
+            return [item.content_id, { receipts }] as const;
           })
         );
         setRewardData(Object.fromEntries(entries));
@@ -308,8 +303,6 @@ function Library() {
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
                   {publishedItems.map((item) => {
                     const rd = rewardData[item.content_id];
-                    const poolEth = rd && rd.pool ? parseFloat(rd.pool) : 0;
-                    const hasPoolError = rd?.poolError === true;
                     return (
                       <tr key={item.content_id} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
                         <td className="px-4 py-3">
@@ -334,32 +327,11 @@ function Library() {
                           {rd ? (
                             <div className="text-xs text-slate-500 dark:text-slate-400">
                               <div>{rd.receipts} {rd.receipts === 1 ? "delivery" : "deliveries"}</div>
-                              {hasPoolError ? (
-                                <button
-                                  onClick={() => {
-                                    getRewardPool(item.content_id)
-                                      .then((pool) =>
-                                        setRewardData((prev) => ({
-                                          ...prev,
-                                          [item.content_id]: { ...prev[item.content_id], pool, poolError: false },
-                                        }))
-                                      )
-                                      .catch(() => {});
-                                  }}
-                                  className="text-amber-600 dark:text-amber-400 hover:underline"
-                                >
-                                  Failed to load — Retry
-                                </button>
-                              ) : rd.pool ? (
-                                <>
-                                  <div className="text-slate-700 dark:text-slate-300 font-medium">{rd.pool} ETH</div>
-                                  {poolEth > 0 && (
-                                    <Link to="/wallet" className="text-ara-500 hover:underline">
-                                      Collect on Wallet
-                                    </Link>
-                                  )}
-                                </>
-                              ) : null}
+                              {rd.receipts > 0 && (
+                                <Link to="/wallet" className="text-ara-500 hover:underline">
+                                  Collect on Wallet
+                                </Link>
+                              )}
                             </div>
                           ) : (
                             <span className="text-xs text-slate-400">—</span>

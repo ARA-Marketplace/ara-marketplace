@@ -9,7 +9,7 @@ import { useWalletStore } from "../store/walletStore";
 import {
   getRewardHistory,
   getRewardPipeline,
-  prepareCollectRewards,
+  prepareClaimRewards,
   confirmClaimRewards,
   syncRewards,
   type RewardHistoryItem,
@@ -42,9 +42,9 @@ function Wallet() {
   const { walletProvider } = useWeb3ModalProvider();
 
   const {
-    address, ethBalance, araBalance, araStaked, claimableRewards,
+    address, ethBalance, araBalance, araStaked,
     isLoadingBalances, isSendingTx, txStatus, error,
-    refreshBalances, stakeAra, unstakeAra, claimRewards, clearError, clearTxStatus,
+    refreshBalances, stakeAra, unstakeAra, clearError, clearTxStatus,
   } = useWalletStore();
 
   const [showStakeModal, setShowStakeModal] = useState(false);
@@ -102,13 +102,13 @@ function Wallet() {
   }, [address, fetchRewardHistory]);
 
   // Refresh balances, pipeline, and history on every mount (handles navigation from other pages).
-  // Sync rewards from chain first to ensure DB has the latest distribute/claim events.
+  // Sync rewards from chain first to ensure DB has the latest events.
   useEffect(() => {
     if (address) {
       refreshBalances();
       fetchPipeline();
       setHistoryOffset(0);
-      // Sync from chain, then fetch history (so newly distributed/claimed rewards appear)
+      // Sync from chain, then fetch history (so newly claimed rewards appear)
       syncRewards()
         .catch(() => {})
         .finally(() => fetchRewardHistory(0, false));
@@ -159,15 +159,11 @@ function Wallet() {
 
   const handleCollect = async () => {
     if (!walletProvider) { open(); return; }
-    if (!pipeline || !hasValue(pipeline.in_pools_eth)) {
-      setCollectError("No reward pools to collect. Try refreshing.");
-      return;
-    }
     setCollecting(true);
     setCollectError(null);
-    setCollectStatus("Preparing transactions...");
+    setCollectStatus("Preparing claim transaction...");
     try {
-      const txs = await prepareCollectRewards();
+      const txs = await prepareClaimRewards();
       const lastTxHash = await signAndSendTransactions(
         walletProvider,
         txs,
@@ -178,7 +174,7 @@ function Wallet() {
       await confirmClaimRewards(lastTxHash).catch((e) => {
         console.warn("confirm_claim_rewards failed, will rely on sync:", e);
       });
-      // Re-sync to capture all distribute + claim events
+      // Re-sync to capture all claim events
       await syncRewards().catch(() => {});
       setCollectStatus(null);
       // Refresh everything
@@ -194,20 +190,6 @@ function Wallet() {
     } finally {
       setCollecting(false);
     }
-  };
-
-  // Fallback: plain claim (no distribute) — for when claimable > 0 but no pools
-  const handleClaim = async () => {
-    if (!walletProvider) { open(); return; }
-    try {
-      await claimRewards(walletProvider);
-      setHistoryOffset(0);
-      await Promise.all([
-        fetchRewardHistory(0, false),
-        fetchPipeline(),
-      ]);
-    }
-    catch { /* error set in store */ }
   };
 
   return (
@@ -312,7 +294,7 @@ function Wallet() {
             </div>
           </div>
 
-          {/* Rewards Pipeline: Pools → Claimable → Withdrawn */}
+          {/* Rewards: Ready to Collect + Lifetime Earnings */}
           {collectError && (
             <div className="alert-error mb-0 flex justify-between items-center">
               <span>{collectError}</span>
@@ -326,89 +308,49 @@ function Wallet() {
               <span>{collectStatus}</span>
             </div>
           )}
-          <div className="grid grid-cols-3 gap-4">
-            {/* Column 1: In Reward Pools */}
-            <div className="card p-5 relative">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-0.5">
-                In Reward Pools
-              </p>
-              <p className="text-[10px] text-slate-400 dark:text-slate-600 mb-2">
-                From content purchases
-              </p>
-              <p className="text-xl font-bold text-amber-600 dark:text-amber-400">
-                {pipeline?.in_pools_eth ?? "0.0"} <span className="text-sm font-normal text-slate-500">ETH</span>
-              </p>
-              {pipeline && pipeline.pool_count > 0 && (
-                <p className="text-[10px] text-slate-400 dark:text-slate-600 mt-1">
-                  {pipeline.pool_count} pool{pipeline.pool_count !== 1 ? "s" : ""} pending
-                </p>
-              )}
-              {/* Arrow indicator */}
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-10 text-slate-300 dark:text-slate-700 text-lg">
-                &rsaquo;
-              </div>
-            </div>
-            {/* Column 2: Ready to Claim */}
-            <div className="card p-5 relative">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-0.5">
-                Ready to Claim
-              </p>
-              <p className="text-[10px] text-slate-400 dark:text-slate-600 mb-2">
-                Withdraw to your wallet
-              </p>
-              <p className="text-xl font-bold text-emerald-600 dark:text-emerald-400">
-                {pipeline?.ready_to_claim_eth ?? claimableRewards} <span className="text-sm font-normal text-slate-500">ETH</span>
-              </p>
-              {/* Arrow indicator */}
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-1/2 z-10 text-slate-300 dark:text-slate-700 text-lg">
-                &rsaquo;
-              </div>
-            </div>
-            {/* Column 3: Withdrawn */}
-            <div className="card p-5">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-0.5">
-                Withdrawn
-              </p>
-              <p className="text-[10px] text-slate-400 dark:text-slate-600 mb-2">
-                Already sent to your wallet
-              </p>
-              <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
-                {pipeline?.withdrawn_eth ?? rewardHistory?.total_claimed_eth ?? "0"} <span className="text-sm font-normal text-slate-500">ETH</span>
-              </p>
-            </div>
-          </div>
 
-          {/* Collect / Claim button + Lifetime summary */}
+          {/* Ready to Collect */}
           <div className="card p-5">
             <div className="flex justify-between items-center">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
-                  Lifetime Earnings
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-0.5">
+                  Ready to Collect
                 </p>
-                <p className="text-2xl font-bold text-slate-900 dark:text-slate-100">
-                  {pipeline?.lifetime_earnings_eth ?? rewardHistory?.total_earned_eth ?? "0.0"} <span className="text-sm font-normal text-slate-500">ETH</span>
+                <p className="text-[10px] text-slate-400 dark:text-slate-600 mb-2">
+                  Rewards earned from seeding
                 </p>
-              </div>
-              <div className="flex-shrink-0 ml-4">
-                {pipeline && hasValue(pipeline.in_pools_eth) ? (
-                  <button
-                    onClick={handleCollect}
-                    disabled={collecting || isSendingTx}
-                    className="btn-success px-5 py-2 text-sm"
-                  >
-                    {collecting ? "Collecting..." : "Collect All"}
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleClaim}
-                    disabled={isSendingTx || !hasValue(claimableRewards)}
-                    className="btn-success px-5 py-2 text-sm"
-                  >
-                    Claim Rewards
-                  </button>
+                <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
+                  {pipeline?.available_eth ?? "0.0"} <span className="text-sm font-normal text-slate-500">ETH</span>
+                </p>
+                {pipeline && pipeline.receipt_count > 0 && (
+                  <p className="text-[10px] text-slate-400 dark:text-slate-600 mt-1">
+                    {pipeline.receipt_count} {pipeline.receipt_count === 1 ? "delivery" : "deliveries"}
+                  </p>
                 )}
               </div>
+              <div className="flex-shrink-0 ml-4">
+                <button
+                  onClick={handleCollect}
+                  disabled={collecting || isSendingTx || !pipeline || !hasValue(pipeline?.available_eth)}
+                  className="btn-success px-5 py-2 text-sm"
+                >
+                  {collecting ? "Collecting..." : "Collect All"}
+                </button>
+              </div>
             </div>
+          </div>
+
+          {/* Lifetime Earnings */}
+          <div className="card p-5">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
+              Lifetime Earnings
+            </p>
+            <p className="text-[10px] text-slate-400 dark:text-slate-600 mb-2">
+              Total rewards collected
+            </p>
+            <p className="text-2xl font-bold text-slate-900 dark:text-slate-100">
+              {pipeline?.lifetime_earnings_eth ?? rewardHistory?.total_earned_eth ?? "0.0"} <span className="text-sm font-normal text-slate-500">ETH</span>
+            </p>
           </div>
 
           {/* How Rewards Work */}
@@ -417,10 +359,9 @@ function Wallet() {
               How Rewards Work
             </p>
             <div className="text-xs text-slate-600 dark:text-slate-400 space-y-1.5">
-              <p>When buyers purchase content, <span className="font-medium text-slate-700 dark:text-slate-300">15% goes to the reward pool</span>.</p>
+              <p>When buyers purchase content, <span className="font-medium text-slate-700 dark:text-slate-300">15% goes to a reward pool</span>.</p>
               <p>Seeders who deliver content to buyers earn signed delivery receipts.</p>
-              <p>Your reward share = <span className="font-medium text-slate-700 dark:text-slate-300">deliveries x ARA staked per content</span>.</p>
-              <p>Stake more ARA per content to earn a larger share of the reward pool.</p>
+              <p>Click <span className="font-medium text-slate-700 dark:text-slate-300">Collect All</span> to claim your proportional share in one transaction.</p>
             </div>
           </div>
 
@@ -433,7 +374,7 @@ function Wallet() {
             </div>
             {historyItems.length === 0 && !loadingHistory ? (
               <div className="px-5 py-8 text-center text-sm text-slate-400 dark:text-slate-600">
-                No reward events yet. Rewards appear here after purchases and collection.
+                No reward events yet. Rewards appear here after you collect.
               </div>
             ) : (
               <table className="w-full text-sm">

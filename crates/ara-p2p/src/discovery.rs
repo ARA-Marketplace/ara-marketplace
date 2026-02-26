@@ -24,9 +24,8 @@ pub enum GossipMessage {
         node_id_bytes: [u8; 32],
     },
     /// Buyer-signed proof that they received content from a specific seeder.
-    /// The buyer signs EIP-712 DeliveryReceipt(contentId, seederEthAddress, timestamp)
-    /// with their Ethereum wallet. Seeders and creators collect these to use as
-    /// weights for reward distribution.
+    /// The buyer signs EIP-712 DeliveryReceipt(contentId, seederEthAddress, bytesServed, timestamp)
+    /// with their Ethereum wallet. Seeders submit these on-chain to claim proportional rewards.
     DeliveryReceipt {
         /// On-chain keccak256 content ID (bytes32)
         content_id: [u8; 32],
@@ -38,6 +37,8 @@ pub enum GossipMessage {
         signature: Vec<u8>,
         /// Unix timestamp when the receipt was signed
         timestamp: u64,
+        /// Number of bytes served by this seeder (for proportional reward calculation)
+        bytes_served: u64,
     },
     /// Links a seeder's iroh NodeId to their Ethereum address.
     /// The seeder signs their eth_address with their iroh Ed25519 key so that
@@ -174,6 +175,7 @@ impl DiscoveryService {
         buyer_eth_address: [u8; 20],
         signature: Vec<u8>,
         timestamp: u64,
+        bytes_served: u64,
     ) -> Result<()> {
         let handle = self
             .topics
@@ -186,6 +188,7 @@ impl DiscoveryService {
             buyer_eth_address,
             signature,
             timestamp,
+            bytes_served,
         };
         let encoded = serde_json::to_vec(&msg)?;
         handle.sender.broadcast(Bytes::from(encoded)).await?;

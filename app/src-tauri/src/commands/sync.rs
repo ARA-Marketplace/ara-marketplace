@@ -181,6 +181,7 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                 content_hash,
                 metadata_uri,
                 price_wei,
+                ..
             } => {
                 let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
                 let chash = format!("0x{}", alloy::hex::encode(content_hash.as_slice()));
@@ -417,34 +418,34 @@ pub async fn sync_rewards_impl(state: &AppState) -> Result<RewardSyncResult, Str
                     info!("Detected sale of our content {}: buyer={}", cid, buyer);
                 }
             }
-            AraEvent::RewardsDistributed {
+            AraEvent::DeliveryRewardClaimed {
                 content_id,
-                seeders,
-                amounts,
+                seeder,
+                amount,
                 ..
             } => {
-                // Find this wallet's share
-                for (i, seeder) in seeders.iter().enumerate() {
-                    if *seeder == wallet_addr {
-                        let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
-                        let amount = amounts.get(i).copied().unwrap_or_default();
-                        if let Err(e) = db.insert_reward(
-                            &cid,
-                            &amount.to_string(),
-                            &tx_hash_str,
-                            approx_timestamp,
-                        ) {
-                            warn!("Failed to insert reward for {}: {}", cid, e);
-                        } else {
-                            distributions_found += 1;
-                        }
+                if *seeder == wallet_addr {
+                    let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
+                    if let Err(e) = db.insert_reward(
+                        &cid,
+                        &amount.to_string(),
+                        &tx_hash_str,
+                        approx_timestamp,
+                    ) {
+                        warn!("Failed to insert delivery reward for {}: {}", cid, e);
+                    } else {
+                        distributions_found += 1;
                     }
                 }
             }
-            AraEvent::RewardClaimed { seeder, amount } => {
+            AraEvent::RewardsClaimed {
+                seeder,
+                total_amount,
+                ..
+            } => {
                 if *seeder == wallet_addr {
                     if let Err(e) = db.insert_reward_claim(
-                        &amount.to_string(),
+                        &total_amount.to_string(),
                         &tx_hash_str,
                         approx_timestamp,
                     ) {

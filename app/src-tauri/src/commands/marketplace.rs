@@ -8,7 +8,7 @@ use iroh_blobs::net_protocol::DownloadMode;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tauri::{Emitter, State};
-use tracing::{info, warn};
+use tracing::info;
 
 #[derive(Serialize, Deserialize)]
 pub struct ConfirmPurchaseResult {
@@ -531,10 +531,11 @@ pub async fn broadcast_delivery_receipt(
     buyer_eth_address: String,
     signature: String,
     timestamp: u64,
+    bytes_served: u64,
 ) -> Result<(), String> {
     info!(
-        "Broadcasting delivery receipt: content={}, seeder={}, buyer={}",
-        content_id, seeder_eth_address, buyer_eth_address
+        "Broadcasting delivery receipt: content={}, seeder={}, buyer={}, bytes={}",
+        content_id, seeder_eth_address, buyer_eth_address, bytes_served
     );
 
     // Store in DB
@@ -546,6 +547,7 @@ pub async fn broadcast_delivery_receipt(
             &buyer_eth_address,
             &signature,
             timestamp as i64,
+            bytes_served,
         )
         .map_err(|e| format!("DB insert failed: {e}"))?;
     }
@@ -581,6 +583,7 @@ pub async fn broadcast_delivery_receipt(
             buyer_eth_address: buyer_bytes,
             signature: sig_bytes,
             timestamp,
+            bytes_served,
         })
         .await?;
 
@@ -612,31 +615,6 @@ pub async fn get_receipt_count(
         )
         .unwrap_or(0);
     Ok(count as u64)
-}
-
-/// Get the reward pool balance in ETH (decimal string) for a content item.
-#[tauri::command]
-pub async fn get_reward_pool(
-    state: State<'_, AppState>,
-    content_id: String,
-) -> Result<String, String> {
-    let content_id_bytes: FixedBytes<32> = content_id
-        .strip_prefix("0x")
-        .unwrap_or(&content_id)
-        .parse()
-        .map_err(|e| format!("Invalid content ID: {e}"))?;
-
-    let chain = state.chain_client()?;
-    let pool = chain
-        .marketplace
-        .reward_pool(content_id_bytes)
-        .await
-        .map_err(|e| {
-            warn!("RPC error querying reward pool for {}: {}", content_id, e);
-            format!("Failed to query reward pool: {e}")
-        })?;
-
-    Ok(crate::commands::types::format_wei(pool))
 }
 
 fn parse_content_hash_bytes(s: &str) -> Result<[u8; 32], String> {

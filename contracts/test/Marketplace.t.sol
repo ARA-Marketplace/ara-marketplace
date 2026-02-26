@@ -42,9 +42,12 @@ contract MarketplaceTest is Test {
 
     address public deployer = makeAddr("deployer");
     address public creator = makeAddr("creator");
-    address public buyer = makeAddr("buyer");
     address public seeder1 = makeAddr("seeder1");
     address public seeder2 = makeAddr("seeder2");
+
+    // Buyer with known private key (needed for EIP-712 signatures)
+    uint256 public buyerPrivKey = 0xBEEF;
+    address public buyer;
 
     uint256 public constant PUBLISHER_MIN = 1000 ether;
     uint256 public constant SEEDER_MIN = 100 ether;
@@ -53,9 +56,12 @@ contract MarketplaceTest is Test {
     bytes32 public contentHash = keccak256("game-file-data");
     string public metadataURI = "ipfs://QmTest123";
     uint256 public contentPrice = 0.1 ether;
+    uint256 public fileSize = 1_000_000; // 1 MB
     bytes32 public contentId;
 
     function setUp() public {
+        buyer = vm.addr(buyerPrivKey);
+
         vm.startPrank(deployer);
         token = new MockAraToken3();
         staking = new AraStaking(address(token), PUBLISHER_MIN, SEEDER_MIN);
@@ -69,11 +75,11 @@ contract MarketplaceTest is Test {
         token.mint(seeder2, 5_000 ether);
         vm.deal(buyer, 10 ether);
 
-        // Creator stakes and publishes
+        // Creator stakes and publishes (now with fileSize)
         vm.startPrank(creator);
         token.approve(address(staking), PUBLISHER_MIN);
         staking.stake(PUBLISHER_MIN);
-        contentId = registry.publishContent(contentHash, metadataURI, contentPrice);
+        contentId = registry.publishContent(contentHash, metadataURI, contentPrice, fileSize);
         vm.stopPrank();
 
         // Seeders stake for the content
@@ -90,6 +96,32 @@ contract MarketplaceTest is Test {
         vm.stopPrank();
     }
 
+    // --- Helpers ---
+
+    /// Compute the EIP-712 DeliveryReceipt hash
+    function _receiptHash(bytes32 cId, address seederAddr, uint256 bytesServedVal, uint256 ts)
+        internal
+        view
+        returns (bytes32)
+    {
+        bytes32 structHash =
+            keccak256(abi.encode(marketplace.RECEIPT_TYPE_HASH(), cId, seederAddr, bytesServedVal, ts));
+        return keccak256(abi.encodePacked("\x19\x01", marketplace.DOMAIN_SEPARATOR(), structHash));
+    }
+
+    /// Sign a delivery receipt with a given private key
+    function _signReceipt(uint256 privateKey, bytes32 cId, address seederAddr, uint256 bytesServedVal, uint256 ts)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 hash = _receiptHash(cId, seederAddr, bytesServedVal, ts);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, hash);
+        return abi.encodePacked(r, s, v);
+    }
+
+    // --- Purchase tests ---
+
     function test_Purchase() public {
         uint256 creatorBalanceBefore = creator.balance;
 
@@ -103,9 +135,9 @@ contract MarketplaceTest is Test {
         uint256 expectedCreatorPayment = (contentPrice * CREATOR_SHARE_BPS) / 10_000;
         assertEq(creator.balance - creatorBalanceBefore, expectedCreatorPayment);
 
-        // Reward pool should have 15%
-        uint256 expectedPool = contentPrice - expectedCreatorPayment;
-        assertEq(marketplace.rewardPool(contentId), expectedPool);
+        // Buyer reward should have 15%
+        uint256 expectedReward = contentPrice - expectedCreatorPayment;
+        assertEq(marketplace.getBuyerReward(contentId, buyer), expectedReward);
     }
 
     function test_RevertPurchaseInsufficientPayment() public {
@@ -131,92 +163,6 @@ contract MarketplaceTest is Test {
         marketplace.purchase{value: contentPrice}(contentId);
     }
 
-    function test_DistributeRewards() public {
-        // Purchase first to fund the pool
-        vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
-
-        uint256 poolBefore = marketplace.rewardPool(contentId);
-        assertTrue(poolBefore > 0);
-
-        // Distribute rewards (deployer is the reporter)
-        address[] memory seeders = new address[](2);
-        seeders[0] = seeder1;
-        seeders[1] = seeder2;
-
-        uint256[] memory weights = new uint256[](2);
-        weights[0] = 7000; // seeder1 served more data
-        weights[1] = 3000;
-
-        vm.prank(deployer);
-        marketplace.distributeRewards(contentId, seeders, weights);
-
-        // Seeder1 should get 70%, seeder2 gets 30%
-        uint256 seeder1Reward = (poolBefore * 7000) / 10_000;
-        uint256 seeder2Reward = (poolBefore * 3000) / 10_000;
-
-        assertEq(marketplace.claimableRewards(seeder1), seeder1Reward);
-        assertEq(marketplace.claimableRewards(seeder2), seeder2Reward);
-    }
-
-    function test_ClaimRewards() public {
-        // Purchase, distribute, then claim
-        vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
-
-        address[] memory seeders = new address[](1);
-        seeders[0] = seeder1;
-        uint256[] memory weights = new uint256[](1);
-        weights[0] = 1;
-
-        vm.prank(deployer);
-        marketplace.distributeRewards(contentId, seeders, weights);
-
-        uint256 reward = marketplace.claimableRewards(seeder1);
-        assertTrue(reward > 0);
-
-        uint256 balanceBefore = seeder1.balance;
-        vm.prank(seeder1);
-        marketplace.claimRewards();
-
-        assertEq(seeder1.balance - balanceBefore, reward);
-        assertEq(marketplace.claimableRewards(seeder1), 0);
-    }
-
-    function test_RevertClaimNoRewards() public {
-        vm.prank(seeder1);
-        vm.expectRevert();
-        marketplace.claimRewards();
-    }
-
-    function test_RevertDistributeByNonReporter() public {
-        vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
-
-        address[] memory seeders = new address[](1);
-        seeders[0] = seeder1;
-        uint256[] memory weights = new uint256[](1);
-        weights[0] = 1;
-
-        vm.prank(buyer); // Not the reporter
-        vm.expectRevert();
-        marketplace.distributeRewards(contentId, seeders, weights);
-    }
-
-    function test_RevertDistributeIneligibleSeeder() public {
-        vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
-
-        address[] memory seeders = new address[](1);
-        seeders[0] = buyer; // Not staked as seeder
-        uint256[] memory weights = new uint256[](1);
-        weights[0] = 1;
-
-        vm.prank(deployer);
-        vm.expectRevert();
-        marketplace.distributeRewards(contentId, seeders, weights);
-    }
-
     function test_OverpaymentRefund() public {
         uint256 overpayment = 1 ether;
         uint256 buyerBalanceBefore = buyer.balance;
@@ -225,239 +171,302 @@ contract MarketplaceTest is Test {
         marketplace.purchase{value: overpayment}(contentId);
 
         // Buyer should be refunded the overpayment
-        uint256 expectedSpent = contentPrice;
-        assertEq(buyerBalanceBefore - buyer.balance, expectedSpent);
+        assertEq(buyerBalanceBefore - buyer.balance, contentPrice);
     }
+
+    // --- Single claim tests ---
+
+    function test_ClaimDeliveryReward() public {
+        // 1. Buyer purchases
+        vm.prank(buyer);
+        marketplace.purchase{value: contentPrice}(contentId);
+
+        uint256 rewardBefore = marketplace.getBuyerReward(contentId, buyer);
+        assertTrue(rewardBefore > 0);
+
+        // 2. Seeder1 claims with buyer-signed receipt (full file delivery)
+        uint256 ts = block.timestamp;
+        bytes memory sig = _signReceipt(buyerPrivKey, contentId, seeder1, fileSize, ts);
+
+        uint256 seeder1BalBefore = seeder1.balance;
+
+        vm.prank(seeder1);
+        marketplace.claimDeliveryReward(contentId, buyer, fileSize, ts, sig);
+
+        // Seeder1 should have received the full reward (bytesServed == fileSize)
+        assertEq(seeder1.balance - seeder1BalBefore, rewardBefore);
+        assertEq(marketplace.getBuyerReward(contentId, buyer), 0);
+    }
+
+    function test_ClaimDeliveryRewardPartialBytes() public {
+        vm.prank(buyer);
+        marketplace.purchase{value: contentPrice}(contentId);
+
+        uint256 rewardBefore = marketplace.getBuyerReward(contentId, buyer);
+        uint256 halfFileSize = fileSize / 2;
+
+        // Seeder1 delivers half the file
+        uint256 ts = block.timestamp;
+        bytes memory sig = _signReceipt(buyerPrivKey, contentId, seeder1, halfFileSize, ts);
+
+        uint256 seeder1BalBefore = seeder1.balance;
+
+        vm.prank(seeder1);
+        marketplace.claimDeliveryReward(contentId, buyer, halfFileSize, ts, sig);
+
+        // Seeder1 should get 50% of the reward
+        uint256 expectedPayout = (rewardBefore * halfFileSize) / fileSize;
+        assertEq(seeder1.balance - seeder1BalBefore, expectedPayout);
+        assertEq(marketplace.getBuyerReward(contentId, buyer), rewardBefore - expectedPayout);
+    }
+
+    function test_ClaimRevertInvalidSignature() public {
+        vm.prank(buyer);
+        marketplace.purchase{value: contentPrice}(contentId);
+
+        // Use a WRONG private key to sign
+        uint256 wrongKey = 0xDEAD;
+        uint256 ts = block.timestamp;
+        bytes memory sig = _signReceipt(wrongKey, contentId, seeder1, fileSize, ts);
+
+        vm.prank(seeder1);
+        vm.expectRevert(Marketplace.NoRewardsToClaim.selector);
+        marketplace.claimDeliveryReward(contentId, buyer, fileSize, ts, sig);
+    }
+
+    function test_ClaimRevertNotPurchased() public {
+        // buyer never purchased — create a signature anyway
+        uint256 fakeBuyerKey = 0xCAFE;
+        uint256 ts = block.timestamp;
+        bytes memory sig = _signReceipt(fakeBuyerKey, contentId, seeder1, fileSize, ts);
+
+        vm.prank(seeder1);
+        vm.expectRevert(Marketplace.NoRewardsToClaim.selector);
+        marketplace.claimDeliveryReward(contentId, vm.addr(fakeBuyerKey), fileSize, ts, sig);
+    }
+
+    function test_ClaimReplayProtection() public {
+        vm.prank(buyer);
+        marketplace.purchase{value: contentPrice}(contentId);
+
+        uint256 ts = block.timestamp;
+        bytes memory sig = _signReceipt(buyerPrivKey, contentId, seeder1, fileSize, ts);
+
+        // First claim succeeds
+        vm.prank(seeder1);
+        marketplace.claimDeliveryReward(contentId, buyer, fileSize, ts, sig);
+
+        // Second claim with same receipt reverts
+        vm.prank(seeder1);
+        vm.expectRevert(Marketplace.NoRewardsToClaim.selector);
+        marketplace.claimDeliveryReward(contentId, buyer, fileSize, ts, sig);
+    }
+
+    // --- Multi-seeder proportional claiming ---
+
+    function test_TwoSeedersProportionalClaim() public {
+        vm.prank(buyer);
+        marketplace.purchase{value: contentPrice}(contentId);
+
+        uint256 originalReward = marketplace.getBuyerReward(contentId, buyer);
+        uint256 ts = block.timestamp;
+
+        // Seeder1 delivers 600K of 1M bytes
+        uint256 served1 = 600_000;
+        bytes memory sig1 = _signReceipt(buyerPrivKey, contentId, seeder1, served1, ts);
+
+        // Seeder2 delivers 400K of 1M bytes
+        uint256 served2 = 400_000;
+        bytes memory sig2 = _signReceipt(buyerPrivKey, contentId, seeder2, served2, ts);
+
+        // Seeder1 claims first
+        uint256 seeder1BalBefore = seeder1.balance;
+        vm.prank(seeder1);
+        marketplace.claimDeliveryReward(contentId, buyer, served1, ts, sig1);
+        uint256 seeder1Payout = seeder1.balance - seeder1BalBefore;
+
+        // Seeder2 claims second — their share is computed from original reward, not remaining
+        uint256 seeder2BalBefore = seeder2.balance;
+        vm.prank(seeder2);
+        marketplace.claimDeliveryReward(contentId, buyer, served2, ts, sig2);
+        uint256 seeder2Payout = seeder2.balance - seeder2BalBefore;
+
+        // Verify proportional payouts
+        uint256 expectedSeeder1 = (originalReward * served1) / fileSize;
+        uint256 expectedSeeder2 = (originalReward * served2) / fileSize;
+
+        assertEq(seeder1Payout, expectedSeeder1);
+        assertEq(seeder2Payout, expectedSeeder2);
+        assertEq(marketplace.getBuyerReward(contentId, buyer), 0);
+    }
+
+    // --- Batch claim tests ---
+
+    function test_BatchClaim() public {
+        // Create a second buyer
+        uint256 buyer2PrivKey = 0xCAFE;
+        address buyer2 = vm.addr(buyer2PrivKey);
+        vm.deal(buyer2, 10 ether);
+
+        // Both buyers purchase
+        vm.prank(buyer);
+        marketplace.purchase{value: contentPrice}(contentId);
+        vm.prank(buyer2);
+        marketplace.purchase{value: contentPrice}(contentId);
+
+        uint256 reward1 = marketplace.getBuyerReward(contentId, buyer);
+        uint256 reward2 = marketplace.getBuyerReward(contentId, buyer2);
+
+        // Seeder1 claims both in a single batch transaction
+        uint256 ts = block.timestamp;
+        bytes memory sig1 = _signReceipt(buyerPrivKey, contentId, seeder1, fileSize, ts);
+        bytes memory sig2 = _signReceipt(buyer2PrivKey, contentId, seeder1, fileSize, ts);
+
+        Marketplace.ClaimParams[] memory claims = new Marketplace.ClaimParams[](2);
+        claims[0] = Marketplace.ClaimParams({
+            contentId: contentId,
+            buyer: buyer,
+            bytesServed: fileSize,
+            timestamp: ts,
+            signature: sig1
+        });
+        claims[1] = Marketplace.ClaimParams({
+            contentId: contentId,
+            buyer: buyer2,
+            bytesServed: fileSize,
+            timestamp: ts,
+            signature: sig2
+        });
+
+        uint256 seeder1BalBefore = seeder1.balance;
+
+        vm.prank(seeder1);
+        marketplace.claimDeliveryRewards(claims);
+
+        // Should receive both rewards in one transfer
+        assertEq(seeder1.balance - seeder1BalBefore, reward1 + reward2);
+        assertEq(marketplace.getBuyerReward(contentId, buyer), 0);
+        assertEq(marketplace.getBuyerReward(contentId, buyer2), 0);
+    }
+
+    function test_BatchClaimSkipsInvalid() public {
+        vm.prank(buyer);
+        marketplace.purchase{value: contentPrice}(contentId);
+
+        uint256 ts = block.timestamp;
+        bytes memory validSig = _signReceipt(buyerPrivKey, contentId, seeder1, fileSize, ts);
+        bytes memory invalidSig = _signReceipt(0xDEAD, contentId, seeder1, fileSize, ts); // wrong signer
+
+        Marketplace.ClaimParams[] memory claims = new Marketplace.ClaimParams[](2);
+        // First claim: valid
+        claims[0] = Marketplace.ClaimParams({
+            contentId: contentId,
+            buyer: buyer,
+            bytesServed: fileSize,
+            timestamp: ts,
+            signature: validSig
+        });
+        // Second claim: invalid signature (will be skipped)
+        claims[1] = Marketplace.ClaimParams({
+            contentId: contentId,
+            buyer: buyer,
+            bytesServed: fileSize,
+            timestamp: ts,
+            signature: invalidSig
+        });
+
+        uint256 seeder1BalBefore = seeder1.balance;
+
+        vm.prank(seeder1);
+        marketplace.claimDeliveryRewards(claims);
+
+        // Only the valid claim should have paid out
+        assertGt(seeder1.balance - seeder1BalBefore, 0);
+    }
+
+    function test_BatchClaimRevertsAllInvalid() public {
+        // No purchases — all claims will fail
+        uint256 ts = block.timestamp;
+        bytes memory sig = _signReceipt(buyerPrivKey, contentId, seeder1, fileSize, ts);
+
+        Marketplace.ClaimParams[] memory claims = new Marketplace.ClaimParams[](1);
+        claims[0] = Marketplace.ClaimParams({
+            contentId: contentId,
+            buyer: buyer,
+            bytesServed: fileSize,
+            timestamp: ts,
+            signature: sig
+        });
+
+        vm.prank(seeder1);
+        vm.expectRevert(Marketplace.NoRewardsToClaim.selector);
+        marketplace.claimDeliveryRewards(claims);
+    }
+
+    // --- Full lifecycle ---
 
     function test_FullLifecycle() public {
         // 1. Purchase
         vm.prank(buyer);
         marketplace.purchase{value: contentPrice}(contentId);
-
-        // 2. Verify purchase
         assertTrue(marketplace.hasPurchased(contentId, buyer));
 
-        // 3. Distribute rewards to both seeders
-        address[] memory seeders = new address[](2);
-        seeders[0] = seeder1;
-        seeders[1] = seeder2;
-        uint256[] memory weights = new uint256[](2);
-        weights[0] = 5000;
-        weights[1] = 5000;
+        uint256 reward = marketplace.getBuyerReward(contentId, buyer);
+        assertTrue(reward > 0);
 
-        vm.prank(deployer);
-        marketplace.distributeRewards(contentId, seeders, weights);
+        // 2. Seeder claims with buyer-signed receipt
+        uint256 ts = block.timestamp;
+        bytes memory sig = _signReceipt(buyerPrivKey, contentId, seeder1, fileSize, ts);
 
-        // 4. Both seeders claim
-        uint256 seeder1Reward = marketplace.claimableRewards(seeder1);
-        uint256 seeder2Reward = marketplace.claimableRewards(seeder2);
-        assertTrue(seeder1Reward > 0);
-        assertTrue(seeder2Reward > 0);
-
+        uint256 balBefore = seeder1.balance;
         vm.prank(seeder1);
-        marketplace.claimRewards();
-        vm.prank(seeder2);
-        marketplace.claimRewards();
+        marketplace.claimDeliveryReward(contentId, buyer, fileSize, ts, sig);
 
-        assertEq(marketplace.claimableRewards(seeder1), 0);
-        assertEq(marketplace.claimableRewards(seeder2), 0);
+        // 3. Verify payout
+        assertEq(seeder1.balance - balBefore, reward);
+        assertEq(marketplace.getBuyerReward(contentId, buyer), 0);
+        assertEq(marketplace.totalRewardsClaimed(), reward);
     }
 
-    // --- Creator-as-reporter tests ---
+    // --- View functions ---
 
-    function test_CreatorCanDistributeRewards() public {
+    function test_GetBuyerReward() public {
         vm.prank(buyer);
         marketplace.purchase{value: contentPrice}(contentId);
 
-        address[] memory seeders = new address[](1);
-        seeders[0] = seeder1;
-        uint256[] memory weights = new uint256[](1);
-        weights[0] = 1;
+        uint256 expectedReward = contentPrice - (contentPrice * CREATOR_SHARE_BPS) / 10_000;
+        assertEq(marketplace.getBuyerReward(contentId, buyer), expectedReward);
+    }
 
-        // Creator (not the global reporter) can distribute for their own content
+    function test_CheckPurchase() public {
+        assertFalse(marketplace.checkPurchase(contentId, buyer));
+
+        vm.prank(buyer);
+        marketplace.purchase{value: contentPrice}(contentId);
+
+        assertTrue(marketplace.checkPurchase(contentId, buyer));
+    }
+
+    // --- ContentRegistry fileSize tests ---
+
+    function test_FileSizeStoredOnPublish() public {
+        assertEq(registry.getFileSize(contentId), fileSize);
+    }
+
+    function test_RevertPublishZeroFileSize() public {
         vm.prank(creator);
-        marketplace.distributeRewards(contentId, seeders, weights);
-
-        assertTrue(marketplace.claimableRewards(seeder1) > 0);
+        vm.expectRevert(ContentRegistry.ZeroFileSize.selector);
+        registry.publishContent(keccak256("new-content"), metadataURI, contentPrice, 0);
     }
 
-    function test_RevertDistributeByNonCreatorNonReporter() public {
-        vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
-
-        address[] memory seeders = new address[](1);
-        seeders[0] = seeder1;
-        uint256[] memory weights = new uint256[](1);
-        weights[0] = 1;
-
-        // seeder1 is neither reporter nor creator
-        vm.prank(seeder1);
-        vm.expectRevert();
-        marketplace.distributeRewards(contentId, seeders, weights);
-    }
-
-    // --- publicDistributeWithProofs tests ---
-
-    // Compute the EIP-712 DeliveryReceipt hash for a given seeder address and timestamp
-    function _receiptHash(bytes32 cId, address seederAddr, uint256 ts) internal view returns (bytes32) {
-        bytes32 structHash = keccak256(abi.encode(marketplace.RECEIPT_TYPE_HASH(), cId, seederAddr, ts));
-        return keccak256(abi.encodePacked("\x19\x01", marketplace.DOMAIN_SEPARATOR(), structHash));
-    }
-
-    // Build a signed receipt using a private key
-    function _signReceipt(uint256 privateKey, bytes32 cId, address seederAddr, uint256 ts)
-        internal
-        view
-        returns (bytes memory)
-    {
-        bytes32 hash = _receiptHash(cId, seederAddr, ts);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, hash);
-        return abi.encodePacked(r, s, v);
-    }
-
-    function test_PublicDistributeRevertsBeforeWindow() public {
-        vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
-
-        Marketplace.SignedReceipt[] memory receipts = new Marketplace.SignedReceipt[](0);
-        Marketplace.SeederBundle[] memory bundles = new Marketplace.SeederBundle[](1);
-        bundles[0] = Marketplace.SeederBundle({seeder: seeder1, receipts: receipts});
-
-        // Should revert — distribution window has not elapsed
-        vm.prank(seeder1);
-        vm.expectRevert(Marketplace.DistributionWindowNotOpen.selector);
-        marketplace.publicDistributeWithProofs(contentId, bundles);
-    }
-
-    function test_PublicDistributeSucceedsAfterWindow() public {
-        // Set up a buyer with a known private key for signing
-        uint256 buyerPrivKey = 0xBEEF;
-        address buyerWithKey = vm.addr(buyerPrivKey);
-        vm.deal(buyerWithKey, 10 ether);
-
-        vm.prank(buyerWithKey);
-        marketplace.purchase{value: contentPrice}(contentId);
-
-        // Advance time past the distribution window
-        uint256 window = marketplace.distributionWindow();
-        vm.warp(block.timestamp + window + 1);
-
-        // Build a signed receipt: buyer attests seeder1 served them
-        uint256 ts = block.timestamp;
-        bytes memory sig = _signReceipt(buyerPrivKey, contentId, seeder1, ts);
-
-        Marketplace.SignedReceipt[] memory receipts = new Marketplace.SignedReceipt[](1);
-        receipts[0] = Marketplace.SignedReceipt({timestamp: ts, signature: sig});
-
-        Marketplace.SeederBundle[] memory bundles = new Marketplace.SeederBundle[](1);
-        bundles[0] = Marketplace.SeederBundle({seeder: seeder1, receipts: receipts});
-
-        uint256 poolBefore = marketplace.rewardPool(contentId);
-
-        vm.prank(seeder1);
-        marketplace.publicDistributeWithProofs(contentId, bundles);
-
-        // seeder1 should have received the full pool (only one seeder with receipts)
-        assertEq(marketplace.claimableRewards(seeder1), poolBefore);
-    }
-
-    function test_PublicDistributeReplayProtection() public {
-        uint256 buyerPrivKey = 0xCAFE;
-        address buyerWithKey = vm.addr(buyerPrivKey);
-        vm.deal(buyerWithKey, 10 ether);
-
-        vm.prank(buyerWithKey);
-        marketplace.purchase{value: contentPrice}(contentId);
-
-        uint256 window = marketplace.distributionWindow();
-        vm.warp(block.timestamp + window + 1);
-
-        uint256 ts = block.timestamp;
-        bytes memory sig = _signReceipt(buyerPrivKey, contentId, seeder1, ts);
-
-        Marketplace.SignedReceipt[] memory receipts = new Marketplace.SignedReceipt[](1);
-        receipts[0] = Marketplace.SignedReceipt({timestamp: ts, signature: sig});
-
-        Marketplace.SeederBundle[] memory bundles = new Marketplace.SeederBundle[](1);
-        bundles[0] = Marketplace.SeederBundle({seeder: seeder1, receipts: receipts});
-
-        // First distribution succeeds
-        vm.prank(seeder1);
-        marketplace.publicDistributeWithProofs(contentId, bundles);
-        uint256 firstReward = marketplace.claimableRewards(seeder1);
-        assertTrue(firstReward > 0);
-
-        // Submitting the same receipt again yields zero additional weight (skipped)
-        // Pool should be near-empty (dust only), so second distribution reverts NoRewardsToDistribute
-        // or succeeds with zero payout. We just verify the reward didn't double.
-        vm.prank(seeder1);
-        // If pool has dust it may succeed; if pool is 0 it reverts. Either is correct.
-        try marketplace.publicDistributeWithProofs(contentId, bundles) {} catch {}
-        // Reward must not have doubled
-        uint256 secondReward = marketplace.claimableRewards(seeder1);
-        assertEq(secondReward, firstReward); // no additional rewards from replayed receipt
-    }
-
-    function test_PublicDistributeSkipsInvalidBuyer() public {
-        // signer has NOT purchased — their receipt should be skipped
-        uint256 nonBuyerPrivKey = 0xDEAD;
-
-        // buyer purchases (not nonBuyer)
-        vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
-
-        uint256 window = marketplace.distributionWindow();
-        vm.warp(block.timestamp + window + 1);
-
-        uint256 ts = block.timestamp;
-        // nonBuyer signs a receipt (they never purchased, so it's invalid)
-        bytes memory sig = _signReceipt(nonBuyerPrivKey, contentId, seeder1, ts);
-
-        Marketplace.SignedReceipt[] memory receipts = new Marketplace.SignedReceipt[](1);
-        receipts[0] = Marketplace.SignedReceipt({timestamp: ts, signature: sig});
-
-        Marketplace.SeederBundle[] memory bundles = new Marketplace.SeederBundle[](1);
-        bundles[0] = Marketplace.SeederBundle({seeder: seeder1, receipts: receipts});
-
-        // Should revert with ZeroWeight since the only receipt is invalid
-        vm.prank(seeder1);
-        vm.expectRevert(Marketplace.ZeroWeight.selector);
-        marketplace.publicDistributeWithProofs(contentId, bundles);
-
-        // seeder1 should have nothing claimable
-        assertEq(marketplace.claimableRewards(seeder1), 0);
-    }
-
-    function test_PublicDistributeRevertsIfNoPurchases() public {
-        // No purchases at all — lastPurchaseTime is 0, reverts before seeder eligibility check
-        bytes32 freshContentHash = keccak256("fresh-content");
+    function test_UpdateFileSize() public {
+        uint256 newSize = 2_000_000;
         vm.prank(creator);
-        bytes32 freshContentId = registry.publishContent(freshContentHash, metadataURI, contentPrice);
-
-        Marketplace.SeederBundle[] memory bundles = new Marketplace.SeederBundle[](0);
-
-        vm.warp(block.timestamp + 365 days); // well past any window
-
-        vm.prank(seeder1);
-        vm.expectRevert(Marketplace.NoRewardsToDistribute.selector);
-        marketplace.publicDistributeWithProofs(freshContentId, bundles);
+        registry.updateFileSize(contentId, newSize);
+        assertEq(registry.getFileSize(contentId), newSize);
     }
 
-    function test_SetDistributionWindow() public {
-        uint256 newWindow = 7 days;
-        vm.prank(deployer);
-        marketplace.setDistributionWindow(newWindow);
-        assertEq(marketplace.distributionWindow(), newWindow);
-    }
-
-    function test_LastPurchaseTimeUpdated() public {
-        uint256 timeBefore = block.timestamp;
-        vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
-        assertEq(marketplace.lastPurchaseTime(contentId), timeBefore);
-    }
-
-    // --- updateContentFile tests ---
+    // --- Content update file tests (preserved from before) ---
 
     function test_UpdateContentFile() public {
         bytes32 newContentHash = keccak256("game-file-v2-data");
@@ -465,9 +474,7 @@ contract MarketplaceTest is Test {
         vm.prank(creator);
         registry.updateContentFile(contentId, newContentHash);
 
-        // The on-chain content hash should now reflect the new file
         assertEq(registry.getContentHash(contentId), newContentHash);
-        // The contentId is unchanged
         assertEq(registry.getCreator(contentId), creator);
         assertTrue(registry.isActive(contentId));
     }
@@ -501,17 +508,14 @@ contract MarketplaceTest is Test {
     }
 
     function test_UpdateContentFilePreservesPurchases() public {
-        // Buyer purchases the original content
         vm.prank(buyer);
         marketplace.purchase{value: contentPrice}(contentId);
         assertTrue(marketplace.hasPurchased(contentId, buyer));
 
-        // Creator pushes a file update
         bytes32 newContentHash = keccak256("game-file-v2-data");
         vm.prank(creator);
         registry.updateContentFile(contentId, newContentHash);
 
-        // Buyer's purchase record is still valid for the same contentId
         assertTrue(marketplace.hasPurchased(contentId, buyer));
     }
 }

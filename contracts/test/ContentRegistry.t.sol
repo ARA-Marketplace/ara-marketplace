@@ -64,25 +64,26 @@ contract ContentRegistryTest is Test {
 
     function test_PublishContent() public {
         vm.prank(creator);
-        bytes32 contentId = registry.publishContent(contentHash, metadataURI, price);
+        bytes32 contentId = registry.publishContent(contentHash, metadataURI, price, 1_000_000);
 
         assertEq(registry.getCreator(contentId), creator);
         assertEq(registry.getContentHash(contentId), contentHash);
         assertEq(registry.getPrice(contentId), price);
         assertTrue(registry.isActive(contentId));
         assertEq(registry.getContentCount(), 1);
+        assertEq(registry.getFileSize(contentId), 1_000_000);
     }
 
     function test_RevertPublishWithoutStake() public {
         vm.prank(nobody);
         vm.expectRevert();
-        registry.publishContent(contentHash, metadataURI, price);
+        registry.publishContent(contentHash, metadataURI, price, 1_000_000);
     }
 
     function test_PublishSameFileTwice() public {
         vm.startPrank(creator);
-        bytes32 id1 = registry.publishContent(contentHash, metadataURI, price);
-        bytes32 id2 = registry.publishContent(contentHash, "ipfs://QmSecond", 0.2 ether);
+        bytes32 id1 = registry.publishContent(contentHash, metadataURI, price, 1_000_000);
+        bytes32 id2 = registry.publishContent(contentHash, "ipfs://QmSecond", 0.2 ether, 2_000_000);
         vm.stopPrank();
 
         // Same file, same creator → two different contentIds (nonce makes them unique)
@@ -99,12 +100,12 @@ contract ContentRegistryTest is Test {
     function test_RevertPublishZeroPrice() public {
         vm.prank(creator);
         vm.expectRevert();
-        registry.publishContent(contentHash, metadataURI, 0);
+        registry.publishContent(contentHash, metadataURI, 0, 1_000_000);
     }
 
     function test_UpdateContent() public {
         vm.startPrank(creator);
-        bytes32 contentId = registry.publishContent(contentHash, metadataURI, price);
+        bytes32 contentId = registry.publishContent(contentHash, metadataURI, price, 1_000_000);
         registry.updateContent(contentId, 0.2 ether, "ipfs://QmUpdated");
         vm.stopPrank();
 
@@ -113,7 +114,7 @@ contract ContentRegistryTest is Test {
 
     function test_RevertUpdateByNonCreator() public {
         vm.prank(creator);
-        bytes32 contentId = registry.publishContent(contentHash, metadataURI, price);
+        bytes32 contentId = registry.publishContent(contentHash, metadataURI, price, 1_000_000);
 
         vm.prank(nobody);
         vm.expectRevert();
@@ -122,7 +123,7 @@ contract ContentRegistryTest is Test {
 
     function test_DelistContent() public {
         vm.startPrank(creator);
-        bytes32 contentId = registry.publishContent(contentHash, metadataURI, price);
+        bytes32 contentId = registry.publishContent(contentHash, metadataURI, price, 1_000_000);
         registry.delistContent(contentId);
         vm.stopPrank();
 
@@ -131,7 +132,7 @@ contract ContentRegistryTest is Test {
 
     function test_RevertDelistByNonCreator() public {
         vm.prank(creator);
-        bytes32 contentId = registry.publishContent(contentHash, metadataURI, price);
+        bytes32 contentId = registry.publishContent(contentHash, metadataURI, price, 1_000_000);
 
         vm.prank(nobody);
         vm.expectRevert();

@@ -19,17 +19,21 @@ contract FullFlowForkTest is Test {
 
     address public deployer;
     address public creator;
-    address public buyer;
     address public seeder;
+
+    // Buyer with known private key (for EIP-712 receipt signing)
+    uint256 public buyerPrivKey = 0xBEEF;
+    address public buyer;
 
     uint256 public constant PUBLISHER_MIN = 1000 ether; // 1000 ARA
     uint256 public constant SEEDER_MIN = 100 ether; // 100 ARA
     uint256 public constant CREATOR_SHARE_BPS = 8500;
+    uint256 public constant FILE_SIZE = 1_000_000; // 1 MB
 
     function setUp() public {
         deployer = makeAddr("deployer");
         creator = makeAddr("creator");
-        buyer = makeAddr("buyer");
+        buyer = vm.addr(buyerPrivKey);
         seeder = makeAddr("seeder");
 
         vm.startPrank(deployer);
@@ -42,9 +46,30 @@ contract FullFlowForkTest is Test {
         vm.deal(buyer, 10 ether);
 
         // Use deal to give ARA tokens to test accounts
-        // This works on forks — it overwrites the storage slot for the balance
         deal(ARA_TOKEN, creator, 10_000 ether);
         deal(ARA_TOKEN, seeder, 5_000 ether);
+    }
+
+    // --- EIP-712 helpers ---
+
+    function _receiptHash(bytes32 cId, address seederAddr, uint256 bytesServedVal, uint256 ts)
+        internal
+        view
+        returns (bytes32)
+    {
+        bytes32 structHash =
+            keccak256(abi.encode(marketplace.RECEIPT_TYPE_HASH(), cId, seederAddr, bytesServedVal, ts));
+        return keccak256(abi.encodePacked("\x19\x01", marketplace.DOMAIN_SEPARATOR(), structHash));
+    }
+
+    function _signReceipt(uint256 privateKey, bytes32 cId, address seederAddr, uint256 bytesServedVal, uint256 ts)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 hash = _receiptHash(cId, seederAddr, bytesServedVal, ts);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, hash);
+        return abi.encodePacked(r, s, v);
     }
 
     function test_FullFlowOnFork() public {
@@ -54,9 +79,9 @@ contract FullFlowForkTest is Test {
         staking.stake(PUBLISHER_MIN);
         assertTrue(staking.isEligiblePublisher(creator));
 
-        // 2. Creator publishes content
+        // 2. Creator publishes content (with file size)
         bytes32 contentHash = keccak256("my-awesome-game");
-        bytes32 contentId = registry.publishContent(contentHash, "ipfs://QmMetadata", 0.1 ether);
+        bytes32 contentId = registry.publishContent(contentHash, "ipfs://QmMetadata", 0.1 ether, FILE_SIZE);
         vm.stopPrank();
 
         // 3. Seeder stakes for the content
@@ -76,28 +101,23 @@ contract FullFlowForkTest is Test {
         // Verify payment split
         uint256 creatorPayment = (0.1 ether * 8500) / 10_000;
         assertEq(creator.balance - creatorBalBefore, creatorPayment);
-        assertEq(marketplace.rewardPool(contentId), 0.1 ether - creatorPayment);
+        assertEq(marketplace.getBuyerReward(contentId, buyer), 0.1 ether - creatorPayment);
 
-        // 5. Reporter distributes rewards
-        address[] memory seeders = new address[](1);
-        seeders[0] = seeder;
-        uint256[] memory weights = new uint256[](1);
-        weights[0] = 1;
+        // 5. Seeder claims reward with buyer-signed delivery receipt
+        uint256 ts = block.timestamp;
+        bytes memory sig = _signReceipt(buyerPrivKey, contentId, seeder, FILE_SIZE, ts);
 
-        vm.prank(deployer);
-        marketplace.distributeRewards(contentId, seeders, weights);
-
-        // 6. Seeder claims ETH rewards
         uint256 seederBalBefore = seeder.balance;
-        uint256 claimable = marketplace.claimableRewards(seeder);
-        assertTrue(claimable > 0);
+        uint256 expectedReward = marketplace.getBuyerReward(contentId, buyer);
 
         vm.prank(seeder);
-        marketplace.claimRewards();
-        assertEq(seeder.balance - seederBalBefore, claimable);
+        marketplace.claimDeliveryReward(contentId, buyer, FILE_SIZE, ts, sig);
+
+        assertEq(seeder.balance - seederBalBefore, expectedReward);
+        assertEq(marketplace.getBuyerReward(contentId, buyer), 0);
 
         console.log("Full flow completed successfully!");
         console.log("Creator received:", creatorPayment, "wei");
-        console.log("Seeder earned:", claimable, "wei");
+        console.log("Seeder earned:", expectedReward, "wei");
     }
 }

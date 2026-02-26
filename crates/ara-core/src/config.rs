@@ -49,12 +49,12 @@ impl Default for AppConfig {
                 // Sepolia testnet — set SEPOLIA_RPC_URL env var to override with Alchemy/Infura key
                 rpc_url: "https://ethereum-sepolia.publicnode.com".to_string(),
                 chain_id: 11155111,
-                // Sepolia deployment (2026-02-19) — with per-creator nonce in ContentRegistry
-                ara_token_address: "0xE8486e01aA1Da716448a3893792837AF9f1bBFa2".to_string(),
-                staking_address: "0x119554583bDB704CdA18f674054C2C7EF4C2A60c".to_string(),
-                registry_address: "0x2ECb7C21A99BcB52CD202a94484C935b31cB0Ea0".to_string(),
-                marketplace_address: "0xA4bBCCBFc6F7C12ad80c45C0aed386289636Bb6E".to_string(),
-                deployment_block: 10_293_374, // 0x9d107e — Sepolia deploy block (2026-02-19)
+                // Sepolia deployment (2026-02-25) — per-receipt claiming + fileSize
+                ara_token_address: "0x40A13EF876e3dCf968b4dC372a92ADdCa95b8A3b".to_string(),
+                staking_address: "0xCbb3958d9D6DaAc22518C90CA663CE027AD0D39F".to_string(),
+                registry_address: "0x4db94B57425189EEC4C8674Fa5E8f4AC24105b32".to_string(),
+                marketplace_address: "0x8Fe6db4d530538F1f419a8FD39D3C09eE18F1Cc7".to_string(),
+                deployment_block: 10_337_150, // Sepolia deploy block (2026-02-25)
             },
             iroh: IrohConfig {
                 relay_urls: vec!["https://relay.iroh.network".to_string()],

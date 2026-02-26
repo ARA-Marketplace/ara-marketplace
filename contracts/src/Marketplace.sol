@@ -5,18 +5,15 @@ import {ContentRegistry} from "./ContentRegistry.sol";
 import {AraStaking} from "./AraStaking.sol";
 
 /// @title Marketplace
-/// @notice Handles content purchases (ETH payments) and seeder reward distribution.
+/// @notice Handles content purchases (ETH payments) and per-receipt seeder reward claiming.
 ///         When a buyer purchases content:
 ///           - Creator receives creatorShareBps% of the payment
-///           - Remaining goes to the reward pool for that content
+///           - Remaining is held as a per-buyer reward claimable by seeders
 ///
-///         Two paths to distribute rewards:
-///           1. Creator fast path: content creator (or global reporter) calls distributeRewards()
-///              anytime with off-chain receipt aggregation. No on-chain proof required.
-///           2. Trustless fallback: after distributionWindow has elapsed since the last purchase,
-///              any eligible seeder can call publicDistributeWithProofs() by submitting
-///              buyer-signed EIP-712 delivery receipts. The contract verifies each signature
-///              on-chain — no trust in any party required.
+///         Seeders claim rewards by submitting buyer-signed EIP-712 delivery receipts.
+///         Each receipt proves "I delivered X bytes of content Y to buyer Z."
+///         Reward is proportional: (bytesServed / fileSize) × buyerReward.
+///         No "distribute" step — each seeder independently claims what they've earned.
 contract Marketplace {
     ContentRegistry public immutable registry;
     AraStaking public immutable staking;
@@ -31,54 +28,43 @@ contract Marketplace {
     /// @notice contentId => list of buyer addresses
     mapping(bytes32 => address[]) public purchasers;
 
-    /// @notice Accumulated ETH reward pool per content
-    mapping(bytes32 => uint256) public rewardPool;
+    /// @notice Per-buyer reward amount set at purchase time (immutable after purchase)
+    mapping(bytes32 => mapping(address => uint256)) public buyerReward;
 
-    /// @notice Claimable ETH rewards per seeder (accumulated across all content)
-    mapping(address => uint256) public claimableRewards;
+    /// @notice Total rewards paid out from a buyer's purchase
+    mapping(bytes32 => mapping(address => uint256)) public buyerRewardPaid;
 
-    /// @notice Total ETH distributed as rewards (lifetime)
-    uint256 public totalRewardsDistributed;
+    /// @notice Replay protection: contentId => buyer => seeder => bytes claimed
+    mapping(bytes32 => mapping(address => mapping(address => uint256))) public bytesClaimed;
+
+    /// @notice Total ETH claimed as rewards (lifetime)
+    uint256 public totalRewardsClaimed;
 
     /// @notice Total ETH paid to creators (lifetime)
     uint256 public totalCreatorPayments;
 
-    /// @notice Authorized reward reporter address (global fallback, always allowed)
-    address public reporter;
-
     /// @notice Contract owner
     address public owner;
-
-    /// @notice Timestamp of most recent purchase per content (for distribution window)
-    mapping(bytes32 => uint256) public lastPurchaseTime;
-
-    /// @notice Time after last purchase before trustless public distribution unlocks
-    uint256 public distributionWindow;
-
-    /// @notice Replay protection: keccak256(contentId, seederEthAddress, buyerAddress, timestamp) => used
-    mapping(bytes32 => bool) public usedReceipts;
 
     // --- EIP-712 ---
     bytes32 private constant DOMAIN_TYPE_HASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
 
-    /// @dev DeliveryReceipt(bytes32 contentId,address seederEthAddress,uint256 timestamp)
+    /// @dev DeliveryReceipt(bytes32 contentId,address seederEthAddress,uint256 bytesServed,uint256 timestamp)
     ///      Buyer signs this to prove they received content from a specific seeder.
     bytes32 public constant RECEIPT_TYPE_HASH =
-        keccak256("DeliveryReceipt(bytes32 contentId,address seederEthAddress,uint256 timestamp)");
+        keccak256("DeliveryReceipt(bytes32 contentId,address seederEthAddress,uint256 bytesServed,uint256 timestamp)");
 
     bytes32 public immutable DOMAIN_SEPARATOR;
 
-    // --- Structs for publicDistributeWithProofs ---
+    // --- Structs ---
 
-    struct SignedReceipt {
+    struct ClaimParams {
+        bytes32 contentId;
+        address buyer;
+        uint256 bytesServed;
         uint256 timestamp;
         bytes signature; // 65-byte ECDSA over EIP-712 DeliveryReceipt hash
-    }
-
-    struct SeederBundle {
-        address seeder; // Seeder's Ethereum address
-        SignedReceipt[] receipts; // Buyer-signed proofs that this seeder served the content
     }
 
     // --- Events ---
@@ -87,29 +73,29 @@ contract Marketplace {
         address indexed buyer,
         uint256 pricePaid,
         uint256 creatorPayment,
-        uint256 poolContribution
+        uint256 rewardAmount
     );
-    event RewardsDistributed(bytes32 indexed contentId, address[] seeders, uint256[] amounts, uint256 totalAmount);
-    event RewardClaimed(address indexed seeder, uint256 amount);
-    event ReporterUpdated(address oldReporter, address newReporter);
+    event DeliveryRewardClaimed(
+        bytes32 indexed contentId,
+        address indexed seeder,
+        address buyer,
+        uint256 amount,
+        uint256 bytesServed
+    );
+    event RewardsClaimed(address indexed seeder, uint256 totalAmount, uint256 receiptCount);
     event CreatorShareUpdated(uint256 oldBps, uint256 newBps);
-    event DistributionWindowUpdated(uint256 oldWindow, uint256 newWindow);
 
     // --- Errors ---
     error AlreadyPurchased();
     error ContentNotActive();
     error InsufficientPayment(uint256 sent, uint256 required);
-    error ArrayLengthMismatch();
-    error NoRewardsToDistribute();
-    error SeederNotEligible(address seeder);
     error NoRewardsToClaim();
     error TransferFailed();
     error OnlyOwner();
-    error OnlyReporter();
-    error ZeroWeight();
     error InvalidCreatorShare();
-    error DistributionWindowNotOpen();
-    error NotEligibleSeeder();
+    error InvalidSignature();
+    error NotPurchased();
+    error AlreadyClaimed();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert OnlyOwner();
@@ -122,14 +108,12 @@ contract Marketplace {
         staking = AraStaking(_staking);
         creatorShareBps = _creatorShareBps;
         owner = msg.sender;
-        reporter = msg.sender; // Owner is initial reporter
-        distributionWindow = 30 days;
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(DOMAIN_TYPE_HASH, keccak256("AraMarketplace"), keccak256("1"), block.chainid, address(this))
         );
     }
 
-    /// @notice Purchase content with ETH. Payment is split between creator and reward pool.
+    /// @notice Purchase content with ETH. Creator gets their share, rest is held for seeders.
     /// @param contentId The content to purchase
     function purchase(bytes32 contentId) external payable {
         if (hasPurchased[contentId][msg.sender]) revert AlreadyPurchased();
@@ -140,21 +124,20 @@ contract Marketplace {
 
         hasPurchased[contentId][msg.sender] = true;
         purchasers[contentId].push(msg.sender);
-        lastPurchaseTime[contentId] = block.timestamp;
 
-        // Split payment: creator gets their share, rest goes to reward pool
+        // Split: creator gets their share, rest held for seeder claiming
         uint256 creatorPayment = (price * creatorShareBps) / BPS_DENOMINATOR;
-        uint256 poolContribution = price - creatorPayment;
+        uint256 rewardAmount = price - creatorPayment;
 
-        // Pay creator
+        // Pay creator immediately
         address creator = registry.getCreator(contentId);
         (bool sent,) = payable(creator).call{value: creatorPayment}("");
         if (!sent) revert TransferFailed();
 
         totalCreatorPayments += creatorPayment;
 
-        // Add to reward pool
-        rewardPool[contentId] += poolContribution;
+        // Hold reward for seeder claiming (immutable after this point)
+        buyerReward[contentId][msg.sender] = rewardAmount;
 
         // Refund overpayment
         if (msg.value > price) {
@@ -162,96 +145,62 @@ contract Marketplace {
             if (!refunded) revert TransferFailed();
         }
 
-        emit ContentPurchased(contentId, msg.sender, price, creatorPayment, poolContribution);
+        emit ContentPurchased(contentId, msg.sender, price, creatorPayment, rewardAmount);
     }
 
-    /// @notice Distribute reward pool for a content to its seeders.
-    ///         Callable by the global reporter OR the content's creator.
-    ///         Uses off-chain aggregated weights (e.g. receipt counts × stake). No on-chain proof required.
-    /// @param contentId The content whose reward pool to distribute
-    /// @param seeders Array of seeder addresses
-    /// @param weights Array of proportional weights
-    function distributeRewards(bytes32 contentId, address[] calldata seeders, uint256[] calldata weights) external {
-        address creator = registry.getCreator(contentId);
-        if (msg.sender != reporter && msg.sender != creator) revert OnlyReporter();
+    /// @notice Claim reward for delivering content to a single buyer.
+    ///         The calling seeder submits a buyer-signed delivery receipt.
+    function claimDeliveryReward(
+        bytes32 contentId,
+        address buyer,
+        uint256 bytesServed,
+        uint256 timestamp,
+        bytes calldata signature
+    ) external {
+        uint256 payout = _verifyAndCalculateClaim(contentId, buyer, bytesServed, timestamp, signature);
+        if (payout == 0) revert NoRewardsToClaim();
 
-        if (seeders.length != weights.length) revert ArrayLengthMismatch();
-        if (rewardPool[contentId] == 0) revert NoRewardsToDistribute();
+        totalRewardsClaimed += payout;
 
-        for (uint256 i = 0; i < seeders.length; i++) {
-            if (!staking.isEligibleSeeder(seeders[i], contentId)) {
-                revert SeederNotEligible(seeders[i]);
-            }
-        }
-
-        _distribute(contentId, seeders, weights);
-    }
-
-    /// @notice Trustless reward distribution with on-chain buyer receipt verification.
-    ///         Callable by any eligible seeder after distributionWindow has elapsed
-    ///         since the last purchase (i.e. creator has had enough time to distribute
-    ///         voluntarily but hasn't).
-    ///
-    ///         Each bundle contains buyer-signed EIP-712 DeliveryReceipt structs proving
-    ///         a buyer received content from a seeder. The contract:
-    ///           1. Verifies each buyer signature (ecrecover)
-    ///           2. Confirms the buyer actually purchased the content
-    ///           3. Marks the receipt as used (replay protection)
-    ///           4. Tallies verified receipt counts as weights
-    ///           5. Distributes the reward pool proportionally
-    ///
-    /// @param contentId The content whose reward pool to distribute
-    /// @param bundles Per-seeder receipt bundles
-    function publicDistributeWithProofs(bytes32 contentId, SeederBundle[] calldata bundles) external {
-        if (lastPurchaseTime[contentId] == 0) revert NoRewardsToDistribute();
-        if (block.timestamp <= lastPurchaseTime[contentId] + distributionWindow) revert DistributionWindowNotOpen();
-        if (!staking.isEligibleSeeder(msg.sender, contentId)) revert NotEligibleSeeder();
-        if (rewardPool[contentId] == 0) revert NoRewardsToDistribute();
-
-        address[] memory seeders = new address[](bundles.length);
-        uint256[] memory weights = new uint256[](bundles.length);
-
-        for (uint256 i = 0; i < bundles.length; i++) {
-            // Skip ineligible seeders rather than reverting — valid receipts from
-            // other seeders should still be processed.
-            if (!staking.isEligibleSeeder(bundles[i].seeder, contentId)) continue;
-            seeders[i] = bundles[i].seeder;
-
-            for (uint256 j = 0; j < bundles[i].receipts.length; j++) {
-                SignedReceipt calldata r = bundles[i].receipts[j];
-
-                // Compute EIP-712 hash for DeliveryReceipt(contentId, seederEthAddress, timestamp)
-                bytes32 structHash =
-                    keccak256(abi.encode(RECEIPT_TYPE_HASH, contentId, bundles[i].seeder, r.timestamp));
-                bytes32 eip712Hash = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
-
-                // Recover buyer from signature
-                address buyer = _ecrecover(eip712Hash, r.signature);
-                if (buyer == address(0)) continue; // invalid signature
-                if (!hasPurchased[contentId][buyer]) continue; // not a verified buyer
-
-                // Replay protection key includes buyer to allow one receipt per buyer per seeder
-                bytes32 receiptKey = keccak256(abi.encode(contentId, bundles[i].seeder, buyer, r.timestamp));
-                if (usedReceipts[receiptKey]) continue;
-
-                usedReceipts[receiptKey] = true;
-                weights[i]++;
-            }
-        }
-
-        _distribute(contentId, seeders, weights);
-    }
-
-    /// @notice Claim all accumulated ETH rewards.
-    function claimRewards() external {
-        uint256 amount = claimableRewards[msg.sender];
-        if (amount == 0) revert NoRewardsToClaim();
-
-        claimableRewards[msg.sender] = 0;
-        (bool sent,) = payable(msg.sender).call{value: amount}("");
+        (bool sent,) = payable(msg.sender).call{value: payout}("");
         if (!sent) revert TransferFailed();
 
-        emit RewardClaimed(msg.sender, amount);
+        emit DeliveryRewardClaimed(contentId, msg.sender, buyer, payout, bytesServed);
+        emit RewardsClaimed(msg.sender, payout, 1);
+    }
+
+    /// @notice Batch claim: submit multiple delivery receipts in one transaction.
+    ///         All receipts must be for the calling seeder (msg.sender).
+    ///         Invalid or already-claimed receipts are silently skipped.
+    function claimDeliveryRewards(ClaimParams[] calldata claims) external {
+        uint256 totalPayout = 0;
+        uint256 validCount = 0;
+
+        for (uint256 i = 0; i < claims.length; i++) {
+            uint256 payout = _verifyAndCalculateClaim(
+                claims[i].contentId,
+                claims[i].buyer,
+                claims[i].bytesServed,
+                claims[i].timestamp,
+                claims[i].signature
+            );
+            if (payout > 0) {
+                totalPayout += payout;
+                validCount++;
+                emit DeliveryRewardClaimed(
+                    claims[i].contentId, msg.sender, claims[i].buyer, payout, claims[i].bytesServed
+                );
+            }
+        }
+
+        if (totalPayout == 0) revert NoRewardsToClaim();
+
+        totalRewardsClaimed += totalPayout;
+
+        (bool sent,) = payable(msg.sender).call{value: totalPayout}("");
+        if (!sent) revert TransferFailed();
+
+        emit RewardsClaimed(msg.sender, totalPayout, validCount);
     }
 
     /// @notice Check if an address has purchased specific content
@@ -264,10 +213,9 @@ contract Marketplace {
         return purchasers[contentId].length;
     }
 
-    /// @notice Set the authorized reward reporter
-    function setReporter(address newReporter) external onlyOwner {
-        emit ReporterUpdated(reporter, newReporter);
-        reporter = newReporter;
+    /// @notice Get remaining (unclaimed) reward for a buyer's purchase
+    function getBuyerReward(bytes32 contentId, address buyer) external view returns (uint256) {
+        return buyerReward[contentId][buyer] - buyerRewardPaid[contentId][buyer];
     }
 
     /// @notice Update the creator share percentage
@@ -275,12 +223,6 @@ contract Marketplace {
         if (newCreatorShareBps > BPS_DENOMINATOR) revert InvalidCreatorShare();
         emit CreatorShareUpdated(creatorShareBps, newCreatorShareBps);
         creatorShareBps = newCreatorShareBps;
-    }
-
-    /// @notice Update the distribution window duration
-    function setDistributionWindow(uint256 newWindow) external onlyOwner {
-        emit DistributionWindowUpdated(distributionWindow, newWindow);
-        distributionWindow = newWindow;
     }
 
     /// @notice Transfer ownership
@@ -292,31 +234,51 @@ contract Marketplace {
 
     // --- Internal helpers ---
 
-    /// @dev Proportionally distribute pooled rewards to seeders by weight.
-    ///      Seeders with zero weight are skipped. Rounding dust stays in the pool.
-    function _distribute(bytes32 contentId, address[] memory seeders, uint256[] memory weights) internal {
-        uint256 totalWeight = 0;
-        for (uint256 i = 0; i < weights.length; i++) {
-            totalWeight += weights[i];
+    /// @dev Verify a delivery receipt and calculate the payout.
+    ///      Returns 0 if invalid (signature mismatch, not purchased, already claimed, etc.).
+    ///      Updates state (bytesClaimed, buyerRewardPaid) on success.
+    function _verifyAndCalculateClaim(
+        bytes32 contentId,
+        address buyer,
+        uint256 bytesServed,
+        uint256 timestamp,
+        bytes calldata signature
+    ) internal returns (uint256) {
+        // 1. Verify buyer signed this receipt (EIP-712)
+        {
+            bytes32 structHash = keccak256(abi.encode(
+                RECEIPT_TYPE_HASH, contentId, msg.sender, bytesServed, timestamp
+            ));
+            bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
+            if (_ecrecover(digest, signature) != buyer) return 0;
         }
-        if (totalWeight == 0) revert ZeroWeight();
 
-        uint256 poolAmount = rewardPool[contentId];
-        uint256[] memory amounts = new uint256[](seeders.length);
-        uint256 distributed = 0;
+        // 2. Verify buyer actually purchased this content
+        if (!hasPurchased[contentId][buyer]) return 0;
 
-        for (uint256 i = 0; i < seeders.length; i++) {
-            if (weights[i] == 0) continue;
-            amounts[i] = (poolAmount * weights[i]) / totalWeight;
-            claimableRewards[seeders[i]] += amounts[i];
-            distributed += amounts[i];
-        }
+        // 3. Replay protection: one claim per (content, buyer, seeder)
+        if (bytesClaimed[contentId][buyer][msg.sender] > 0) return 0;
+        bytesClaimed[contentId][buyer][msg.sender] = bytesServed;
 
-        // Rounding dust stays in the pool
-        rewardPool[contentId] = poolAmount - distributed;
-        totalRewardsDistributed += distributed;
+        // 4. Calculate proportional share and record payout
+        return _calculateShare(contentId, buyer, bytesServed);
+    }
 
-        emit RewardsDistributed(contentId, seeders, amounts, distributed);
+    /// @dev Calculate the proportional reward share and update buyerRewardPaid.
+    function _calculateShare(bytes32 contentId, address buyer, uint256 bytesServed) internal returns (uint256) {
+        uint256 fSize = registry.getFileSize(contentId);
+        if (fSize == 0) return 0;
+
+        uint256 original = buyerReward[contentId][buyer];
+        if (original == 0) return 0;
+
+        uint256 share = (original * bytesServed) / fSize;
+        uint256 remaining = original - buyerRewardPaid[contentId][buyer];
+        if (share > remaining) share = remaining;
+        if (share == 0) return 0;
+
+        buyerRewardPaid[contentId][buyer] += share;
+        return share;
     }
 
     /// @dev Recover the signer of an EIP-712 hash from a 65-byte signature.
