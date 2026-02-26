@@ -474,21 +474,12 @@ pub async fn sync_rewards_impl(state: &AppState) -> Result<RewardSyncResult, Str
                     }
                 }
             }
-            AraEvent::RewardsClaimed {
-                seeder,
-                total_amount,
-                ..
-            } => {
+            AraEvent::RewardsClaimed { seeder, .. } => {
+                // Aggregate event — skip recording to avoid double-counting.
+                // Individual DeliveryRewardClaimed events above already capture
+                // each per-content claim with claimed=1.
                 if *seeder == wallet_addr {
-                    if let Err(e) = db.insert_reward_claim(
-                        &total_amount.to_string(),
-                        &tx_hash_str,
-                        approx_timestamp,
-                    ) {
-                        warn!("Failed to insert reward claim: {}", e);
-                    } else {
-                        claims_found += 1;
-                    }
+                    claims_found += 1;
                 }
             }
             _ => {}

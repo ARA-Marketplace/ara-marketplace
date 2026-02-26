@@ -434,19 +434,9 @@ pub async fn confirm_claim_rewards(
         }
     }
 
-    // Also check for the batch RewardsClaimed event
-    for log in receipt.inner.logs() {
-        if let Ok(event) = IMarketplace::RewardsClaimed::decode_log(&log.inner) {
-            // Record the aggregate claim as well
-            if let Err(e) = db.insert_reward_claim(
-                &event.totalAmount.to_string(),
-                &tx_hash,
-                now,
-            ) {
-                warn!("Failed to record aggregate claim: {}", e);
-            }
-        }
-    }
+    // Note: the batch RewardsClaimed event is intentionally not recorded separately.
+    // Each DeliveryRewardClaimed event above already has claimed=1, so the per-content
+    // rows provide accurate totals without risk of double-counting.
 
     info!("Recorded delivery reward claim: {} wei total", total_claimed);
     Ok(())

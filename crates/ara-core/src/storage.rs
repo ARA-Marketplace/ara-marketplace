@@ -141,9 +141,11 @@ impl Database {
             .conn
             .execute("ALTER TABLE content_seeders ADD COLUMN eth_address TEXT", []);
         // delivery_receipts is a new table — CREATE TABLE IF NOT EXISTS handles existing DBs
-        // Unique index on rewards.tx_hash for dedup (sync + immediate recording can both insert)
+        // Migrate: old unique index on tx_hash alone prevented multiple events per tx.
+        // Replace with (content_id, tx_hash) so batch claims record every content.
+        let _ = self.conn.execute("DROP INDEX IF EXISTS idx_rewards_tx_hash", []);
         let _ = self.conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_rewards_tx_hash ON rewards(tx_hash)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_rewards_content_tx ON rewards(content_id, tx_hash)",
             [],
         );
         // updated_at and categories are new columns — silently ignored if already present
@@ -277,7 +279,9 @@ impl Database {
 
     // ── Reward tracking ──
 
-    /// Insert a reward distribution record. Deduplicates by tx_hash.
+    /// Insert a reward claim record. Deduplicates by (content_id, tx_hash).
+    /// In the per-receipt model every recorded reward is an on-chain claim,
+    /// so `claimed` is always 1.
     pub fn insert_reward(
         &self,
         content_id: &str,
@@ -287,7 +291,7 @@ impl Database {
     ) -> rusqlite::Result<usize> {
         self.conn.execute(
             "INSERT OR IGNORE INTO rewards (content_id, amount_wei, tx_hash, claimed, distributed_at)
-             VALUES (?1, ?2, ?3, 0, ?4)",
+             VALUES (?1, ?2, ?3, 1, ?4)",
             rusqlite::params![content_id, amount_wei, tx_hash, distributed_at],
         )
     }
