@@ -36,6 +36,9 @@ function Publish() {
   const [priceEth, setPriceEth] = useState("");
   const [contentType, setContentType] = useState("game");
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [editionType, setEditionType] = useState<"unlimited" | "limited">("unlimited");
+  const [maxCopies, setMaxCopies] = useState("");
+  const [royaltyPercent, setRoyaltyPercent] = useState("10");
   const [filePath, setFilePath] = useState<string | null>(null);
   const [mainPreviewImagePath, setMainPreviewImagePath] = useState<string | null>(null);
   const [mainPreviewTrailerPath, setMainPreviewTrailerPath] = useState<string | null>(null);
@@ -105,20 +108,32 @@ function Publish() {
   }, []);
 
   const fileName = filePath ? filePath.split(/[\\/]/).pop() ?? filePath : null;
-  const canPublish = filePath && title.trim() && priceEth.trim() && isForm && isConnected;
+  const canPublish = filePath && title.trim() && priceEth.trim() && isForm;
 
   const handlePublish = async () => {
     if (!filePath || !title.trim() || !priceEth.trim()) return;
+    if (!isConnected) {
+      openModal();
+      return;
+    }
     setError(null);
     setResultHash(null);
     try {
       setStep("importing");
+      const parsedMaxSupply = editionType === "limited" && maxCopies.trim()
+        ? parseInt(maxCopies.trim(), 10)
+        : undefined;
+      const parsedRoyaltyBps = royaltyPercent.trim()
+        ? Math.round(parseFloat(royaltyPercent.trim()) * 100)
+        : undefined;
       const result = await publishContent({
         filePath,
         title: title.trim(),
         description: description.trim(),
         contentType,
         priceEth: priceEth.trim(),
+        maxSupply: parsedMaxSupply,
+        royaltyBps: parsedRoyaltyBps,
         categories: selectedCategories.length > 0 ? selectedCategories : undefined,
         mainPreviewImagePath: mainPreviewImagePath ?? undefined,
         mainPreviewTrailerPath: mainPreviewTrailerPath ?? undefined,
@@ -213,6 +228,59 @@ function Publish() {
                 </button>
               );
             })}
+          </div>
+        </div>
+
+        {/* Edition Settings */}
+        <div className="card p-5 space-y-4">
+          <div>
+            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">Edition Settings</p>
+            <p className="text-xs text-slate-500 dark:text-slate-500 mt-0.5">Control supply and earn royalties on resales</p>
+          </div>
+
+          <div>
+            <label className="label-xs">Edition Type</label>
+            <div className="flex gap-3">
+              <button type="button" disabled={!isForm}
+                onClick={() => setEditionType("unlimited")}
+                className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50 ${
+                  editionType === "unlimited"
+                    ? "bg-ara-600 border-ara-600 text-white"
+                    : "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-ara-400 dark:hover:border-ara-600 bg-white dark:bg-slate-900"
+                }`}>
+                Unlimited
+              </button>
+              <button type="button" disabled={!isForm}
+                onClick={() => setEditionType("limited")}
+                className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50 ${
+                  editionType === "limited"
+                    ? "bg-ara-600 border-ara-600 text-white"
+                    : "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-ara-400 dark:hover:border-ara-600 bg-white dark:bg-slate-900"
+                }`}>
+                Limited Edition
+              </button>
+            </div>
+          </div>
+
+          {editionType === "limited" && (
+            <div>
+              <label className="label-xs">Max Copies</label>
+              <input type="number" min="1" value={maxCopies}
+                onChange={(e) => setMaxCopies(e.target.value)}
+                disabled={!isForm} placeholder="e.g. 100"
+                className="input-base w-40" />
+            </div>
+          )}
+
+          <div>
+            <label className="label-xs">Resale Royalty %</label>
+            <div className="flex items-center gap-2">
+              <input type="number" min="0" max="50" step="0.5" value={royaltyPercent}
+                onChange={(e) => setRoyaltyPercent(e.target.value)}
+                disabled={!isForm} placeholder="10"
+                className="input-base w-24" />
+              <span className="text-xs text-slate-500 dark:text-slate-500">% earned on every resale</span>
+            </div>
           </div>
         </div>
 
@@ -320,10 +388,6 @@ function Publish() {
 
         {error && <div className="alert-error">{error}</div>}
 
-        {!isConnected && isForm && (
-          <div className="alert-warning">Connect your wallet to publish content.</div>
-        )}
-
         {step === "done" && resultHash && (
           <div className="alert-success">
             <p className="font-medium">Published successfully!</p>
@@ -338,7 +402,7 @@ function Publish() {
           </button>
         ) : (
           <button onClick={handlePublish} disabled={!canPublish} className="btn-primary-lg w-full">
-            {STEP_LABELS[step]}
+            {!isConnected && isForm ? "Connect Wallet to Publish" : STEP_LABELS[step]}
           </button>
         )}
       </div>

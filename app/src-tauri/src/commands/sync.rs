@@ -181,6 +181,7 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                 content_hash,
                 metadata_uri,
                 price_wei,
+                max_supply,
                 ..
             } => {
                 let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
@@ -214,6 +215,7 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                     .as_secs() as i64;
 
                 let categories_json = serde_json::to_string(&meta.categories).unwrap_or_default();
+                let max_supply_i64: i64 = (*max_supply).try_into().unwrap_or(0);
                 match db.upsert_synced_content(
                     &cid,
                     &chash,
@@ -229,6 +231,8 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                     &meta.relay_url,
                     created_at,
                     &categories_json,
+                    max_supply_i64,
+                    0, // royalty_bps not available from event; fetched on-demand via get_edition_info
                 ) {
                     Ok(n) if n > 0 => {
                         new_count += 1;
@@ -477,10 +481,15 @@ pub async fn sync_rewards_impl(state: &AppState) -> Result<RewardSyncResult, Str
             AraEvent::ResalePurchased {
                 content_id,
                 buyer,
+                seller,
                 price,
                 ..
             } => {
                 let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
+                let seller_str = format!("{seller:#x}");
+
+                // Deactivate the listing (it's been sold)
+                let _ = db.deactivate_resale_listing(&cid, &seller_str);
 
                 // Track as buyer (resale purchases are also purchases from reward perspective)
                 if *buyer == wallet_addr {
@@ -502,6 +511,28 @@ pub async fn sync_rewards_impl(state: &AppState) -> Result<RewardSyncResult, Str
                     purchases_found += 1;
                     info!("Detected resale of our content {}: buyer={}", cid, buyer);
                 }
+            }
+            AraEvent::ContentListed {
+                content_id,
+                seller,
+                price,
+            } => {
+                let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
+                let seller_str = format!("{seller:#x}");
+                let _ = db.upsert_resale_listing(
+                    &cid,
+                    &seller_str,
+                    &price.to_string(),
+                    approx_timestamp,
+                );
+            }
+            AraEvent::ListingCancelled {
+                content_id,
+                seller,
+            } => {
+                let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
+                let seller_str = format!("{seller:#x}");
+                let _ = db.deactivate_resale_listing(&cid, &seller_str);
             }
             AraEvent::RewardsClaimed { seeder, .. } => {
                 // Aggregate event — skip recording to avoid double-counting.

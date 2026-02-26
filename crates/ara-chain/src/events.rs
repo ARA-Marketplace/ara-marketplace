@@ -17,6 +17,7 @@ pub enum AraEvent {
         metadata_uri: String,
         price_wei: U256,
         file_size: U256,
+        max_supply: U256,
     },
     ContentUpdated {
         content_id: FixedBytes<32>,
@@ -52,6 +53,15 @@ pub enum AraEvent {
         price: U256,
         royalty_amount: U256,
         seeder_reward: U256,
+    },
+    ContentListed {
+        content_id: FixedBytes<32>,
+        seller: Address,
+        price: U256,
+    },
+    ListingCancelled {
+        content_id: FixedBytes<32>,
+        seller: Address,
     },
     Staked {
         user: Address,
@@ -237,6 +247,7 @@ impl<P: Provider + Clone> EventIndexer<P> {
                 metadata_uri: e.metadataURI.clone(),
                 price_wei: e.priceWei,
                 file_size: e.fileSize,
+                max_supply: e.maxSupply,
             });
         }
         if let Ok(e) = IAraContent::ContentUpdated::decode_log(log) {
@@ -286,6 +297,19 @@ impl<P: Provider + Clone> EventIndexer<P> {
                 price: e.price,
                 royalty_amount: e.royaltyAmount,
                 seeder_reward: e.seederReward,
+            });
+        }
+        if let Ok(e) = IMarketplace::ContentListed::decode_log(log) {
+            return Some(AraEvent::ContentListed {
+                content_id: e.contentId,
+                seller: e.seller,
+                price: e.price,
+            });
+        }
+        if let Ok(e) = IMarketplace::ListingCancelled::decode_log(log) {
+            return Some(AraEvent::ListingCancelled {
+                content_id: e.contentId,
+                seller: e.seller,
             });
         }
 

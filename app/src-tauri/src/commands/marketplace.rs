@@ -1,7 +1,8 @@
-use crate::commands::types::{format_wei, hex_encode, TransactionRequest};
+use crate::commands::types::{format_wei, hex_encode, parse_token_amount, TransactionRequest};
 use crate::gossip_actor::GossipCmd;
 use crate::state::AppState;
 use alloy::primitives::{Address, FixedBytes, U256};
+use ara_chain::content_token::ContentTokenClient;
 use ara_chain::marketplace::MarketplaceClient;
 use ara_p2p::content::ContentManager;
 use iroh_blobs::net_protocol::DownloadMode;
@@ -615,6 +616,314 @@ pub async fn get_receipt_count(
         )
         .unwrap_or(0);
     Ok(count as u64)
+}
+
+// ── Resale marketplace ──
+
+#[derive(Serialize, Deserialize)]
+pub struct ResaleListing {
+    pub content_id: String,
+    pub seller: String,
+    pub price_eth: String,
+    pub listed_at: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct EditionInfo {
+    pub max_supply: u64,
+    pub total_minted: u64,
+    pub royalty_bps: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct BuyResalePrepareResult {
+    pub content_id: String,
+    pub title: String,
+    pub price_eth: String,
+    pub transactions: Vec<TransactionRequest>,
+}
+
+/// Prepare transactions for listing a purchased content item for resale.
+/// May return 1 or 2 transactions: setApprovalForAll (if needed) + listForResale.
+#[tauri::command]
+pub async fn list_for_resale(
+    state: State<'_, AppState>,
+    content_id: String,
+    price_eth: String,
+) -> Result<Vec<TransactionRequest>, String> {
+    info!("Preparing list-for-resale: content={}, price={}", content_id, price_eth);
+
+    let wallet = state.wallet_address.lock().await;
+    let seller_str = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    drop(wallet);
+
+    let seller_addr: Address = seller_str
+        .parse()
+        .map_err(|e| format!("Invalid wallet address: {e}"))?;
+
+    let content_id_bytes: FixedBytes<32> = content_id
+        .strip_prefix("0x")
+        .unwrap_or(&content_id)
+        .parse()
+        .map_err(|e| format!("Invalid content ID: {e}"))?;
+
+    let price_wei = parse_token_amount(&price_eth)
+        .map_err(|e| format!("Invalid price: {e}"))?;
+
+    let marketplace_addr: Address = state.config.ethereum.marketplace_address
+        .parse()
+        .map_err(|e| format!("Invalid marketplace address: {e}"))?;
+
+    let registry_addr: Address = state.config.ethereum.registry_address
+        .parse()
+        .map_err(|e| format!("Invalid registry address: {e}"))?;
+
+    let mut transactions = Vec::new();
+
+    // Check if seller has approved marketplace for ERC-1155 transfers
+    let chain = state.chain_client().map_err(|e| format!("Chain client error: {e}"))?;
+    let approved = chain.registry
+        .is_approved_for_all(seller_addr, marketplace_addr)
+        .await
+        .unwrap_or(false);
+
+    if !approved {
+        let calldata = ContentTokenClient::<()>::set_approval_for_all_calldata(marketplace_addr, true);
+        transactions.push(TransactionRequest {
+            to: format!("{registry_addr:#x}"),
+            data: hex_encode(&calldata),
+            value: "0x0".to_string(),
+            description: "Approve marketplace for token transfers".to_string(),
+        });
+    }
+
+    // Build listForResale transaction
+    let calldata = MarketplaceClient::<()>::list_for_resale_calldata(content_id_bytes, price_wei);
+    transactions.push(TransactionRequest {
+        to: format!("{marketplace_addr:#x}"),
+        data: hex_encode(&calldata),
+        value: "0x0".to_string(),
+        description: format!("List for resale at {} ETH", price_eth),
+    });
+
+    Ok(transactions)
+}
+
+/// Record a resale listing in local DB after the transaction is confirmed.
+#[tauri::command]
+pub async fn confirm_list_for_resale(
+    state: State<'_, AppState>,
+    content_id: String,
+    price_eth: String,
+) -> Result<(), String> {
+    let wallet = state.wallet_address.lock().await;
+    let seller = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    drop(wallet);
+
+    let price_wei = parse_token_amount(&price_eth)
+        .map_err(|e| format!("Invalid price: {e}"))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let db = state.db.lock().await;
+    db.upsert_resale_listing(&content_id, &seller, &price_wei.to_string(), now)
+        .map_err(|e| format!("DB insert failed: {e}"))?;
+
+    info!("Resale listing confirmed: content={}, seller={}, price={}", content_id, seller, price_eth);
+    Ok(())
+}
+
+/// Prepare a transaction to cancel a resale listing.
+#[tauri::command]
+pub async fn cancel_resale_listing(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<Vec<TransactionRequest>, String> {
+    let wallet = state.wallet_address.lock().await;
+    let _seller = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    drop(wallet);
+
+    let content_id_bytes: FixedBytes<32> = content_id
+        .strip_prefix("0x")
+        .unwrap_or(&content_id)
+        .parse()
+        .map_err(|e| format!("Invalid content ID: {e}"))?;
+
+    let marketplace_addr: Address = state.config.ethereum.marketplace_address
+        .parse()
+        .map_err(|e| format!("Invalid marketplace address: {e}"))?;
+
+    let calldata = MarketplaceClient::<()>::cancel_listing_calldata(content_id_bytes);
+
+    Ok(vec![TransactionRequest {
+        to: format!("{marketplace_addr:#x}"),
+        data: hex_encode(&calldata),
+        value: "0x0".to_string(),
+        description: "Cancel resale listing".to_string(),
+    }])
+}
+
+/// Record cancellation of a resale listing in local DB.
+#[tauri::command]
+pub async fn confirm_cancel_listing(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<(), String> {
+    let wallet = state.wallet_address.lock().await;
+    let seller = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    drop(wallet);
+
+    let db = state.db.lock().await;
+    db.deactivate_resale_listing(&content_id, &seller)
+        .map_err(|e| format!("DB update failed: {e}"))?;
+
+    info!("Resale listing cancelled: content={}, seller={}", content_id, seller);
+    Ok(())
+}
+
+/// Prepare a transaction to buy content from a reseller.
+/// After signing, the frontend reuses `confirm_purchase` for download + seeding.
+#[tauri::command]
+pub async fn buy_resale(
+    state: State<'_, AppState>,
+    content_id: String,
+    seller: String,
+) -> Result<BuyResalePrepareResult, String> {
+    info!("Preparing resale purchase: content={}, seller={}", content_id, seller);
+
+    let wallet = state.wallet_address.lock().await;
+    let _buyer = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    drop(wallet);
+
+    // Look up content title from DB
+    let title = {
+        let db = state.db.lock().await;
+        db.conn()
+            .query_row(
+                "SELECT title FROM content WHERE content_id = ?1",
+                rusqlite::params![&content_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .map_err(|e| format!("Content not found: {e}"))?
+            .unwrap_or_default()
+    };
+
+    // Look up listing price from DB
+    let price_wei_str = {
+        let db = state.db.lock().await;
+        let listings = db.get_active_resale_listings(&content_id)
+            .map_err(|e| format!("DB query failed: {e}"))?;
+        let listing = listings.iter()
+            .find(|(_, s, _, _)| s.to_lowercase() == seller.to_lowercase())
+            .ok_or("No active listing found for this seller")?;
+        listing.2.clone()
+    };
+
+    let price_wei: U256 = price_wei_str
+        .parse()
+        .map_err(|e| format!("Invalid price in DB: {e}"))?;
+    let price_eth = format_wei(price_wei);
+
+    let content_id_bytes: FixedBytes<32> = content_id
+        .strip_prefix("0x")
+        .unwrap_or(&content_id)
+        .parse()
+        .map_err(|e| format!("Invalid content ID: {e}"))?;
+
+    let seller_addr: Address = seller
+        .parse()
+        .map_err(|e| format!("Invalid seller address: {e}"))?;
+
+    let marketplace_addr: Address = state.config.ethereum.marketplace_address
+        .parse()
+        .map_err(|e| format!("Invalid marketplace address: {e}"))?;
+
+    let calldata = MarketplaceClient::<()>::buy_resale_calldata(content_id_bytes, seller_addr);
+    let value_hex = format!("0x{:x}", price_wei);
+
+    Ok(BuyResalePrepareResult {
+        content_id: content_id.clone(),
+        title: title.clone(),
+        price_eth: price_eth.clone(),
+        transactions: vec![TransactionRequest {
+            to: format!("{marketplace_addr:#x}"),
+            data: hex_encode(&calldata),
+            value: value_hex,
+            description: format!("Buy \"{}\" (resale) for {} ETH", title, price_eth),
+        }],
+    })
+}
+
+/// Get all active resale listings for a content item.
+#[tauri::command]
+pub async fn get_resale_listings(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<Vec<ResaleListing>, String> {
+    let db = state.db.lock().await;
+    let rows = db.get_active_resale_listings(&content_id)
+        .map_err(|e| format!("DB query failed: {e}"))?;
+
+    let listings = rows
+        .into_iter()
+        .map(|(cid, seller, price_wei_str, listed_at)| {
+            let price_wei: U256 = price_wei_str.parse().unwrap_or(U256::ZERO);
+            ResaleListing {
+                content_id: cid,
+                seller,
+                price_eth: format_wei(price_wei),
+                listed_at,
+            }
+        })
+        .collect();
+
+    Ok(listings)
+}
+
+/// Get on-chain edition info for a content item (max supply, total minted, royalty).
+#[tauri::command]
+pub async fn get_edition_info(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<EditionInfo, String> {
+    let content_id_bytes: FixedBytes<32> = content_id
+        .strip_prefix("0x")
+        .unwrap_or(&content_id)
+        .parse()
+        .map_err(|e| format!("Invalid content ID: {e}"))?;
+
+    let chain = state.chain_client().map_err(|e| format!("Chain client error: {e}"))?;
+
+    let max_supply = chain.registry
+        .get_max_supply(content_id_bytes)
+        .await
+        .unwrap_or(U256::ZERO);
+
+    let total_minted = chain.registry
+        .get_total_minted(content_id_bytes)
+        .await
+        .unwrap_or(U256::ZERO);
+
+    // Read royalty_bps from DB (cheaper than on-chain query)
+    let royalty_bps: u32 = {
+        let db = state.db.lock().await;
+        db.conn()
+            .query_row(
+                "SELECT royalty_bps FROM content WHERE content_id = ?1",
+                rusqlite::params![&content_id],
+                |row| row.get::<_, i32>(0),
+            )
+            .unwrap_or(0) as u32
+    };
+
+    Ok(EditionInfo {
+        max_supply: max_supply.try_into().unwrap_or(u64::MAX),
+        total_minted: total_minted.try_into().unwrap_or(u64::MAX),
+        royalty_bps,
+    })
 }
 
 fn parse_content_hash_bytes(s: &str) -> Result<[u8; 32], String> {

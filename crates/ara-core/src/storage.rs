@@ -119,6 +119,15 @@ impl Database {
                 bytes_served INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (content_id, seeder_eth_address, buyer_eth_address)
             );
+
+            CREATE TABLE IF NOT EXISTS resale_listings (
+                content_id TEXT NOT NULL,
+                seller TEXT NOT NULL,
+                price_wei TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                listed_at INTEGER NOT NULL,
+                PRIMARY KEY (content_id, seller)
+            );
             ",
         )?;
 
@@ -169,6 +178,13 @@ impl Database {
         let _ = self
             .conn
             .execute("ALTER TABLE delivery_receipts ADD COLUMN bytes_served INTEGER NOT NULL DEFAULT 0", []);
+        // ERC-1155 edition columns — silently ignored if already present
+        let _ = self
+            .conn
+            .execute("ALTER TABLE content ADD COLUMN max_supply INTEGER NOT NULL DEFAULT 0", []);
+        let _ = self
+            .conn
+            .execute("ALTER TABLE content ADD COLUMN royalty_bps INTEGER NOT NULL DEFAULT 0", []);
 
         Ok(())
     }
@@ -386,6 +402,59 @@ impl Database {
         )
     }
 
+    // ── Resale listings ──
+
+    /// Upsert a resale listing (from on-chain event sync or local confirm).
+    pub fn upsert_resale_listing(
+        &self,
+        content_id: &str,
+        seller: &str,
+        price_wei: &str,
+        listed_at: i64,
+    ) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO resale_listings
+             (content_id, seller, price_wei, active, listed_at)
+             VALUES (?1, ?2, ?3, 1, ?4)",
+            rusqlite::params![content_id, seller, price_wei, listed_at],
+        )
+    }
+
+    /// Mark a resale listing as inactive (cancelled or sold).
+    pub fn deactivate_resale_listing(
+        &self,
+        content_id: &str,
+        seller: &str,
+    ) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "UPDATE resale_listings SET active = 0
+             WHERE content_id = ?1 AND LOWER(seller) = LOWER(?2)",
+            rusqlite::params![content_id, seller],
+        )
+    }
+
+    /// Get all active resale listings for a content item, sorted by price ascending.
+    pub fn get_active_resale_listings(
+        &self,
+        content_id: &str,
+    ) -> Result<Vec<(String, String, String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT content_id, seller, price_wei, listed_at
+             FROM resale_listings
+             WHERE content_id = ?1 AND active = 1
+             ORDER BY CAST(price_wei AS INTEGER) ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![content_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
     /// Upsert a content row discovered from on-chain event sync.
     /// On conflict, updates price and metadata but preserves local publisher data.
     /// `categories` is a JSON array string (e.g. `["action","indie"]`); pass `""` if unknown.
@@ -405,13 +474,16 @@ impl Database {
         publisher_relay_url: &str,
         created_at: i64,
         categories: &str,
+        max_supply: i64,
+        royalty_bps: i64,
     ) -> rusqlite::Result<usize> {
         self.conn.execute(
             "INSERT INTO content
              (content_id, content_hash, creator, metadata_uri, price_wei,
               title, description, content_type, file_size_bytes, active,
-              created_at, publisher_node_id, publisher_relay_url, filename, categories)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11, ?12, ?13, ?14)
+              created_at, publisher_node_id, publisher_relay_url, filename, categories,
+              max_supply, royalty_bps)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(content_id) DO UPDATE SET
                price_wei = excluded.price_wei,
                metadata_uri = excluded.metadata_uri,
@@ -423,11 +495,14 @@ impl Database {
                publisher_node_id = CASE WHEN excluded.publisher_node_id != '' THEN excluded.publisher_node_id ELSE publisher_node_id END,
                publisher_relay_url = CASE WHEN excluded.publisher_relay_url != '' THEN excluded.publisher_relay_url ELSE publisher_relay_url END,
                categories = CASE WHEN excluded.categories != '' THEN excluded.categories ELSE categories END,
+               max_supply = CASE WHEN excluded.max_supply > 0 THEN excluded.max_supply ELSE max_supply END,
+               royalty_bps = CASE WHEN excluded.royalty_bps > 0 THEN excluded.royalty_bps ELSE royalty_bps END,
                active = 1",
             rusqlite::params![
                 content_id, content_hash, creator, metadata_uri, price_wei,
                 title, description, content_type, file_size, created_at,
                 publisher_node_id, publisher_relay_url, filename, categories,
+                max_supply, royalty_bps,
             ],
         )
     }

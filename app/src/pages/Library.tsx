@@ -7,10 +7,13 @@ import {
   delistContent, confirmDelist, openDownloadedContent, openContentFolder,
   getReceiptCount,
   updateContentFile, confirmContentFileUpdate,
-  type LibraryItem, type PublishedItem,
+  listForResale, confirmListForResale,
+  cancelResaleListing, confirmCancelListing,
+  getResaleListings,
+  type LibraryItem, type PublishedItem, type ResaleListing,
 } from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
-import { useWeb3ModalAccount, useWeb3ModalProvider } from "@web3modal/ethers/react";
+import { useWeb3Modal, useWeb3ModalAccount, useWeb3ModalProvider } from "@web3modal/ethers/react";
 
 type Tab = "purchased" | "published";
 
@@ -31,7 +34,8 @@ const TYPE_ICONS: Record<string, string> = {
 const typeIcon = (t: string) => TYPE_ICONS[t] ?? "📦";
 
 function Library() {
-  const { isConnected } = useWeb3ModalAccount();
+  const { open: openModal } = useWeb3Modal();
+  const { isConnected, address } = useWeb3ModalAccount();
   const { walletProvider } = useWeb3ModalProvider();
   const [activeTab, setActiveTab] = useState<Tab>("purchased");
 
@@ -51,12 +55,36 @@ function Library() {
   const [updatingFileId, setUpdatingFileId] = useState<string | null>(null);
   const [updateFileError, setUpdateFileError] = useState<string | null>(null);
 
+  // Resale state
+  const [activeListings, setActiveListings] = useState<Record<string, ResaleListing>>({});
+  const [resaleModalItem, setResaleModalItem] = useState<LibraryItem | null>(null);
+  const [resalePrice, setResalePrice] = useState("");
+  const [resaleStep, setResaleStep] = useState<"idle" | "signing" | "confirming">("idle");
+  const [resaleError, setResaleError] = useState<string | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+
+  const fetchActiveListings = useCallback(async (libraryItems: LibraryItem[]) => {
+    if (!address) return;
+    const entries = await Promise.all(
+      libraryItems.map(async (item) => {
+        try {
+          const listings = await getResaleListings(item.content_id);
+          const mine = listings.find((l) => l.seller.toLowerCase() === address.toLowerCase());
+          return mine ? [item.content_id, mine] as const : null;
+        } catch { return null; }
+      })
+    );
+    const record: Record<string, ResaleListing> = {};
+    for (const e of entries) { if (e) record[e[0]] = e[1]; }
+    setActiveListings(record);
+  }, [address]);
+
   const fetchPurchased = useCallback(() => {
     getLibrary()
-      .then(setItems)
+      .then((its) => { setItems(its); fetchActiveListings(its); })
       .catch((e) => setPurchasedError(String(e)))
       .finally(() => setLoadingPurchased(false));
-  }, []);
+  }, [fetchActiveListings]);
 
   const fetchPublished = useCallback(() => {
     setLoadingPublished(true);
@@ -157,6 +185,39 @@ function Library() {
     finally { setUpdatingFileId(null); }
   };
 
+  const handleListForResale = async () => {
+    if (!resaleModalItem || !resalePrice.trim()) return;
+    setResaleError(null);
+    try {
+      setResaleStep("signing");
+      const txs = await listForResale(resaleModalItem.content_id, resalePrice.trim());
+      if (txs.length > 0) {
+        if (!walletProvider) { openModal(); throw new Error("Wallet not connected"); }
+        await signAndSendTransactions(walletProvider, txs);
+      }
+      setResaleStep("confirming");
+      await confirmListForResale(resaleModalItem.content_id, resalePrice.trim());
+      setResaleModalItem(null);
+      setResalePrice("");
+      setResaleStep("idle");
+      fetchPurchased();
+    } catch (e) { setResaleError(String(e)); setResaleStep("idle"); }
+  };
+
+  const handleCancelListing = async (item: LibraryItem) => {
+    setCancellingId(item.content_id);
+    try {
+      const txs = await cancelResaleListing(item.content_id);
+      if (txs.length > 0) {
+        if (!walletProvider) { openModal(); throw new Error("Wallet not connected"); }
+        await signAndSendTransactions(walletProvider, txs);
+      }
+      await confirmCancelListing(item.content_id);
+      fetchPurchased();
+    } catch (e) { setResaleError(String(e)); }
+    finally { setCancellingId(null); }
+  };
+
   const tabCls = (t: Tab) =>
     `px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
       activeTab === t
@@ -249,12 +310,63 @@ function Library() {
                       }`}>
                       {togglingId === item.content_id ? "…" : item.is_seeding ? "Seeding" : "Start Seeding"}
                     </button>
+                    {activeListings[item.content_id] ? (
+                      <>
+                        <span className="text-xs px-2.5 py-1 rounded-full font-medium bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400">
+                          Listed {activeListings[item.content_id].price_eth} ETH
+                        </span>
+                        <button onClick={() => handleCancelListing(item)}
+                          disabled={cancellingId === item.content_id}
+                          className="btn-danger text-xs px-2.5 py-1.5">
+                          {cancellingId === item.content_id ? "…" : "Cancel"}
+                        </button>
+                      </>
+                    ) : (
+                      <button onClick={() => { setResaleModalItem(item); setResalePrice(""); setResaleError(null); }}
+                        className="btn-secondary text-xs px-3 py-1.5">
+                        List for Resale
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
             </div>
           )}
         </>
+      )}
+
+      {/* Resale Price Modal */}
+      {resaleModalItem && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => { setResaleModalItem(null); setResaleStep("idle"); }}>
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-1">
+              List for Resale
+            </h3>
+            <p className="text-sm text-slate-500 dark:text-slate-500 mb-4 truncate">
+              {resaleModalItem.title || "Untitled"}
+            </p>
+            <label className="label">Price (ETH)</label>
+            <input type="text" value={resalePrice}
+              onChange={(e) => setResalePrice(e.target.value)}
+              disabled={resaleStep !== "idle"}
+              placeholder="0.01" className="input-base mb-4" autoFocus />
+            {resaleError && <div className="alert-error mb-3 text-xs">{resaleError}</div>}
+            <div className="flex gap-3">
+              <button onClick={handleListForResale}
+                disabled={!resalePrice.trim() || resaleStep !== "idle"}
+                className="btn-primary flex-1">
+                {resaleStep === "signing" ? "Sign in wallet…"
+                  : resaleStep === "confirming" ? "Confirming…"
+                  : "List for Sale"}
+              </button>
+              <button onClick={() => { setResaleModalItem(null); setResaleStep("idle"); }}
+                disabled={resaleStep !== "idle"}
+                className="btn-ghost">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── Published Tab ── */}

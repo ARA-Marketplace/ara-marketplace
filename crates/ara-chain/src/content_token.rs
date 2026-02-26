@@ -57,6 +57,31 @@ impl<P: Provider + Clone> ContentTokenClient<P> {
         Ok(result)
     }
 
+    /// Get the maximum supply for a content item (0 = unlimited).
+    pub async fn get_max_supply(&self, content_id: FixedBytes<32>) -> Result<U256> {
+        let contract = IAraContent::new(self.address, &self.provider);
+        let result = contract.getMaxSupply(content_id).call().await?;
+        Ok(result)
+    }
+
+    /// Get the total number of tokens minted for a content item.
+    pub async fn get_total_minted(&self, content_id: FixedBytes<32>) -> Result<U256> {
+        let contract = IAraContent::new(self.address, &self.provider);
+        let result = contract.getTotalMinted(content_id).call().await?;
+        Ok(result)
+    }
+
+    /// Check if an operator is approved for all tokens of an account.
+    pub async fn is_approved_for_all(
+        &self,
+        account: Address,
+        operator: Address,
+    ) -> Result<bool> {
+        let contract = IAraContent::new(self.address, &self.provider);
+        let result = contract.isApprovedForAll(account, operator).call().await?;
+        Ok(result)
+    }
+
     /// Get the content token contract address.
     pub fn address(&self) -> Address {
         self.address
@@ -118,5 +143,10 @@ impl<P> ContentTokenClient<P> {
             contentId: content_id,
         }
         .abi_encode()
+    }
+
+    /// Encode calldata for `setApprovalForAll(operator, approved)`.
+    pub fn set_approval_for_all_calldata(operator: Address, approved: bool) -> Vec<u8> {
+        IAraContent::setApprovalForAllCall { operator, approved }.abi_encode()
     }
 }

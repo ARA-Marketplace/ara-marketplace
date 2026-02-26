@@ -13,8 +13,13 @@ import {
   getPreviewAsset,
   openDownloadedContent,
   openContentFolder,
+  getEditionInfo,
+  getResaleListings,
+  buyResale,
   type ContentDetail as ContentDetailType,
   type ContentMetadataV2,
+  type EditionInfo,
+  type ResaleListing,
 } from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
 import {
@@ -86,6 +91,13 @@ function ContentDetail() {
   const [carouselItems, setCarouselItems] = useState<CarouselItem[]>([]);
   const [carouselIndex, setCarouselIndex] = useState(0);
 
+  // Edition + resale state
+  const [edition, setEdition] = useState<EditionInfo | null>(null);
+  const [resaleListings, setResaleListings] = useState<ResaleListing[]>([]);
+  const [buyResaleStep, setBuyResaleStep] = useState<"idle" | "preparing" | "signing" | "confirming" | "done">("idle");
+  const [buyResaleError, setBuyResaleError] = useState<string | null>(null);
+  const [buyResaleSeller, setBuyResaleSeller] = useState<string | null>(null);
+
   // Edit state
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState("");
@@ -128,6 +140,14 @@ function ContentDetail() {
       }
     };
   }, []);
+
+  // Load edition info + resale listings
+  useEffect(() => {
+    if (!content) return;
+    const id = content.content_id;
+    getEditionInfo(id).then(setEdition).catch(() => setEdition(null));
+    getResaleListings(id).then(setResaleListings).catch(() => setResaleListings([]));
+  }, [content]);
 
   // Load preview assets lazily after content + meta are set
   useEffect(() => {
@@ -355,6 +375,37 @@ function ContentDetail() {
       setReceiptStep("done");
     } catch {
       setReceiptStep("skipped");
+    }
+  };
+
+  const isSoldOut = edition
+    ? edition.max_supply > 0 && edition.total_minted >= edition.max_supply
+    : false;
+
+  const handleBuyResale = async (seller: string) => {
+    if (!contentId || !isConnected) return;
+    setBuyResaleError(null);
+    setBuyResaleSeller(seller);
+    try {
+      setBuyResaleStep("preparing");
+      const result = await buyResale(decodeURIComponent(contentId), seller);
+      if (!walletProvider) {
+        openModal();
+        throw new Error("Wallet session expired — reconnect then try again.");
+      }
+      setBuyResaleStep("signing");
+      const txHash = await signAndSendTransactions(walletProvider, result.transactions);
+      setBuyResaleStep("confirming");
+      await confirmPurchase(result.content_id, txHash);
+      setBuyResaleStep("done");
+      // Refresh listings + edition
+      getResaleListings(decodeURIComponent(contentId)).then(setResaleListings).catch(() => {});
+      getEditionInfo(decodeURIComponent(contentId)).then(setEdition).catch(() => {});
+      setTimeout(() => { setBuyResaleStep("idle"); setBuyResaleSeller(null); }, 2000);
+    } catch (err) {
+      setBuyResaleError(String(err));
+      setBuyResaleStep("idle");
+      setBuyResaleSeller(null);
     }
   };
 
@@ -622,14 +673,28 @@ function ContentDetail() {
                     {content.content_type}
                   </p>
 
-                  {/* Category tags */}
-                  {content.categories && content.categories.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      {content.categories.map((cat) => (
-                        <span key={cat} className="badge-gray">{cat}</span>
-                      ))}
-                    </div>
-                  )}
+                  {/* Category tags + edition badges */}
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {content.categories && content.categories.map((cat) => (
+                      <span key={cat} className="badge-gray">{cat}</span>
+                    ))}
+                    {edition && (
+                      <>
+                        {edition.max_supply === 0 ? (
+                          <span className="badge-blue">Unlimited Edition</span>
+                        ) : (
+                          <span className="badge-blue">
+                            {edition.total_minted}/{edition.max_supply} minted
+                          </span>
+                        )}
+                        {edition.royalty_bps > 0 && (
+                          <span className="badge-gray">
+                            {(edition.royalty_bps / 100).toFixed(edition.royalty_bps % 100 === 0 ? 0 : 1)}% creator royalty
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
 
                 <div className="text-right flex flex-col items-end gap-2 flex-shrink-0">
@@ -755,6 +820,13 @@ function ContentDetail() {
                   <div className="alert-info">
                     You are the creator of this listing.
                   </div>
+                ) : isSoldOut ? (
+                  <div className="alert-warning">
+                    <p className="font-medium">Edition Sold Out</p>
+                    <p className="text-xs mt-1 opacity-80">
+                      All {edition?.max_supply} copies have been minted. Check resale listings below.
+                    </p>
+                  </div>
                 ) : (
                   <div className="space-y-2">
                     <button
@@ -782,6 +854,53 @@ function ContentDetail() {
                         </p>
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* Resale Listings */}
+                {resaleListings.length > 0 && (
+                  <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-800">
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-3">
+                      Available from Resellers
+                    </h3>
+                    {buyResaleError && <div className="alert-error mb-3 text-xs">{buyResaleError}</div>}
+                    <div className="space-y-2">
+                      {resaleListings.map((listing) => {
+                        const isBuying = buyResaleSeller === listing.seller;
+                        const truncSeller = `${listing.seller.slice(0, 6)}...${listing.seller.slice(-4)}`;
+                        const isOwnListing = address?.toLowerCase() === listing.seller.toLowerCase();
+                        return (
+                          <div key={listing.seller}
+                            className="flex items-center justify-between p-3 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700">
+                            <div>
+                              <span className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                                {listing.price_eth} ETH
+                              </span>
+                              <span className="text-xs text-slate-500 dark:text-slate-500 ml-2">
+                                from {truncSeller}
+                              </span>
+                            </div>
+                            {isOwnListing ? (
+                              <span className="text-xs text-slate-400">Your listing</span>
+                            ) : (
+                              <button
+                                onClick={() => handleBuyResale(listing.seller)}
+                                disabled={!isConnected || buyResaleStep !== "idle"}
+                                className="btn-primary text-xs px-3 py-1.5"
+                              >
+                                {isBuying
+                                  ? buyResaleStep === "preparing" ? "Preparing..."
+                                  : buyResaleStep === "signing" ? "Sign in wallet..."
+                                  : buyResaleStep === "confirming" ? "Confirming..."
+                                  : buyResaleStep === "done" ? "Purchased!"
+                                  : "Buy Resale"
+                                  : "Buy Resale"}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
               </div>

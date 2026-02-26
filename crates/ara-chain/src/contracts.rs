@@ -47,6 +47,8 @@ sol! {
         function getMaxSupply(bytes32 contentId) external view returns (uint256);
         function getTotalMinted(bytes32 contentId) external view returns (uint256);
         function balanceOf(address account, uint256 id) external view returns (uint256);
+        function setApprovalForAll(address operator, bool approved) external;
+        function isApprovedForAll(address account, address operator) external view returns (bool);
 
         event ContentPublished(bytes32 indexed contentId, address indexed creator, bytes32 contentHash, string metadataURI, uint256 priceWei, uint256 fileSize, uint256 maxSupply);
         event ContentUpdated(bytes32 indexed contentId, uint256 newPriceWei, string newMetadataURI);

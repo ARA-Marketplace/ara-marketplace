@@ -224,7 +224,7 @@ function Wallet() {
             Connect your wallet to manage tokens and staking.
           </p>
           <button onClick={() => open()} className="btn-primary">
-            {isConnected ? "Switch Wallet" : "Connect Wallet"}
+            Connect Wallet
           </button>
         </div>
       ) : (

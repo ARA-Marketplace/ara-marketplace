@@ -375,3 +375,70 @@ export async function getRewardPipeline(): Promise<RewardPipelineResponse> {
 export async function prepareClaimRewards(): Promise<TransactionRequest[]> {
   return invoke("prepare_claim_rewards");
 }
+
+// Resale Marketplace
+
+export interface ResaleListing {
+  content_id: string;
+  seller: string;
+  price_eth: string;
+  listed_at: number;
+}
+
+export interface EditionInfo {
+  max_supply: number;
+  total_minted: number;
+  royalty_bps: number;
+}
+
+export interface BuyResalePrepareResult {
+  content_id: string;
+  title: string;
+  price_eth: string;
+  transactions: TransactionRequest[];
+}
+
+export async function listForResale(
+  contentId: string,
+  priceEth: string
+): Promise<TransactionRequest[]> {
+  return invoke("list_for_resale", { contentId, priceEth });
+}
+
+export async function confirmListForResale(
+  contentId: string,
+  priceEth: string
+): Promise<void> {
+  return invoke("confirm_list_for_resale", { contentId, priceEth });
+}
+
+export async function cancelResaleListing(
+  contentId: string
+): Promise<TransactionRequest[]> {
+  return invoke("cancel_resale_listing", { contentId });
+}
+
+export async function confirmCancelListing(
+  contentId: string
+): Promise<void> {
+  return invoke("confirm_cancel_listing", { contentId });
+}
+
+export async function buyResale(
+  contentId: string,
+  seller: string
+): Promise<BuyResalePrepareResult> {
+  return invoke("buy_resale", { contentId, seller });
+}
+
+export async function getResaleListings(
+  contentId: string
+): Promise<ResaleListing[]> {
+  return invoke("get_resale_listings", { contentId });
+}
+
+export async function getEditionInfo(
+  contentId: string
+): Promise<EditionInfo> {
+  return invoke("get_edition_info", { contentId });
+}
