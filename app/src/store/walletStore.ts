@@ -6,6 +6,7 @@ import {
   getStakeInfo,
   stakeAra as stakeAraIpc,
   unstakeAra as unstakeAraIpc,
+  claimStakingReward as claimStakingRewardIpc,
   syncRewards as syncRewardsIpc,
 } from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
@@ -21,6 +22,9 @@ interface WalletState {
   araBalance: string;
   araStaked: string;
 
+  // Passive staker rewards
+  stakerRewardEarned: string;
+
   // Loading / error state
   isLoadingBalances: boolean;
   isSendingTx: boolean;
@@ -33,6 +37,7 @@ interface WalletState {
   refreshBalances: () => Promise<void>;
   stakeAra: (amount: string, walletProvider: Eip1193Provider) => Promise<string>;
   unstakeAra: (amount: string, walletProvider: Eip1193Provider) => Promise<string>;
+  claimStakingReward: (walletProvider: Eip1193Provider) => Promise<string>;
   clearError: () => void;
   clearTxStatus: () => void;
 }
@@ -43,6 +48,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   ethBalance: "0",
   araBalance: "0",
   araStaked: "0",
+  stakerRewardEarned: "0",
   isLoadingBalances: false,
   isSendingTx: false,
   txStatus: null,
@@ -76,6 +82,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       ethBalance: "0",
       araBalance: "0",
       araStaked: "0",
+      stakerRewardEarned: "0",
       txStatus: null,
       error: null,
     });
@@ -94,6 +101,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         ethBalance: balances.eth_balance,
         araBalance: balances.ara_balance,
         araStaked: stakeInfo.total_staked,
+        stakerRewardEarned: stakeInfo.staker_reward_earned,
         isLoadingBalances: false,
       });
     } catch (e) {
@@ -136,6 +144,24 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       return txHash;
     } catch (e) {
       set({ error: `Unstake failed: ${e}`, isSendingTx: false, txStatus: null });
+      throw e;
+    }
+  },
+
+  claimStakingReward: async (walletProvider: Eip1193Provider) => {
+    set({ isSendingTx: true, txStatus: "Building claim transaction...", error: null });
+    try {
+      const txRequests = await claimStakingRewardIpc();
+      const txHash = await signAndSendTransactions(
+        walletProvider,
+        txRequests,
+        (msg) => set({ txStatus: msg })
+      );
+      set({ txStatus: `Claimed successfully! Tx: ${txHash.slice(0, 10)}…`, isSendingTx: false });
+      await get().refreshBalances();
+      return txHash;
+    } catch (e) {
+      set({ error: `Claim failed: ${e}`, isSendingTx: false, txStatus: null });
       throw e;
     }
   },

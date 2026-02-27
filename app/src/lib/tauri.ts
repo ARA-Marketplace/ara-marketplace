@@ -290,10 +290,18 @@ export interface StakeInfo {
     amount_staked: string;
     is_eligible_seeder: boolean;
   }>;
+  /** Unclaimed passive staker reward (ETH) */
+  staker_reward_earned: string;
+  /** Total stake used for reward weight */
+  total_user_stake: string;
 }
 
 export async function getStakeInfo(): Promise<StakeInfo> {
   return invoke("get_stake_info");
+}
+
+export async function claimStakingReward(): Promise<TransactionRequest[]> {
+  return invoke("claim_staking_reward");
 }
 
 // Sync — pull content listings from on-chain events
@@ -445,4 +453,234 @@ export async function getEditionInfo(
   contentId: string
 ): Promise<EditionInfo> {
   return invoke("get_edition_info", { contentId });
+}
+
+// Collections
+
+export interface CollectionInfo {
+  collection_id: number;
+  creator: string;
+  name: string;
+  description: string;
+  banner_uri: string;
+  item_count: number;
+  volume_eth: string;
+  created_at: number;
+}
+
+export interface CollectionRanking {
+  collection_id: number;
+  name: string;
+  creator: string;
+  banner_uri: string;
+  floor_price_eth: string;
+  item_count: number;
+  volume_eth: string;
+}
+
+export async function createCollection(params: {
+  name: string;
+  description: string;
+  bannerUri: string;
+}): Promise<TransactionRequest[]> {
+  return invoke("create_collection", params);
+}
+
+export async function confirmCreateCollection(params: {
+  txHash: string;
+  name: string;
+  description: string;
+  bannerUri: string;
+}): Promise<number> {
+  return invoke("confirm_create_collection", params);
+}
+
+export async function updateCollection(params: {
+  collectionId: number;
+  name: string;
+  description: string;
+  bannerUri: string;
+}): Promise<TransactionRequest[]> {
+  return invoke("update_collection", params);
+}
+
+export async function confirmUpdateCollection(params: {
+  collectionId: number;
+  name: string;
+  description: string;
+  bannerUri: string;
+}): Promise<void> {
+  return invoke("confirm_update_collection", params);
+}
+
+export async function deleteCollection(
+  collectionId: number
+): Promise<TransactionRequest[]> {
+  return invoke("delete_collection", { collectionId });
+}
+
+export async function confirmDeleteCollection(
+  collectionId: number
+): Promise<void> {
+  return invoke("confirm_delete_collection", { collectionId });
+}
+
+export async function addToCollection(
+  collectionId: number,
+  contentId: string
+): Promise<TransactionRequest[]> {
+  return invoke("add_to_collection", { collectionId, contentId });
+}
+
+export async function confirmAddToCollection(
+  collectionId: number,
+  contentId: string
+): Promise<void> {
+  return invoke("confirm_add_to_collection", { collectionId, contentId });
+}
+
+export async function removeFromCollection(
+  collectionId: number,
+  contentId: string
+): Promise<TransactionRequest[]> {
+  return invoke("remove_from_collection", { collectionId, contentId });
+}
+
+export async function confirmRemoveFromCollection(
+  collectionId: number,
+  contentId: string
+): Promise<void> {
+  return invoke("confirm_remove_from_collection", { collectionId, contentId });
+}
+
+export async function getMyCollections(): Promise<CollectionInfo[]> {
+  return invoke("get_my_collections");
+}
+
+export async function getCollection(
+  collectionId: number
+): Promise<CollectionInfo> {
+  return invoke("get_collection", { collectionId });
+}
+
+export async function getCollectionItems(
+  collectionId: number
+): Promise<string[]> {
+  return invoke("get_collection_items", { collectionId });
+}
+
+export async function getAllCollections(
+  limit?: number,
+  offset?: number
+): Promise<CollectionInfo[]> {
+  return invoke("get_all_collections", { limit, offset });
+}
+
+export async function getContentCollection(
+  contentId: string
+): Promise<number | null> {
+  return invoke("get_content_collection", { contentId });
+}
+
+export async function getTopCollections(
+  limit?: number
+): Promise<CollectionRanking[]> {
+  return invoke("get_top_collections", { limit });
+}
+
+// Name Registry
+
+export async function registerName(
+  name: string
+): Promise<TransactionRequest[]> {
+  return invoke("register_name", { name });
+}
+
+export async function confirmRegisterName(name: string): Promise<void> {
+  return invoke("confirm_register_name", { name });
+}
+
+export async function removeDisplayName(): Promise<TransactionRequest[]> {
+  return invoke("remove_display_name");
+}
+
+export async function confirmRemoveName(): Promise<void> {
+  return invoke("confirm_remove_name");
+}
+
+export async function getDisplayName(
+  address: string
+): Promise<string | null> {
+  return invoke("get_display_name", { address });
+}
+
+export async function getDisplayNames(
+  addresses: string[]
+): Promise<Record<string, string>> {
+  return invoke("get_display_names", { addresses });
+}
+
+// Analytics
+
+export interface PricePoint {
+  price_eth: string;
+  block_number: number;
+  buyer: string;
+  tx_hash: string;
+  is_resale: boolean;
+}
+
+export interface ItemAnalytics {
+  total_sales: number;
+  total_volume_eth: string;
+  unique_buyers: number;
+}
+
+export interface CollectorRanking {
+  address: string;
+  purchase_count: number;
+  total_spent_eth: string;
+}
+
+export interface TrendingItem {
+  content_id: string;
+  recent_sales: number;
+  title: string;
+  price_eth: string;
+  content_type: string;
+}
+
+export interface MarketplaceOverview {
+  total_volume_eth: string;
+  total_sales: number;
+  total_collections: number;
+  total_items: number;
+}
+
+export async function getPriceHistory(
+  contentId: string
+): Promise<PricePoint[]> {
+  return invoke("get_price_history", { contentId });
+}
+
+export async function getItemAnalytics(
+  contentId: string
+): Promise<ItemAnalytics> {
+  return invoke("get_item_analytics", { contentId });
+}
+
+export async function getTopCollectors(
+  limit?: number
+): Promise<CollectorRanking[]> {
+  return invoke("get_top_collectors", { limit });
+}
+
+export async function getTrendingContent(
+  limit?: number
+): Promise<TrendingItem[]> {
+  return invoke("get_trending_content", { limit });
+}
+
+export async function getMarketplaceOverview(): Promise<MarketplaceOverview> {
+  return invoke("get_marketplace_overview");
 }

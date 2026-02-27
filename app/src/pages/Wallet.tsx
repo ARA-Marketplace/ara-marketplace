@@ -11,6 +11,11 @@ import {
   prepareClaimRewards,
   confirmClaimRewards,
   syncRewards,
+  getDisplayName,
+  registerName,
+  confirmRegisterName,
+  removeDisplayName,
+  confirmRemoveName,
   type RewardHistoryItem,
   type RewardHistoryResponse,
   type RewardPipelineResponse,
@@ -45,9 +50,9 @@ function Wallet() {
   const { walletProvider } = useWeb3ModalProvider();
 
   const {
-    address, ethBalance, araBalance, araStaked,
+    address, ethBalance, araBalance, araStaked, stakerRewardEarned,
     isLoadingBalances, isSendingTx, txStatus, error,
-    refreshBalances, stakeAra, unstakeAra, clearError, clearTxStatus,
+    refreshBalances, stakeAra, unstakeAra, claimStakingReward, clearError, clearTxStatus,
   } = useWalletStore();
 
   const [showStakeModal, setShowStakeModal] = useState(false);
@@ -66,6 +71,12 @@ function Wallet() {
   const [collecting, setCollecting] = useState(false);
   const [collectStatus, setCollectStatus] = useState<string | null>(null);
   const [collectError, setCollectError] = useState<string | null>(null);
+
+  // Display name state
+  const [currentName, setCurrentName] = useState<string | null>(null);
+  const [nameInput, setNameInput] = useState("");
+  const [nameStep, setNameStep] = useState<"idle" | "signing" | "confirming" | "done">("idle");
+  const [nameError, setNameError] = useState<string | null>(null);
 
   const fetchPipeline = useCallback(async () => {
     try {
@@ -103,6 +114,56 @@ function Wallet() {
       setHistoryItems([]);
     }
   }, [address, fetchRewardHistory]);
+
+  // Fetch current display name
+  useEffect(() => {
+    if (address) {
+      getDisplayName(address).then((name) => {
+        setCurrentName(name);
+        if (name) setNameInput(name);
+      }).catch(() => {});
+    } else {
+      setCurrentName(null);
+      setNameInput("");
+    }
+  }, [address]);
+
+  const handleSetName = async () => {
+    if (!walletProvider || !nameInput.trim()) return;
+    setNameError(null);
+    try {
+      setNameStep("signing");
+      const txs = await registerName(nameInput.trim());
+      await signAndSendTransactions(walletProvider, txs);
+      setNameStep("confirming");
+      await confirmRegisterName(nameInput.trim());
+      setCurrentName(nameInput.trim());
+      setNameStep("done");
+      setTimeout(() => setNameStep("idle"), 1500);
+    } catch (e) {
+      setNameError(String(e));
+      setNameStep("idle");
+    }
+  };
+
+  const handleRemoveName = async () => {
+    if (!walletProvider) return;
+    setNameError(null);
+    try {
+      setNameStep("signing");
+      const txs = await removeDisplayName();
+      await signAndSendTransactions(walletProvider, txs);
+      setNameStep("confirming");
+      await confirmRemoveName();
+      setCurrentName(null);
+      setNameInput("");
+      setNameStep("done");
+      setTimeout(() => setNameStep("idle"), 1500);
+    } catch (e) {
+      setNameError(String(e));
+      setNameStep("idle");
+    }
+  };
 
   // Refresh balances, pipeline, and history on every mount (handles navigation from other pages).
   // Sync rewards from chain first to ensure DB has the latest events.
@@ -157,6 +218,13 @@ function Wallet() {
       else await unstakeAra(stakeAmount, walletProvider);
       setShowStakeModal(false);
       setStakeAmount("");
+    } catch { /* error set in store */ }
+  };
+
+  const handleClaimStakingReward = async () => {
+    if (!walletProvider) { open(); return; }
+    try {
+      await claimStakingReward(walletProvider);
     } catch { /* error set in store */ }
   };
 
@@ -251,6 +319,50 @@ function Wallet() {
             </div>
           </div>
 
+          {/* Display Name */}
+          <div className="card p-5">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-3">
+              Display Name
+            </p>
+            {currentName && (
+              <p className="text-sm text-slate-700 dark:text-slate-300 mb-2">
+                Currently: <span className="font-medium">{currentName}</span>
+              </p>
+            )}
+            {nameError && (
+              <div className="alert-error text-xs mb-2">{nameError}</div>
+            )}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={nameInput}
+                onChange={(e) => setNameInput(e.target.value)}
+                placeholder="Choose a display name"
+                className="input-base flex-1"
+                maxLength={32}
+              />
+              <button
+                onClick={handleSetName}
+                disabled={nameStep !== "idle" || !nameInput.trim()}
+                className="btn-primary text-sm px-4"
+              >
+                {nameStep === "signing" ? "Sign..." : nameStep === "confirming" ? "Confirming..." : nameStep === "done" ? "Set!" : "Set Name"}
+              </button>
+              {currentName && (
+                <button
+                  onClick={handleRemoveName}
+                  disabled={nameStep !== "idle"}
+                  className="btn-danger text-sm px-3"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+            <p className="text-[10px] text-slate-400 dark:text-slate-600 mt-1.5">
+              1-32 characters. Alphanumeric, hyphens, and underscores only. Stored on-chain.
+            </p>
+          </div>
+
           {/* Balances */}
           <div className="grid grid-cols-2 gap-4">
             {[
@@ -296,6 +408,34 @@ function Wallet() {
               </div>
             </div>
           </div>
+
+          {/* Staking Rewards */}
+          {hasValue(stakerRewardEarned) && (
+            <div className="card p-5">
+              <div className="flex justify-between items-center">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-0.5">
+                    Staking Rewards
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-600 mb-2">
+                    Earned from staking ARA (2.5% of purchases)
+                  </p>
+                  <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
+                    {fmtEth(stakerRewardEarned)} <span className="text-sm font-normal text-slate-500">ETH</span>
+                  </p>
+                </div>
+                <div className="flex-shrink-0 ml-4">
+                  <button
+                    onClick={handleClaimStakingReward}
+                    disabled={isSendingTx}
+                    className="btn-success px-5 py-2 text-sm"
+                  >
+                    {isSendingTx ? "Claiming..." : "Claim"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Rewards: Ready to Collect + Lifetime Earnings */}
           {collectError && (
@@ -362,9 +502,10 @@ function Wallet() {
               How Rewards Work
             </p>
             <div className="text-xs text-slate-600 dark:text-slate-400 space-y-1.5">
-              <p>When buyers purchase content, <span className="font-medium text-slate-700 dark:text-slate-300">15% goes to a reward pool</span>.</p>
-              <p>Seeders who deliver content to buyers earn signed delivery receipts.</p>
-              <p>Click <span className="font-medium text-slate-700 dark:text-slate-300">Collect All</span> to claim your proportional share in one transaction.</p>
+              <p>When buyers purchase content, the price is split: <span className="font-medium text-slate-700 dark:text-slate-300">85% to the creator</span>, <span className="font-medium text-slate-700 dark:text-slate-300">2.5% to ARA stakers</span>, and <span className="font-medium text-slate-700 dark:text-slate-300">12.5% to seeders</span>.</p>
+              <p>Staking rewards are <span className="font-medium text-slate-700 dark:text-slate-300">proportional to your stake</span> — the more ARA you stake, the larger your share of the 2.5%. They accrue automatically with every purchase and can be claimed anytime.</p>
+              <p>Resale purchases split similarly: 4% to seeders, 1% to stakers (plus creator royalties).</p>
+              <p>Seeders who deliver content earn signed delivery receipts. Click <span className="font-medium text-slate-700 dark:text-slate-300">Collect All</span> to claim seeder rewards.</p>
             </div>
           </div>
 

@@ -16,10 +16,17 @@ import {
   getEditionInfo,
   getResaleListings,
   buyResale,
+  getPriceHistory,
+  getItemAnalytics,
+  getContentCollection,
+  getCollection,
   type ContentDetail as ContentDetailType,
   type ContentMetadataV2,
   type EditionInfo,
   type ResaleListing,
+  type PricePoint,
+  type ItemAnalytics,
+  type CollectionInfo,
 } from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
 import {
@@ -28,6 +35,13 @@ import {
   useWeb3ModalProvider,
 } from "@web3modal/ethers/react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { CATEGORIES_BY_TYPE } from "../lib/categories";
+import type { ContentType } from "../lib/types";
+import AddressDisplay from "../components/AddressDisplay";
+import TabPanel from "../components/TabPanel";
+import PriceHistoryChart from "../components/PriceHistoryChart";
+import ActivityTable from "../components/ActivityTable";
+import TraitsGrid from "../components/TraitsGrid";
 
 type PurchaseStep = "idle" | "preparing" | "signing" | "confirming" | "done";
 type EditStep = "idle" | "preparing" | "signing" | "confirming" | "done";
@@ -56,11 +70,8 @@ const EDIT_STEP_LABELS: Record<EditStep, string> = {
   done: "Updated!",
 };
 
-const CONTENT_CATEGORIES = [
-  "Action", "RPG", "Strategy", "Puzzle", "Adventure",
-  "Simulation", "Sports", "Horror", "Platformer", "Shooter",
-  "Indie", "Educational", "Music", "Other",
-];
+const getCategories = (type?: string) =>
+  CATEGORIES_BY_TYPE[(type ?? "other") as ContentType] ?? CATEGORIES_BY_TYPE.other;
 
 function fmtBytes(bytes: number) {
   if (bytes <= 0) return "0 B";
@@ -68,6 +79,13 @@ function fmtBytes(bytes: number) {
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${u[i]}`;
 }
+
+const DETAIL_TABS = [
+  { id: "details", label: "Details" },
+  { id: "properties", label: "Properties" },
+  { id: "activity", label: "Activity" },
+  { id: "listings", label: "Listings" },
+];
 
 function ContentDetail() {
   const { contentId } = useParams<{ contentId: string }>();
@@ -97,6 +115,13 @@ function ContentDetail() {
   const [buyResaleStep, setBuyResaleStep] = useState<"idle" | "preparing" | "signing" | "confirming" | "done">("idle");
   const [buyResaleError, setBuyResaleError] = useState<string | null>(null);
   const [buyResaleSeller, setBuyResaleSeller] = useState<string | null>(null);
+
+  // Analytics state
+  const [priceHistory, setPriceHistory] = useState<PricePoint[]>([]);
+  const [analytics, setAnalytics] = useState<ItemAnalytics | null>(null);
+
+  // Collection state
+  const [collection, setCollection] = useState<CollectionInfo | null>(null);
 
   // Edit state
   const [editing, setEditing] = useState(false);
@@ -147,6 +172,27 @@ function ContentDetail() {
     const id = content.content_id;
     getEditionInfo(id).then(setEdition).catch(() => setEdition(null));
     getResaleListings(id).then(setResaleListings).catch(() => setResaleListings([]));
+  }, [content]);
+
+  // Load analytics data
+  useEffect(() => {
+    if (!content) return;
+    const id = content.content_id;
+    getPriceHistory(id).then(setPriceHistory).catch(() => setPriceHistory([]));
+    getItemAnalytics(id).then(setAnalytics).catch(() => setAnalytics(null));
+  }, [content]);
+
+  // Load collection info
+  useEffect(() => {
+    if (!content) return;
+    getContentCollection(content.content_id)
+      .then((collId) => {
+        if (collId && collId > 0) {
+          return getCollection(collId).then(setCollection);
+        }
+        setCollection(null);
+      })
+      .catch(() => setCollection(null));
   }, [content]);
 
   // Load preview assets lazily after content + meta are set
@@ -311,10 +357,8 @@ function ContentDetail() {
       getEditionInfo(decodedId).then(setEdition).catch(() => {});
 
       // Auto-sign delivery receipt (gasless signature, no ETH cost).
-      // Fires in background — if user rejects the wallet popup it falls back to manual button.
       handleSignReceipt();
     } catch (err) {
-      // Clean up progress listener on error
       if (unlistenProgressRef.current) {
         unlistenProgressRef.current();
         unlistenProgressRef.current = null;
@@ -332,7 +376,6 @@ function ContentDetail() {
       const marketplaceAddr = await getMarketplaceAddress();
       if (!marketplaceAddr) throw new Error("Marketplace not configured");
       const timestamp = Math.floor(Date.now() / 1000);
-      // bytesServed = full file size (single-seeder delivery for now)
       const bytesServed = meta?.file_size ?? 0;
       const typedData = {
         types: {
@@ -403,7 +446,6 @@ function ContentDetail() {
       setBuyResaleStep("confirming");
       await confirmPurchase(result.content_id, txHash);
       setBuyResaleStep("done");
-      // Refresh listings + edition
       getResaleListings(decodeURIComponent(contentId)).then(setResaleListings).catch(() => {});
       getEditionInfo(decodeURIComponent(contentId)).then(setEdition).catch(() => {});
       setTimeout(() => { setBuyResaleStep("idle"); setBuyResaleSeller(null); }, 2000);
@@ -425,12 +467,45 @@ function ContentDetail() {
     }
   };
 
+  // Build traits for properties tab
+  const buildTraits = () => {
+    if (!content) return [];
+    const traits: { label: string; value: string }[] = [];
+    traits.push({ label: "Content Type", value: content.content_type || "other" });
+    if (content.categories && content.categories.length > 0) {
+      traits.push({ label: "Categories", value: content.categories.join(", ") });
+    }
+    if (edition) {
+      traits.push({
+        label: "Edition",
+        value: edition.max_supply === 0
+          ? "Unlimited"
+          : `${edition.total_minted}/${edition.max_supply} minted`,
+      });
+      if (edition.royalty_bps > 0) {
+        traits.push({
+          label: "Creator Royalty",
+          value: `${(edition.royalty_bps / 100).toFixed(edition.royalty_bps % 100 === 0 ? 0 : 1)}%`,
+        });
+      }
+    }
+    if (meta?.file_size && meta.file_size > 0) {
+      traits.push({ label: "File Size", value: fmtBytes(meta.file_size) });
+    }
+    if (analytics) {
+      traits.push({ label: "Total Sales", value: String(analytics.total_sales) });
+      traits.push({ label: "Total Volume", value: `${analytics.total_volume_eth} ETH` });
+      traits.push({ label: "Unique Buyers", value: String(analytics.unique_buyers) });
+    }
+    return traits;
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="text-center space-y-3">
           <div className="w-8 h-8 border-2 border-ara-500 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-sm text-slate-400 dark:text-slate-600">Loading content…</p>
+          <p className="text-sm text-slate-400 dark:text-slate-600">Loading content...</p>
         </div>
       </div>
     );
@@ -512,7 +587,7 @@ function ContentDetail() {
                 <span className="text-slate-400 dark:text-slate-500 font-normal">(select all that apply)</span>
               </label>
               <div className="flex flex-wrap gap-1.5">
-                {CONTENT_CATEGORIES.map((cat) => {
+                {getCategories(editContentType).map((cat) => {
                   const sel = editCategories.includes(cat);
                   return (
                     <button
@@ -575,12 +650,11 @@ function ContentDetail() {
               const current = carouselItems[carouselIndex];
               return (
                 <div className="w-full bg-black select-none">
-                  {/* Main 16:9 frame */}
                   <div className="relative w-full aspect-video flex items-center justify-center">
                     {current.loading ? (
                       <div className="flex flex-col items-center gap-2">
                         <div className="w-6 h-6 border-2 border-ara-500 border-t-transparent rounded-full animate-spin" />
-                        <span className="text-slate-500 text-xs">Loading preview…</span>
+                        <span className="text-slate-500 text-xs">Loading preview...</span>
                       </div>
                     ) : current.src ? (
                       current.type === "video" ? (
@@ -601,7 +675,6 @@ function ContentDetail() {
                       <div className="text-slate-600 text-sm">Preview unavailable</div>
                     )}
 
-                    {/* Prev / Next arrows */}
                     {carouselItems.length > 1 && (
                       <>
                         <button
@@ -611,7 +684,7 @@ function ContentDetail() {
                           className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/60 hover:bg-black/80 text-white w-8 h-8 rounded-full flex items-center justify-center transition-colors text-lg leading-none"
                           aria-label="Previous"
                         >
-                          ‹
+                          &#8249;
                         </button>
                         <button
                           onClick={() =>
@@ -620,13 +693,12 @@ function ContentDetail() {
                           className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/60 hover:bg-black/80 text-white w-8 h-8 rounded-full flex items-center justify-center transition-colors text-lg leading-none"
                           aria-label="Next"
                         >
-                          ›
+                          &#8250;
                         </button>
                       </>
                     )}
                   </div>
 
-                  {/* Filmstrip thumbnail strip */}
                   {carouselItems.length > 1 && (
                     <div className="flex gap-1.5 px-2 py-2 overflow-x-auto bg-black/80">
                       {carouselItems.map((item, i) => (
@@ -649,7 +721,7 @@ function ContentDetail() {
                             )
                           ) : (
                             <div className="w-full h-full bg-slate-800 flex items-center justify-center text-slate-500 text-xs">
-                              {item.loading ? "…" : "✕"}
+                              {item.loading ? "..." : "x"}
                             </div>
                           )}
                         </button>
@@ -661,6 +733,7 @@ function ContentDetail() {
             })()}
 
             <div className="p-6">
+              {/* Title + badges + price */}
               <div className="flex items-start gap-4">
                 {carouselItems.length === 0 && (
                   <div className="text-5xl">{contentTypeIcon(content.content_type)}</div>
@@ -677,6 +750,23 @@ function ContentDetail() {
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mt-1">
                     {content.content_type}
                   </p>
+
+                  {/* Creator with friendly name */}
+                  <div className="flex items-center gap-1.5 mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+                    <span>by</span>
+                    <AddressDisplay address={content.creator} className="font-medium text-slate-700 dark:text-slate-300" />
+                  </div>
+
+                  {/* Collection link */}
+                  {collection && (
+                    <Link
+                      to={`/collections/${collection.collection_id}`}
+                      className="inline-flex items-center gap-1.5 mt-1.5 text-xs text-ara-600 dark:text-ara-400 hover:text-ara-500"
+                    >
+                      <span className="w-4 h-4 rounded bg-gradient-to-br from-ara-500/30 to-purple-500/30 inline-block flex-shrink-0" />
+                      {collection.name}
+                    </Link>
+                  )}
 
                   {/* Category tags + edition badges */}
                   <div className="flex flex-wrap gap-1.5 mt-2">
@@ -717,23 +807,7 @@ function ContentDetail() {
                 </div>
               </div>
 
-              {content.description && (
-                <p className="mt-4 text-slate-600 dark:text-slate-400 leading-relaxed">
-                  {content.description}
-                </p>
-              )}
-
-              <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-800 grid grid-cols-1 gap-2 text-xs">
-                <div className="flex gap-2">
-                  <span className="font-semibold text-slate-500 dark:text-slate-500 w-28 flex-shrink-0">Creator</span>
-                  <span className="font-mono text-slate-700 dark:text-slate-300 break-all">{content.creator}</span>
-                </div>
-                <div className="flex gap-2">
-                  <span className="font-semibold text-slate-500 dark:text-slate-500 w-28 flex-shrink-0">Content Hash</span>
-                  <span className="font-mono text-slate-700 dark:text-slate-300 break-all">{content.content_hash}</span>
-                </div>
-              </div>
-
+              {/* Purchase section */}
               <div className="mt-6 space-y-3">
                 {purchaseError && (
                   <div className="alert-error">{purchaseError}</div>
@@ -774,7 +848,7 @@ function ContentDetail() {
                           }
                           className="inline underline font-medium cursor-pointer"
                         >
-                          View on Etherscan ↗
+                          View on Etherscan
                         </button>
                       </p>
                     )}
@@ -795,7 +869,7 @@ function ContentDetail() {
                         </>
                       )}
                       {receiptStep === "signing" && (
-                        <p className="text-xs opacity-80">Signing delivery receipt in wallet…</p>
+                        <p className="text-xs opacity-80">Signing delivery receipt in wallet...</p>
                       )}
                       {receiptStep === "done" && (
                         <p className="text-xs font-medium">Receipt signed — you're now seeding and earning rewards for this content.</p>
@@ -857,58 +931,130 @@ function ContentDetail() {
                     )}
                   </div>
                 )}
-
-                {/* Resale purchase error — prominent, above listings */}
-                {buyResaleError && (
-                  <div className="mt-4 alert-error text-sm">{buyResaleError}</div>
-                )}
-
-                {/* Resale Listings */}
-                {resaleListings.length > 0 && (
-                  <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-800">
-                    <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-3">
-                      Available from Resellers
-                    </h3>
-                    <div className="space-y-2">
-                      {resaleListings.map((listing) => {
-                        const isBuying = buyResaleSeller === listing.seller;
-                        const truncSeller = `${listing.seller.slice(0, 6)}...${listing.seller.slice(-4)}`;
-                        const isOwnListing = address?.toLowerCase() === listing.seller.toLowerCase();
-                        return (
-                          <div key={listing.seller}
-                            className="flex items-center justify-between p-3 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700">
-                            <div>
-                              <span className="text-sm font-medium text-slate-900 dark:text-slate-100">
-                                {listing.price_eth} ETH
-                              </span>
-                              <span className="text-xs text-slate-500 dark:text-slate-500 ml-2">
-                                from {truncSeller}
-                              </span>
-                            </div>
-                            {isOwnListing ? (
-                              <span className="text-xs text-slate-400">Your listing</span>
-                            ) : (
-                              <button
-                                onClick={() => handleBuyResale(listing.seller)}
-                                disabled={!isConnected || buyResaleStep !== "idle"}
-                                className="btn-primary text-xs px-3 py-1.5"
-                              >
-                                {isBuying
-                                  ? buyResaleStep === "preparing" ? "Preparing..."
-                                  : buyResaleStep === "signing" ? "Sign in wallet..."
-                                  : buyResaleStep === "confirming" ? "Confirming..."
-                                  : buyResaleStep === "done" ? "Purchased!"
-                                  : "Buy Resale"
-                                  : "Buy Resale"}
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
               </div>
+
+              {/* Resale purchase error */}
+              {buyResaleError && (
+                <div className="mt-4 alert-error text-sm">{buyResaleError}</div>
+              )}
+            </div>
+
+            {/* Tabbed section */}
+            <div className="px-6 pb-6">
+              <TabPanel tabs={DETAIL_TABS} defaultTab="details">
+                {(activeTab) => {
+                  if (activeTab === "details") {
+                    return (
+                      <div className="space-y-4">
+                        {content.description && (
+                          <div>
+                            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-2">Description</h3>
+                            <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed whitespace-pre-wrap">
+                              {content.description}
+                            </p>
+                          </div>
+                        )}
+                        <div className="grid grid-cols-1 gap-2 text-xs">
+                          <div className="flex gap-2">
+                            <span className="font-semibold text-slate-500 dark:text-slate-500 w-28 flex-shrink-0">Creator</span>
+                            <AddressDisplay address={content.creator} className="text-slate-700 dark:text-slate-300" />
+                          </div>
+                          <div className="flex gap-2">
+                            <span className="font-semibold text-slate-500 dark:text-slate-500 w-28 flex-shrink-0">Content Hash</span>
+                            <span className="font-mono text-slate-700 dark:text-slate-300 break-all">{content.content_hash}</span>
+                          </div>
+                          <div className="flex gap-2">
+                            <span className="font-semibold text-slate-500 dark:text-slate-500 w-28 flex-shrink-0">Content ID</span>
+                            <span className="font-mono text-slate-700 dark:text-slate-300 break-all text-[11px]">{content.content_id}</span>
+                          </div>
+                          {meta?.file_size && meta.file_size > 0 && (
+                            <div className="flex gap-2">
+                              <span className="font-semibold text-slate-500 dark:text-slate-500 w-28 flex-shrink-0">File Size</span>
+                              <span className="text-slate-700 dark:text-slate-300">{fmtBytes(meta.file_size)}</span>
+                            </div>
+                          )}
+                          {meta?.filename && (
+                            <div className="flex gap-2">
+                              <span className="font-semibold text-slate-500 dark:text-slate-500 w-28 flex-shrink-0">Filename</span>
+                              <span className="text-slate-700 dark:text-slate-300">{meta.filename}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  if (activeTab === "properties") {
+                    return <TraitsGrid traits={buildTraits()} />;
+                  }
+
+                  if (activeTab === "activity") {
+                    return (
+                      <div className="space-y-6">
+                        <div>
+                          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-3">Price History</h3>
+                          <PriceHistoryChart data={priceHistory} />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-3">Sales Activity</h3>
+                          <ActivityTable data={priceHistory} />
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  if (activeTab === "listings") {
+                    return (
+                      <div>
+                        {resaleListings.length === 0 ? (
+                          <div className="text-gray-400 dark:text-gray-500 text-sm text-center py-8">
+                            No resale listings
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {resaleListings.map((listing) => {
+                              const isBuying = buyResaleSeller === listing.seller;
+                              const isOwnListing = address?.toLowerCase() === listing.seller.toLowerCase();
+                              return (
+                                <div key={listing.seller}
+                                  className="flex items-center justify-between p-3 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700">
+                                  <div>
+                                    <span className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                                      {listing.price_eth} ETH
+                                    </span>
+                                    <span className="text-xs text-slate-500 dark:text-slate-500 ml-2">
+                                      from <AddressDisplay address={listing.seller} />
+                                    </span>
+                                  </div>
+                                  {isOwnListing ? (
+                                    <span className="text-xs text-slate-400">Your listing</span>
+                                  ) : (
+                                    <button
+                                      onClick={() => handleBuyResale(listing.seller)}
+                                      disabled={!isConnected || buyResaleStep !== "idle"}
+                                      className="btn-primary text-xs px-3 py-1.5"
+                                    >
+                                      {isBuying
+                                        ? buyResaleStep === "preparing" ? "Preparing..."
+                                        : buyResaleStep === "signing" ? "Sign in wallet..."
+                                        : buyResaleStep === "confirming" ? "Confirming..."
+                                        : buyResaleStep === "done" ? "Purchased!"
+                                        : "Buy Resale"
+                                        : "Buy Resale"}
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+
+                  return null;
+                }}
+              </TabPanel>
             </div>
           </>
         )}

@@ -1,6 +1,7 @@
 import { Link, useLocation } from "react-router-dom";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useWeb3Modal, useWeb3ModalAccount } from "@web3modal/ethers/react";
+import { getDisplayName } from "../lib/tauri";
 import { useWalletStore } from "../store/walletStore";
 import {
   IconStore, IconUpload, IconLibrary, IconChart, IconWallet,
@@ -28,6 +29,7 @@ function Navbar({ theme, onToggleTheme, collapsed, onToggleCollapsed }: NavbarPr
   const { open } = useWeb3Modal();
   const { address: web3Address, isConnected } = useWeb3ModalAccount();
   const { address: storeAddress, onWalletConnected, onWalletDisconnected } = useWalletStore();
+  const [displayName, setDisplayName] = useState<string | null>(null);
 
   useEffect(() => {
     if (isConnected && web3Address && web3Address !== storeAddress) {
@@ -36,6 +38,14 @@ function Navbar({ theme, onToggleTheme, collapsed, onToggleCollapsed }: NavbarPr
       onWalletDisconnected();
     }
   }, [isConnected, web3Address, storeAddress, onWalletConnected, onWalletDisconnected]);
+
+  useEffect(() => {
+    if (storeAddress) {
+      getDisplayName(storeAddress).then(setDisplayName).catch(() => setDisplayName(null));
+    } else {
+      setDisplayName(null);
+    }
+  }, [storeAddress]);
 
   return (
     <aside
@@ -119,8 +129,12 @@ function Navbar({ theme, onToggleTheme, collapsed, onToggleCollapsed }: NavbarPr
           >
             <div className="w-[18px] h-[18px] rounded-full bg-emerald-500 flex-shrink-0 ring-2 ring-emerald-200 dark:ring-emerald-900/60" />
             {!collapsed && (
-              <span className="font-mono text-xs truncate">
-                {storeAddress.slice(0, 6)}…{storeAddress.slice(-4)}
+              <span className="text-xs truncate">
+                {displayName ? (
+                  <span className="font-medium">{displayName}</span>
+                ) : (
+                  <span className="font-mono">{storeAddress.slice(0, 6)}…{storeAddress.slice(-4)}</span>
+                )}
               </span>
             )}
           </button>

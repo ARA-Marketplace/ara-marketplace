@@ -10,12 +10,13 @@ import {
   listForResale, confirmListForResale,
   cancelResaleListing, confirmCancelListing,
   getResaleListings,
-  type LibraryItem, type PublishedItem, type ResaleListing,
+  getMyCollections, createCollection, confirmCreateCollection,
+  type LibraryItem, type PublishedItem, type ResaleListing, type CollectionInfo,
 } from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
 import { useWeb3Modal, useWeb3ModalAccount, useWeb3ModalProvider } from "@web3modal/ethers/react";
 
-type Tab = "purchased" | "published";
+type Tab = "purchased" | "published" | "collections";
 
 function fmtBytes(bytes: number) {
   if (bytes <= 0) return "—";
@@ -63,6 +64,58 @@ function Library() {
   const [resaleError, setResaleError] = useState<string | null>(null);
   const [resaleStatus, setResaleStatus] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+
+  // Collections state
+  const [collections, setCollections] = useState<CollectionInfo[]>([]);
+  const [loadingCollections, setLoadingCollections] = useState(false);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newCollName, setNewCollName] = useState("");
+  const [newCollDesc, setNewCollDesc] = useState("");
+  const [newCollBanner, setNewCollBanner] = useState("");
+  const [createStep, setCreateStep] = useState<"idle" | "signing" | "confirming" | "done">("idle");
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  const fetchCollections = useCallback(async () => {
+    if (!isConnected) return;
+    setLoadingCollections(true);
+    try {
+      const data = await getMyCollections();
+      setCollections(data);
+    } catch {}
+    finally { setLoadingCollections(false); }
+  }, [isConnected]);
+
+  useEffect(() => { fetchCollections(); }, [fetchCollections]);
+
+  const handleCreateCollection = async () => {
+    if (!walletProvider || !newCollName.trim()) return;
+    setCreateError(null);
+    try {
+      setCreateStep("signing");
+      const txs = await createCollection({
+        name: newCollName.trim(),
+        description: newCollDesc,
+        bannerUri: newCollBanner,
+      });
+      const { signAndSendTransactions: sign } = await import("../lib/transactions");
+      const txHash = await sign(walletProvider, txs);
+      setCreateStep("confirming");
+      await confirmCreateCollection({
+        txHash,
+        name: newCollName.trim(),
+        description: newCollDesc,
+        bannerUri: newCollBanner,
+      });
+      setCreateStep("done");
+      setShowCreateModal(false);
+      setNewCollName(""); setNewCollDesc(""); setNewCollBanner("");
+      fetchCollections();
+      setTimeout(() => setCreateStep("idle"), 1500);
+    } catch (e) {
+      setCreateError(String(e));
+      setCreateStep("idle");
+    }
+  };
 
   const fetchActiveListings = useCallback(async (libraryItems: LibraryItem[]) => {
     if (!address) return;
@@ -249,6 +302,10 @@ function Library() {
         <button onClick={() => setActiveTab("published")} className={tabCls("published")}>
           Published
           {publishedItems.length > 0 && <span className="ml-2 badge-gray">{publishedItems.length}</span>}
+        </button>
+        <button onClick={() => setActiveTab("collections")} className={tabCls("collections")}>
+          Collections
+          {collections.length > 0 && <span className="ml-2 badge-gray">{collections.length}</span>}
         </button>
       </div>
 
@@ -485,6 +542,97 @@ function Library() {
                   })}
                 </tbody>
               </table>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Collections Tab ── */}
+      {activeTab === "collections" && (
+        <>
+          <div className="flex justify-between items-center mb-4">
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Manage your on-chain collections.
+            </p>
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="btn-primary text-sm"
+            >
+              Create Collection
+            </button>
+          </div>
+          {loadingCollections ? (
+            <div className="flex justify-center py-16">
+              <div className="w-8 h-8 border-2 border-ara-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : collections.length === 0 ? (
+            <div className="card p-10 text-center">
+              <p className="text-slate-500 dark:text-slate-400 mb-2">No collections yet.</p>
+              <p className="text-xs text-slate-400 dark:text-slate-600">
+                Create a collection to group your published content.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {collections.map((c) => (
+                <Link
+                  key={c.collection_id}
+                  to={`/collections/${c.collection_id}`}
+                  className="card card-hover overflow-hidden"
+                >
+                  <div className="h-24 bg-gradient-to-br from-ara-600/30 to-purple-600/30 relative overflow-hidden">
+                    {c.banner_uri && (
+                      <img src={c.banner_uri} alt="" className="w-full h-full object-cover"
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                    )}
+                  </div>
+                  <div className="p-3">
+                    <h3 className="font-semibold text-sm truncate dark:text-white">{c.name}</h3>
+                    <div className="flex items-center justify-between mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      <span>{c.item_count} items</span>
+                      {parseFloat(c.volume_eth) > 0 && <span>{c.volume_eth} ETH vol</span>}
+                    </div>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
+
+          {/* Create Collection Modal */}
+          {showCreateModal && (
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+              onClick={() => setShowCreateModal(false)}>
+              <div className="card w-full max-w-md p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                <h3 className="font-semibold text-slate-900 dark:text-slate-100 mb-4">Create Collection</h3>
+                {createError && <div className="alert-error text-xs mb-3">{createError}</div>}
+                <div className="space-y-3 mb-5">
+                  <div>
+                    <label className="label">Name</label>
+                    <input className="input-base w-full" value={newCollName}
+                      onChange={(e) => setNewCollName(e.target.value)} placeholder="My Collection" />
+                  </div>
+                  <div>
+                    <label className="label">Description</label>
+                    <textarea className="input-base w-full" rows={3} value={newCollDesc}
+                      onChange={(e) => setNewCollDesc(e.target.value)} placeholder="Optional description" />
+                  </div>
+                  <div>
+                    <label className="label">Banner Image URL</label>
+                    <input className="input-base w-full" value={newCollBanner}
+                      onChange={(e) => setNewCollBanner(e.target.value)} placeholder="https://..." />
+                  </div>
+                </div>
+                <div className="flex justify-end gap-3">
+                  <button onClick={() => setShowCreateModal(false)} className="btn-ghost">Cancel</button>
+                  <button
+                    onClick={handleCreateCollection}
+                    disabled={createStep !== "idle" || !newCollName.trim()}
+                    className="btn-primary"
+                  >
+                    {createStep === "signing" ? "Sign in wallet..." : createStep === "confirming" ? "Confirming..." : "Create"}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </>

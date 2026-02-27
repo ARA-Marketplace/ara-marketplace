@@ -7,6 +7,12 @@ import {
   type ContentDetail, type ContentMetadataV2,
 } from "../lib/tauri";
 import { IconSearch, IconRefresh } from "../components/Icons";
+import ContentTypeFilter from "../components/ContentTypeFilter";
+import FeaturedCarousel from "../components/FeaturedCarousel";
+import CollectionLeaderboard from "../components/CollectionLeaderboard";
+import TopCollectors from "../components/TopCollectors";
+import TrendingGrid from "../components/TrendingGrid";
+import type { ContentType } from "../lib/types";
 
 const TYPE_GRADIENTS: Record<string, string> = {
   game:     "from-violet-700 via-purple-700 to-indigo-800",
@@ -22,6 +28,8 @@ const TYPE_ICONS: Record<string, string> = {
   document: "📄", software: "💾", other: "📦",
 };
 
+type SortBy = "recent" | "price_asc" | "price_desc";
+
 function Marketplace() {
   const [searchQuery, setSearchQuery] = useState("");
   const [items, setItems] = useState<ContentDetail[]>([]);
@@ -29,17 +37,40 @@ function Marketplace() {
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
-  // contentId → preview image src (loaded lazily)
   const [previewSrcs, setPreviewSrcs] = useState<Record<string, string>>({});
+
+  // Filter/sort state
+  const [selectedType, setSelectedType] = useState<ContentType | "all">("all");
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<SortBy>("recent");
 
   const fetchContent = useCallback((query: string) => {
     setLoading(true);
     setError(null);
     searchContent(query)
-      .then(setItems)
+      .then((results) => {
+        // Client-side filtering until backend supports these params
+        let filtered = results;
+        if (selectedType !== "all") {
+          filtered = filtered.filter((i) => i.content_type === selectedType);
+        }
+        if (selectedCategory) {
+          filtered = filtered.filter(
+            (i) => i.categories && i.categories.includes(selectedCategory)
+          );
+        }
+        // Sort
+        if (sortBy === "price_asc") {
+          filtered.sort((a, b) => parseFloat(a.price_eth) - parseFloat(b.price_eth));
+        } else if (sortBy === "price_desc") {
+          filtered.sort((a, b) => parseFloat(b.price_eth) - parseFloat(a.price_eth));
+        }
+        // "recent" is already the default order from the backend
+        setItems(filtered);
+      })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [selectedType, selectedCategory, sortBy]);
 
   useEffect(() => {
     const timer = setTimeout(() => fetchContent(searchQuery), 300);
@@ -88,7 +119,7 @@ function Marketplace() {
           ? `Synced ${result.new_content} new item${result.new_content === 1 ? "" : "s"}`
           : "Up to date"
       );
-      setItems(await searchContent(searchQuery));
+      fetchContent(searchQuery);
     } catch (e) {
       setSyncMessage(`Sync failed: ${e}`);
     } finally {
@@ -106,7 +137,8 @@ function Marketplace() {
         </p>
       </div>
 
-      <div className="mb-6 flex items-center gap-3">
+      {/* Search + Sync */}
+      <div className="mb-4 flex items-center gap-3">
         <div className="relative flex-1 max-w-sm">
           <IconSearch className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
           <input
@@ -119,11 +151,57 @@ function Marketplace() {
         </div>
         <button onClick={handleSync} disabled={syncing} className="btn-secondary gap-2">
           <IconRefresh className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} />
-          {syncing ? "Syncing…" : "Refresh"}
+          {syncing ? "Syncing..." : "Refresh"}
         </button>
         {syncMessage && (
           <span className="text-xs text-slate-500 dark:text-slate-400">{syncMessage}</span>
         )}
+      </div>
+
+      {/* Content Type + Category Filter */}
+      <div className="mb-6">
+        <ContentTypeFilter
+          selectedType={selectedType}
+          selectedCategory={selectedCategory}
+          onTypeChange={setSelectedType}
+          onCategoryChange={setSelectedCategory}
+        />
+      </div>
+
+      {/* Featured Collections Carousel */}
+      <div className="mb-8">
+        <FeaturedCarousel />
+      </div>
+
+      {/* Trending + Top Collectors row */}
+      <div className="mb-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2">
+          <TrendingGrid />
+        </div>
+        <div>
+          <TopCollectors />
+        </div>
+      </div>
+
+      {/* Collection Leaderboard */}
+      <div className="mb-8 card p-4">
+        <CollectionLeaderboard />
+      </div>
+
+      {/* Sort controls + Browse All */}
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-lg font-semibold dark:text-white">
+          Browse All Content
+        </h2>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value as SortBy)}
+          className="input-base w-auto text-sm py-1.5 px-3"
+        >
+          <option value="recent">Most Recent</option>
+          <option value="price_asc">Price: Low to High</option>
+          <option value="price_desc">Price: High to Low</option>
+        </select>
       </div>
 
       {error && <div className="alert-error mb-6">{error}</div>}
@@ -132,18 +210,20 @@ function Marketplace() {
         <div className="flex items-center justify-center py-20">
           <div className="text-center space-y-3">
             <div className="w-8 h-8 border-2 border-ara-500 border-t-transparent rounded-full animate-spin mx-auto" />
-            <p className="text-sm text-slate-400 dark:text-slate-600">Loading content…</p>
+            <p className="text-sm text-slate-400 dark:text-slate-600">Loading content...</p>
           </div>
         </div>
       ) : items.length === 0 ? (
         <div className="card p-12 text-center">
           <p className="text-slate-400 dark:text-slate-600 text-lg mb-2">No content found</p>
           <p className="text-sm text-slate-500 dark:text-slate-600">
-            Be the first to{" "}
+            {selectedType !== "all" || selectedCategory
+              ? "Try adjusting your filters or "
+              : "Be the first to "}
             <Link to="/publish" className="text-ara-500 hover:text-ara-400 underline">
               publish content
-            </Link>{" "}
-            to the Ara marketplace.
+            </Link>
+            {selectedType !== "all" || selectedCategory ? "." : " to the Ara marketplace."}
           </p>
         </div>
       ) : (
@@ -175,11 +255,11 @@ function Marketplace() {
                       <div className="absolute inset-0 bg-black/10 group-hover:bg-black/0 transition-colors" />
                     </div>
                   )}
-                  {/* Type badge — always shown */}
+                  {/* Type badge */}
                   <span className="absolute top-2 left-2 px-2 py-0.5 bg-black/50 backdrop-blur-sm text-white text-[10px] font-semibold uppercase tracking-wider rounded-full">
                     {item.content_type}
                   </span>
-                  {/* Sold Out / Resale Available badge for limited editions */}
+                  {/* Sold Out / Resale Available badge */}
                   {item.max_supply > 0 && item.total_minted >= item.max_supply && (
                     item.resale_count > 0 ? (
                       <span className="absolute top-2 right-2 px-2 py-0.5 bg-amber-600/80 backdrop-blur-sm text-white text-[10px] font-semibold uppercase tracking-wider rounded-full">

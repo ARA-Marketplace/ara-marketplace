@@ -1,4 +1,4 @@
-import { useState, useCallback, type DragEvent } from "react";
+import { useState, useEffect, useCallback, type DragEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { publishContent, confirmPublish } from "../lib/tauri";
@@ -8,6 +8,8 @@ import {
   useWeb3ModalAccount,
   useWeb3ModalProvider,
 } from "@web3modal/ethers/react";
+import { CATEGORIES_BY_TYPE } from "../lib/categories";
+import type { ContentType } from "../lib/types";
 
 type PublishStep = "form" | "importing" | "signing" | "confirming" | "done";
 
@@ -18,12 +20,6 @@ const STEP_LABELS: Record<PublishStep, string> = {
   confirming: "Confirming and activating content…",
   done:       "Published!",
 };
-
-const CONTENT_CATEGORIES = [
-  "Action", "RPG", "Strategy", "Puzzle", "Adventure",
-  "Simulation", "Sports", "Horror", "Platformer", "Shooter",
-  "Indie", "Educational", "Music", "Other",
-];
 
 function Publish() {
   const navigate = useNavigate();
@@ -85,6 +81,13 @@ function Publish() {
   const removeAdditionalPreview = (idx: number) => {
     setPreviewPaths((prev) => prev.filter((_, i) => i !== idx));
   };
+
+  const activeCategories = CATEGORIES_BY_TYPE[contentType as ContentType] ?? CATEGORIES_BY_TYPE.other;
+
+  // Clear selected categories when content type changes
+  useEffect(() => {
+    setSelectedCategories([]);
+  }, [contentType]);
 
   const toggleCategory = (cat: string) => {
     setSelectedCategories((prev) =>
@@ -213,7 +216,7 @@ function Publish() {
             <span className="text-slate-400 dark:text-slate-500 font-normal">(select all that apply)</span>
           </label>
           <div className="flex flex-wrap gap-1.5">
-            {CONTENT_CATEGORIES.map((cat) => {
+            {activeCategories.map((cat) => {
               const sel = selectedCategories.includes(cat);
               return (
                 <button key={cat} type="button" onClick={() => toggleCategory(cat)}
