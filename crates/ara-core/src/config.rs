@@ -22,6 +22,12 @@ pub struct EthereumConfig {
     pub registry_address: String,
     /// Marketplace contract address
     pub marketplace_address: String,
+    /// AraCollections contract address
+    #[serde(default)]
+    pub collections_address: String,
+    /// AraNameRegistry contract address
+    #[serde(default)]
+    pub name_registry_address: String,
     /// Block number where contracts were deployed (floor for event sync)
     pub deployment_block: u64,
 }
@@ -49,12 +55,14 @@ impl Default for AppConfig {
                 // Sepolia testnet — set SEPOLIA_RPC_URL env var to override with Alchemy/Infura key
                 rpc_url: "https://ethereum-sepolia.publicnode.com".to_string(),
                 chain_id: 11155111,
-                // Sepolia deployment (2026-02-26) — ERC-1155 + UUPS proxies + resale marketplace
-                ara_token_address: "0x6E042035Dfe8FF36527E482401D95324afaEB98e".to_string(),
-                staking_address: "0x33DE0E7d909EdbFDe5973E8208C0bf3B86E553D1".to_string(),
-                registry_address: "0xB893FD211bFDd9557Bd60BE96f259966db434679".to_string(),
-                marketplace_address: "0x02ce6E3c0cfD96076d2Fbaf878CCB3043D225138".to_string(),
-                deployment_block: 10_342_496, // Sepolia deploy block (2026-02-26)
+                // Sepolia deployment (2026-02-27) — ERC-1155 + UUPS proxies + V2 staker rewards + collections + names
+                ara_token_address: "0x53720EcdDF71fE618c7A5aEc99ac2e958ad4dF99".to_string(),
+                staking_address: "0xfD41Ae37cD729b6a70e42641ea14187e213b29e6".to_string(),
+                registry_address: "0xd45ff950bBC1c823F66C4EbdF72De23Eb02e4831".to_string(),
+                marketplace_address: "0xD7992b6A863FBacE3BB58BFE5D31EAe580adF4E0".to_string(),
+                collections_address: "0x59453f1f12D10e4B4210fae8188d666011292997".to_string(),
+                name_registry_address: "0xDA5827A8659271C44174894bbA403FD264198C5d".to_string(),
+                deployment_block: 10_349_200, // Sepolia deploy block (2026-02-27)
             },
             iroh: IrohConfig {
                 relay_urls: vec!["https://relay.iroh.network".to_string()],

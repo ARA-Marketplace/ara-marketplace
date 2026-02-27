@@ -104,6 +104,8 @@ impl AppState {
             staking: parse_address(&eth.staking_address, "staking")?,
             registry: parse_address(&eth.registry_address, "registry")?,
             marketplace: parse_address(&eth.marketplace_address, "marketplace")?,
+            collections: parse_address(&eth.collections_address, "collections")?,
+            name_registry: parse_address(&eth.name_registry_address, "name_registry")?,
         };
 
         connect_http(&eth.rpc_url, addresses).map_err(|e| format!("Chain connect failed: {e}"))

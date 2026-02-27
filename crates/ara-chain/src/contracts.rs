@@ -25,10 +25,19 @@ sol! {
         function isEligibleSeeder(address user, bytes32 contentId) external view returns (bool);
         function seederMinStake() external view returns (uint256);
 
+        // V2: Passive staker rewards
+        function totalStaked() external view returns (uint256);
+        function totalUserStake(address user) external view returns (uint256);
+        function earned(address account) external view returns (uint256);
+        function claimStakingReward() external;
+        function totalStakerRewardsDeposited() external view returns (uint256);
+        function totalStakerRewardsClaimed() external view returns (uint256);
+
         event Staked(address indexed user, uint256 amount);
         event Unstaked(address indexed user, uint256 amount);
         event ContentStakeAdded(address indexed user, bytes32 indexed contentId, uint256 amount);
         event ContentStakeRemoved(address indexed user, bytes32 indexed contentId, uint256 amount);
+        event StakerRewardClaimed(address indexed user, uint256 amount);
     }
 
     #[sol(rpc)]
@@ -74,6 +83,8 @@ sol! {
         function buyerRewardPaid(bytes32 contentId, address buyer) external view returns (uint256);
         function getBuyerReward(bytes32 contentId, address buyer) external view returns (uint256);
         function totalRewardsClaimed() external view returns (uint256);
+        function totalStakerRewardsForwarded() external view returns (uint256);
+        function stakerRewardBps() external view returns (uint256);
         function listings(bytes32 contentId, address seller) external view returns (uint256 price, bool active);
         function listForResale(bytes32 contentId, uint256 price) external;
         function cancelListing(bytes32 contentId) external;
@@ -85,5 +96,39 @@ sol! {
         event ContentListed(bytes32 indexed contentId, address indexed seller, uint256 price);
         event ListingCancelled(bytes32 indexed contentId, address indexed seller);
         event ResalePurchased(bytes32 indexed contentId, address indexed buyer, address indexed seller, uint256 price, uint256 royaltyAmount, uint256 seederReward);
+    }
+
+    #[sol(rpc)]
+    interface IAraCollections {
+        function createCollection(string name, string description, string bannerUri) external returns (uint256 collectionId);
+        function updateCollection(uint256 collectionId, string name, string description, string bannerUri) external;
+        function deleteCollection(uint256 collectionId) external;
+        function addItem(uint256 collectionId, bytes32 contentId) external;
+        function removeItem(uint256 collectionId, bytes32 contentId) external;
+        function collections(uint256 collectionId) external view returns (address creator, string name, string description, string bannerUri, uint256 createdAt, bool active);
+        function getCollectionItems(uint256 collectionId) external view returns (bytes32[]);
+        function getCreatorCollections(address creator) external view returns (uint256[]);
+        function getCollectionItemCount(uint256 collectionId) external view returns (uint256);
+        function contentCollection(bytes32 contentId) external view returns (uint256);
+        function nextCollectionId() external view returns (uint256);
+
+        event CollectionCreated(uint256 indexed collectionId, address indexed creator, string name);
+        event CollectionUpdated(uint256 indexed collectionId, string name, string description, string bannerUri);
+        event CollectionDeleted(uint256 indexed collectionId);
+        event ItemAddedToCollection(uint256 indexed collectionId, bytes32 indexed contentId);
+        event ItemRemovedFromCollection(uint256 indexed collectionId, bytes32 indexed contentId);
+    }
+
+    #[sol(rpc)]
+    interface IAraNameRegistry {
+        function registerName(string name) external;
+        function removeName() external;
+        function getName(address user) external view returns (string);
+        function getNames(address[] users) external view returns (string[]);
+        function getAddress(string name) external view returns (address);
+        function addressToName(address user) external view returns (string);
+
+        event NameRegistered(address indexed user, string name);
+        event NameRemoved(address indexed user, string oldName);
     }
 }

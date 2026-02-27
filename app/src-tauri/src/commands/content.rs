@@ -25,7 +25,7 @@ pub struct PublishedItem {
     pub updated_at: Option<i64>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ContentDetail {
     pub content_id: String,
     pub content_hash: String,

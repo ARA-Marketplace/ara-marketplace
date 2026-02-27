@@ -1,5 +1,8 @@
+pub mod analytics;
+pub mod collections;
 pub mod content;
 pub mod marketplace;
+pub mod names;
 pub mod seeding;
 pub mod staking;
 pub mod sync;

@@ -2,9 +2,11 @@ use alloy::primitives::{Address, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use anyhow::Result;
 
+use crate::collections::CollectionsClient;
 use crate::content_token::ContentTokenClient;
 use crate::events::EventIndexer;
 use crate::marketplace::MarketplaceClient;
+use crate::names::NameRegistryClient;
 use crate::staking::StakingClient;
 use crate::token::TokenClient;
 
@@ -15,6 +17,8 @@ pub struct ContractAddresses {
     pub staking: Address,
     pub registry: Address,
     pub marketplace: Address,
+    pub collections: Address,
+    pub name_registry: Address,
 }
 
 /// Main entry point for all Ethereum interactions.
@@ -25,6 +29,8 @@ pub struct AraChain<P> {
     pub staking: StakingClient<P>,
     pub registry: ContentTokenClient<P>,
     pub marketplace: MarketplaceClient<P>,
+    pub collections: CollectionsClient<P>,
+    pub name_registry: NameRegistryClient<P>,
     pub events: EventIndexer<P>,
 }
 
@@ -35,12 +41,16 @@ impl<P: Provider + Clone> AraChain<P> {
             staking: StakingClient::new(addresses.staking, provider.clone()),
             registry: ContentTokenClient::new(addresses.registry, provider.clone()),
             marketplace: MarketplaceClient::new(addresses.marketplace, provider.clone()),
+            collections: CollectionsClient::new(addresses.collections, provider.clone()),
+            name_registry: NameRegistryClient::new(addresses.name_registry, provider.clone()),
             events: EventIndexer::new(
                 addresses.registry,
                 addresses.marketplace,
                 addresses.staking,
                 provider.clone(),
-            ),
+            )
+            .with_collections_address(addresses.collections)
+            .with_name_registry_address(addresses.name_registry),
             provider,
         }
     }
@@ -71,6 +81,14 @@ impl<P: Provider + Clone> AraChain<P> {
 
     pub fn marketplace_address(&self) -> Address {
         self.marketplace.address()
+    }
+
+    pub fn collections_address(&self) -> Address {
+        self.collections.address()
+    }
+
+    pub fn name_registry_address(&self) -> Address {
+        self.name_registry.address()
     }
 }
 

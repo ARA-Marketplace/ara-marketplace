@@ -16,6 +16,10 @@ pub struct StakeInfo {
     pub total_staked: String,
     pub general_balance: String,
     pub content_stakes: Vec<ContentStakeInfo>,
+    /// Unclaimed passive staker reward (ETH)
+    pub staker_reward_earned: String,
+    /// Total stake used for reward weight (general + content-allocated)
+    pub total_user_stake: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -166,11 +170,72 @@ pub async fn get_stake_info(state: State<'_, AppState>) -> Result<StakeInfo, Str
             U256::ZERO
         });
 
+    let earned = chain
+        .staking
+        .earned(address)
+        .await
+        .unwrap_or(U256::ZERO);
+
+    let total_user = chain
+        .staking
+        .total_user_stake(address)
+        .await
+        .unwrap_or(U256::ZERO);
+
     Ok(StakeInfo {
         total_staked: format_wei(general_balance),
         general_balance: format_wei(general_balance),
         content_stakes: vec![],
+        staker_reward_earned: format_wei(earned),
+        total_user_stake: format_wei(total_user),
     })
+}
+
+// ── Passive staker reward claiming ──
+
+/// Build a transaction to claim passive staking rewards (ETH).
+/// These are the 2.5% of each purchase distributed proportionally to all ARA stakers.
+#[tauri::command]
+pub async fn claim_staking_reward(
+    state: State<'_, AppState>,
+) -> Result<Vec<TransactionRequest>, String> {
+    info!("Building claim staking reward transaction");
+
+    let wallet = state.wallet_address.lock().await;
+    let wallet_str = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    drop(wallet);
+
+    let staking_addr = state
+        .config
+        .ethereum
+        .staking_address
+        .parse::<Address>()
+        .map_err(|e| format!("Invalid staking address: {e}"))?;
+
+    let user_addr: Address = wallet_str
+        .parse()
+        .map_err(|e| format!("Invalid address: {e}"))?;
+
+    // Check if there's anything to claim
+    let chain = state.chain_client()?;
+    let earned = chain
+        .staking
+        .earned(user_addr)
+        .await
+        .map_err(|e| format!("Query failed: {e}"))?;
+
+    if earned.is_zero() {
+        return Err("No staking rewards to claim".to_string());
+    }
+
+    let calldata = StakingClient::<()>::claim_staking_reward_calldata();
+
+    Ok(vec![TransactionRequest {
+        to: format!("{staking_addr:#x}"),
+        data: hex_encode(&calldata),
+        value: "0x0".to_string(),
+        description: format!("Claim {} ETH staking rewards", format_wei(earned)),
+    }])
 }
 
 // ── Per-receipt reward claiming ──

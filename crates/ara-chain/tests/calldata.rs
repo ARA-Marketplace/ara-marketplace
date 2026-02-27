@@ -152,6 +152,8 @@ fn test_contract_addresses() {
         staking: Address::ZERO,
         registry: Address::ZERO,
         marketplace: Address::ZERO,
+        collections: Address::ZERO,
+        name_registry: Address::ZERO,
     };
 
     assert_eq!(

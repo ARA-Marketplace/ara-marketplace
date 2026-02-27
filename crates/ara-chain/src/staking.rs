@@ -71,6 +71,30 @@ impl<P: Provider + Clone> StakingClient<P> {
     pub fn address(&self) -> Address {
         self.address
     }
+
+    // --- V2: Passive staker rewards ---
+
+    /// Get total ARA staked across all users.
+    pub async fn total_staked(&self) -> Result<U256> {
+        let contract = IAraStaking::new(self.address, &self.provider);
+        let result = contract.totalStaked().call().await?;
+        Ok(result)
+    }
+
+    /// Get a user's total stake (general + content-allocated).
+    pub async fn total_user_stake(&self, user: Address) -> Result<U256> {
+        let contract = IAraStaking::new(self.address, &self.provider);
+        let result = contract.totalUserStake(user).call().await?;
+        Ok(result)
+    }
+
+    /// Get the unclaimed passive staker reward for a user (in ETH wei).
+    pub async fn earned(&self, user: Address) -> Result<U256> {
+        info!("Querying earned staker reward for {}", user);
+        let contract = IAraStaking::new(self.address, &self.provider);
+        let result = contract.earned(user).call().await?;
+        Ok(result)
+    }
 }
 
 // Calldata encoding — no provider needed.
@@ -107,5 +131,10 @@ impl<P> StakingClient<P> {
             amount,
         }
         .abi_encode()
+    }
+
+    /// Encode calldata for `claimStakingReward()`.
+    pub fn claim_staking_reward_calldata() -> Vec<u8> {
+        IAraStaking::claimStakingRewardCall {}.abi_encode()
     }
 }

@@ -46,6 +46,7 @@ pub struct RewardSyncResult {
 enum EventSource {
     Content,
     Marketplace,
+    Auxiliary,
 }
 
 /// Fetch events in chunks, adapting chunk size to RPC limits.
@@ -76,6 +77,9 @@ async fn fetch_events_chunked(
             }
             EventSource::Marketplace => {
                 chain.events.fetch_marketplace_events(cursor, Some(chunk_end)).await
+            }
+            EventSource::Auxiliary => {
+                chain.events.fetch_auxiliary_events(cursor, Some(chunk_end)).await
             }
         };
 
@@ -306,6 +310,75 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
         }
     }
 
+    // Fetch and process auxiliary events (collections + name registry)
+    let aux_events = fetch_events_chunked(state, from_block, to_block, EventSource::Auxiliary).await
+        .unwrap_or_default();
+    for indexed in &aux_events {
+        match &indexed.event {
+            AraEvent::CollectionCreated { collection_id, creator, name } => {
+                let id: i64 = (*collection_id).try_into().unwrap_or(0);
+                let creator_str = format!("{creator:#x}");
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let _ = db.upsert_collection(id, &creator_str, name, "", "", now, true);
+                info!("Synced collection created: {} (id={})", name, id);
+            }
+            AraEvent::CollectionUpdated { collection_id, name, description, banner_uri } => {
+                let id: i64 = (*collection_id).try_into().unwrap_or(0);
+                let creator: String = db.conn().query_row(
+                    "SELECT creator FROM collections WHERE collection_id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                ).unwrap_or_default();
+                if !creator.is_empty() {
+                    let created_at: i64 = db.conn().query_row(
+                        "SELECT created_at FROM collections WHERE collection_id = ?1",
+                        rusqlite::params![id],
+                        |row| row.get(0),
+                    ).unwrap_or(0);
+                    let _ = db.upsert_collection(id, &creator, name, description, banner_uri, created_at, true);
+                }
+            }
+            AraEvent::CollectionDeleted { collection_id } => {
+                let id: i64 = (*collection_id).try_into().unwrap_or(0);
+                let _ = db.conn().execute(
+                    "UPDATE collections SET active = 0 WHERE collection_id = ?1",
+                    rusqlite::params![id],
+                );
+            }
+            AraEvent::ItemAddedToCollection { collection_id, content_id } => {
+                let coll_id: i64 = (*collection_id).try_into().unwrap_or(0);
+                let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let _ = db.upsert_collection_item(coll_id, &cid, now);
+            }
+            AraEvent::ItemRemovedFromCollection { collection_id, content_id } => {
+                let coll_id: i64 = (*collection_id).try_into().unwrap_or(0);
+                let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
+                let _ = db.remove_collection_item(coll_id, &cid);
+            }
+            AraEvent::NameRegistered { user, name } => {
+                let addr = format!("{user:#x}").to_lowercase();
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let _ = db.upsert_name(&addr, name, now);
+                info!("Synced name registration: {} → {}", addr, name);
+            }
+            AraEvent::NameRemoved { user, .. } => {
+                let addr = format!("{user:#x}").to_lowercase();
+                let _ = db.remove_name(&addr);
+            }
+            _ => {}
+        }
+    }
+
     // Validate local DB against on-chain source of truth.
     // If local DB has more active content than the registry has ever published,
     // the DB contains stale data from old contracts — wipe and re-sync.
@@ -436,9 +509,17 @@ pub async fn sync_rewards_impl(state: &AppState) -> Result<RewardSyncResult, Str
                 ..
             } => {
                 let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
+                let buyer_str_global = format!("{buyer:#x}");
 
                 // Increment total_minted counter for sold-out detection
                 let _ = db.increment_total_minted(&cid);
+
+                // Record in global all_purchases table for analytics
+                let _ = db.record_global_purchase(
+                    &cid, &buyer_str_global, None,
+                    &price_paid.to_string(), &tx_hash_str,
+                    indexed.block_number as i64, Some(approx_timestamp), false,
+                );
 
                 // Track as buyer
                 if *buyer == wallet_addr {
@@ -490,6 +571,14 @@ pub async fn sync_rewards_impl(state: &AppState) -> Result<RewardSyncResult, Str
             } => {
                 let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
                 let seller_str = format!("{seller:#x}");
+                let buyer_str_global = format!("{buyer:#x}");
+
+                // Record in global all_purchases table for analytics
+                let _ = db.record_global_purchase(
+                    &cid, &buyer_str_global, Some(&seller_str),
+                    &price.to_string(), &tx_hash_str,
+                    indexed.block_number as i64, Some(approx_timestamp), true,
+                );
 
                 // Deactivate the listing (it's been sold)
                 let _ = db.deactivate_resale_listing(&cid, &seller_str);

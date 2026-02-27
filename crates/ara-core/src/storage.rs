@@ -189,6 +189,46 @@ impl Database {
             .conn
             .execute("ALTER TABLE content ADD COLUMN total_minted INTEGER NOT NULL DEFAULT 0", []);
 
+        // Collections tables
+        self.conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS collections (
+                collection_id INTEGER PRIMARY KEY,
+                creator TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                banner_uri TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1
+            );
+
+            CREATE TABLE IF NOT EXISTS collection_items (
+                collection_id INTEGER NOT NULL,
+                content_id TEXT NOT NULL,
+                added_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (collection_id, content_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS address_names (
+                address TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS all_purchases (
+                content_id TEXT NOT NULL,
+                buyer TEXT NOT NULL,
+                seller TEXT,
+                price_paid_wei TEXT NOT NULL,
+                tx_hash TEXT NOT NULL,
+                block_number INTEGER NOT NULL,
+                timestamp INTEGER,
+                is_resale INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (tx_hash, content_id)
+            );
+            ",
+        )?;
+
         Ok(())
     }
 
@@ -517,6 +557,222 @@ impl Database {
             ],
         )
     }
+
+    // === Collections ===
+
+    pub fn upsert_collection(
+        &self,
+        collection_id: i64,
+        creator: &str,
+        name: &str,
+        description: &str,
+        banner_uri: &str,
+        created_at: i64,
+        active: bool,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO collections (collection_id, creator, name, description, banner_uri, created_at, active)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(collection_id) DO UPDATE SET
+               name = excluded.name,
+               description = excluded.description,
+               banner_uri = excluded.banner_uri,
+               active = excluded.active",
+            rusqlite::params![collection_id, creator, name, description, banner_uri, created_at, active as i32],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_collection_item(&self, collection_id: i64, content_id: &str, added_at: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO collection_items (collection_id, content_id, added_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![collection_id, content_id, added_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_collection_item(&self, collection_id: i64, content_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM collection_items WHERE collection_id = ?1 AND content_id = ?2",
+            rusqlite::params![collection_id, content_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_collection_items(&self, collection_id: i64) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM collection_items WHERE collection_id = ?1",
+            rusqlite::params![collection_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_all_collections(&self, limit: u32, offset: u32) -> Result<Vec<(i64, String, String, String, String, i64, bool, u32)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.collection_id, c.creator, c.name, c.description, c.banner_uri, c.created_at, c.active,
+                    (SELECT COUNT(*) FROM collection_items ci WHERE ci.collection_id = c.collection_id) as item_count
+             FROM collections c
+             WHERE c.active = 1
+             ORDER BY c.created_at DESC
+             LIMIT ?1 OFFSET ?2"
+        )?;
+        let rows = stmt.query_map(rusqlite::params![limit, offset], |row| {
+            Ok((
+                row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
+                row.get(4)?, row.get(5)?, row.get::<_, i32>(6)? != 0, row.get::<_, u32>(7)?,
+            ))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn get_collections_by_creator(&self, creator: &str) -> Result<Vec<(i64, String, String, String, i64, bool, u32)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.collection_id, c.name, c.description, c.banner_uri, c.created_at, c.active,
+                    (SELECT COUNT(*) FROM collection_items ci WHERE ci.collection_id = c.collection_id) as item_count
+             FROM collections c
+             WHERE c.creator = ?1 AND c.active = 1
+             ORDER BY c.created_at DESC"
+        )?;
+        let rows = stmt.query_map(rusqlite::params![creator], |row| {
+            Ok((
+                row.get(0)?, row.get(1)?, row.get(2)?,
+                row.get(3)?, row.get(4)?, row.get::<_, i32>(5)? != 0, row.get::<_, u32>(6)?,
+            ))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn get_collection_item_ids(&self, collection_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT content_id FROM collection_items WHERE collection_id = ?1 ORDER BY added_at"
+        )?;
+        let rows = stmt.query_map(rusqlite::params![collection_id], |row| row.get(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn get_content_collection_id(&self, content_id: &str) -> Result<Option<i64>> {
+        let result = self.conn.query_row(
+            "SELECT collection_id FROM collection_items WHERE content_id = ?1",
+            rusqlite::params![content_id],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    // === Address Names ===
+
+    pub fn upsert_name(&self, address: &str, display_name: &str, updated_at: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO address_names (address, display_name, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(address) DO UPDATE SET display_name = excluded.display_name, updated_at = excluded.updated_at",
+            rusqlite::params![address, display_name, updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_name(&self, address: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM address_names WHERE address = ?1", rusqlite::params![address])?;
+        Ok(())
+    }
+
+    pub fn get_name(&self, address: &str) -> Option<String> {
+        self.conn.query_row(
+            "SELECT display_name FROM address_names WHERE address = ?1",
+            rusqlite::params![address],
+            |row| row.get(0),
+        ).ok()
+    }
+
+    pub fn get_names_batch(&self, addresses: &[&str]) -> HashMap<String, String> {
+        let mut result = HashMap::new();
+        for addr in addresses {
+            if let Some(name) = self.get_name(addr) {
+                result.insert(addr.to_string(), name);
+            }
+        }
+        result
+    }
+
+    // === All Purchases (for analytics) ===
+
+    pub fn record_global_purchase(&self, content_id: &str, buyer: &str, seller: Option<&str>, price_paid_wei: &str, tx_hash: &str, block_number: i64, timestamp: Option<i64>, is_resale: bool) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO all_purchases (content_id, buyer, seller, price_paid_wei, tx_hash, block_number, timestamp, is_resale)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![content_id, buyer, seller, price_paid_wei, tx_hash, block_number, timestamp, is_resale as i32],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_price_history(&self, content_id: &str) -> Result<Vec<(String, i64, String, String, bool)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT price_paid_wei, COALESCE(timestamp, block_number), buyer, tx_hash, is_resale
+             FROM all_purchases WHERE content_id = ?1 ORDER BY block_number ASC"
+        )?;
+        let rows = stmt.query_map(rusqlite::params![content_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get::<_, i32>(4)? != 0))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn get_top_collectors(&self, limit: u32) -> Result<Vec<(String, u32, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT buyer, COUNT(*) as cnt, CAST(SUM(CAST(price_paid_wei AS INTEGER)) AS TEXT) as total
+             FROM all_purchases GROUP BY buyer ORDER BY total DESC LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(rusqlite::params![limit], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get::<_, String>(2).unwrap_or_default()))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn get_trending_content(&self, limit: u32, since_block: i64) -> Result<Vec<(String, u32)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT content_id, COUNT(*) as cnt FROM all_purchases
+             WHERE block_number >= ?1 GROUP BY content_id ORDER BY cnt DESC LIMIT ?2"
+        )?;
+        let rows = stmt.query_map(rusqlite::params![since_block, limit], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn get_collection_volume(&self, collection_id: i64) -> Result<String> {
+        let result: String = self.conn.query_row(
+            "SELECT COALESCE(CAST(SUM(CAST(ap.price_paid_wei AS INTEGER)) AS TEXT), '0')
+             FROM all_purchases ap
+             JOIN collection_items ci ON ci.content_id = ap.content_id
+             WHERE ci.collection_id = ?1",
+            rusqlite::params![collection_id],
+            |row| row.get(0),
+        ).unwrap_or_else(|_| "0".to_string());
+        Ok(result)
+    }
+
+    pub fn get_top_collections(&self, limit: u32) -> Result<Vec<(i64, String, String, String, String, u32, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.collection_id, c.name, c.creator, c.banner_uri,
+                    COALESCE(MIN(ct.price_wei), '0') as floor_price,
+                    COUNT(DISTINCT ci.content_id) as item_count,
+                    COALESCE(CAST(SUM(CAST(ap.price_paid_wei AS INTEGER)) AS TEXT), '0') as volume
+             FROM collections c
+             JOIN collection_items ci ON ci.collection_id = c.collection_id
+             LEFT JOIN content ct ON ct.content_id = ci.content_id AND ct.active = 1
+             LEFT JOIN all_purchases ap ON ap.content_id = ci.content_id
+             WHERE c.active = 1
+             GROUP BY c.collection_id
+             ORDER BY volume DESC
+             LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(rusqlite::params![limit], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
 }
 
 #[cfg(test)]
@@ -527,5 +783,138 @@ mod tests {
     fn test_open_in_memory() {
         let db = Database::open_in_memory().unwrap();
         assert!(db.conn().is_autocommit());
+    }
+
+    #[test]
+    fn test_collections_crud() {
+        let db = Database::open_in_memory().unwrap();
+
+        // Create a collection
+        db.upsert_collection(1, "0xabc", "My Collection", "A test collection", "https://banner.png", 1000, true).unwrap();
+
+        // Verify it exists in all_collections
+        let all = db.get_all_collections(10, 0).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].0, 1); // collection_id
+        assert_eq!(all[0].2, "My Collection"); // name
+
+        // Get by creator
+        let by_creator = db.get_collections_by_creator("0xabc").unwrap();
+        assert_eq!(by_creator.len(), 1);
+        assert_eq!(by_creator[0].1, "My Collection");
+
+        // Add items to collection
+        db.upsert_collection_item(1, "content_001", 1001).unwrap();
+        db.upsert_collection_item(1, "content_002", 1002).unwrap();
+
+        // Update collection
+        db.upsert_collection(1, "0xabc", "Updated Collection", "New desc", "https://new-banner.png", 1000, true).unwrap();
+        let updated = db.get_all_collections(10, 0).unwrap();
+        assert_eq!(updated[0].2, "Updated Collection");
+
+        // Remove item from collection
+        db.remove_collection_item(1, "content_001").unwrap();
+
+        // Delete collection (set inactive)
+        db.upsert_collection(1, "0xabc", "Updated Collection", "New desc", "https://new-banner.png", 1000, false).unwrap();
+        // All collections filters by active=1
+        let active = db.get_all_collections(10, 0).unwrap();
+        assert_eq!(active.len(), 0);
+    }
+
+    #[test]
+    fn test_address_names() {
+        let db = Database::open_in_memory().unwrap();
+
+        // No name initially
+        assert!(db.get_name("0xabc").is_none());
+
+        // Register a name
+        db.upsert_name("0xabc", "alice", 1000).unwrap();
+        assert_eq!(db.get_name("0xabc"), Some("alice".to_string()));
+
+        // Update name
+        db.upsert_name("0xabc", "alice-v2", 2000).unwrap();
+        assert_eq!(db.get_name("0xabc"), Some("alice-v2".to_string()));
+
+        // Batch lookup
+        db.upsert_name("0xdef", "bob", 1000).unwrap();
+        let names = db.get_names_batch(&["0xabc", "0xdef", "0xunknown"]);
+        assert_eq!(names.len(), 2);
+        assert_eq!(names.get("0xabc"), Some(&"alice-v2".to_string()));
+        assert_eq!(names.get("0xdef"), Some(&"bob".to_string()));
+        assert!(names.get("0xunknown").is_none());
+    }
+
+    #[test]
+    fn test_global_purchases_and_analytics() {
+        let db = Database::open_in_memory().unwrap();
+
+        // Insert some content first (needed for trending/price history)
+        db.conn().execute(
+            "INSERT INTO content (content_id, content_hash, creator, metadata_uri, price_wei, title, content_type, active, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, 1000)",
+            rusqlite::params!["cid_001", "hash_001", "0xcreator", "{}", "1000000000000000", "Test Song", "music"],
+        ).unwrap();
+
+        // Record purchases
+        db.record_global_purchase("cid_001", "0xbuyer1", None, "1000000000000000", "0xtx1", 100, Some(1000), false).unwrap();
+        db.record_global_purchase("cid_001", "0xbuyer2", None, "1000000000000000", "0xtx2", 101, Some(1001), false).unwrap();
+        db.record_global_purchase("cid_001", "0xbuyer3", Some("0xbuyer1"), "2000000000000000", "0xtx3", 102, Some(1002), true).unwrap();
+
+        // Price history
+        let history = db.get_price_history("cid_001").unwrap();
+        assert_eq!(history.len(), 3);
+        assert!(!history[0].4); // first is not resale
+        assert!(history[2].4); // last is resale
+
+        // Top collectors
+        let collectors = db.get_top_collectors(10).unwrap();
+        assert!(!collectors.is_empty());
+        // buyer1 and buyer2 each bought once, buyer3 bought resale — all should appear
+        let total_purchases: u32 = collectors.iter().map(|c| c.1).sum();
+        assert_eq!(total_purchases, 3);
+
+        // Trending content (all purchases are after block 0)
+        let trending = db.get_trending_content(10, 0).unwrap();
+        assert_eq!(trending.len(), 1);
+        assert_eq!(trending[0].0, "cid_001");
+        assert_eq!(trending[0].1, 3); // 3 sales
+
+        // Duplicate purchase (same tx_hash + content_id) should be ignored
+        db.record_global_purchase("cid_001", "0xbuyer1", None, "1000000000000000", "0xtx1", 100, Some(1000), false).unwrap();
+        let history2 = db.get_price_history("cid_001").unwrap();
+        assert_eq!(history2.len(), 3); // still 3, not 4
+    }
+
+    #[test]
+    fn test_top_collections_with_volume() {
+        let db = Database::open_in_memory().unwrap();
+
+        // Create collection and add content
+        db.upsert_collection(1, "0xcreator", "Top Hits", "", "", 1000, true).unwrap();
+        db.upsert_collection_item(1, "cid_001", 1001).unwrap();
+        db.upsert_collection_item(1, "cid_002", 1002).unwrap();
+
+        // Create content
+        db.conn().execute(
+            "INSERT INTO content (content_id, content_hash, creator, metadata_uri, price_wei, title, content_type, active, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, 1000)",
+            rusqlite::params!["cid_001", "h1", "0xcreator", "{}", "1000000000000000", "Song 1", "music"],
+        ).unwrap();
+        db.conn().execute(
+            "INSERT INTO content (content_id, content_hash, creator, metadata_uri, price_wei, title, content_type, active, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, 1000)",
+            rusqlite::params!["cid_002", "h2", "0xcreator", "{}", "2000000000000000", "Song 2", "music"],
+        ).unwrap();
+
+        // Record purchases for collection items
+        db.record_global_purchase("cid_001", "0xbuyer1", None, "1000000000000000", "0xtx1", 100, None, false).unwrap();
+        db.record_global_purchase("cid_002", "0xbuyer2", None, "2000000000000000", "0xtx2", 101, None, false).unwrap();
+
+        // Top collections should show volume
+        let top = db.get_top_collections(10).unwrap();
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].1, "Top Hits"); // name
+        assert_eq!(top[0].5, 2); // item_count = 2
+        // volume_wei should be sum of purchases = 3000000000000000
+        assert_eq!(top[0].6, "3000000000000000");
     }
 }

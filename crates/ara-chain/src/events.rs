@@ -5,7 +5,7 @@ use alloy::sol_types::SolEvent;
 use anyhow::Result;
 use tracing::info;
 
-use crate::contracts::{IAraContent, IAraStaking, IMarketplace};
+use crate::contracts::{IAraCollections, IAraContent, IAraNameRegistry, IAraStaking, IMarketplace};
 
 /// Decoded event from the Ara Marketplace contracts.
 #[derive(Debug, Clone)]
@@ -81,6 +81,38 @@ pub enum AraEvent {
         content_id: FixedBytes<32>,
         amount: U256,
     },
+    // Collection events
+    CollectionCreated {
+        collection_id: U256,
+        creator: Address,
+        name: String,
+    },
+    CollectionUpdated {
+        collection_id: U256,
+        name: String,
+        description: String,
+        banner_uri: String,
+    },
+    CollectionDeleted {
+        collection_id: U256,
+    },
+    ItemAddedToCollection {
+        collection_id: U256,
+        content_id: FixedBytes<32>,
+    },
+    ItemRemovedFromCollection {
+        collection_id: U256,
+        content_id: FixedBytes<32>,
+    },
+    // Name registry events
+    NameRegistered {
+        user: Address,
+        name: String,
+    },
+    NameRemoved {
+        user: Address,
+        old_name: String,
+    },
 }
 
 /// Fetched event with block metadata.
@@ -98,6 +130,8 @@ pub struct EventIndexer<P> {
     content_token_address: Address,
     marketplace_address: Address,
     staking_address: Address,
+    collections_address: Address,
+    name_registry_address: Address,
     provider: P,
 }
 
@@ -112,8 +146,22 @@ impl<P: Provider + Clone> EventIndexer<P> {
             content_token_address,
             marketplace_address,
             staking_address,
+            collections_address: Address::ZERO,
+            name_registry_address: Address::ZERO,
             provider,
         }
+    }
+
+    /// Set the collections contract address for event fetching.
+    pub fn with_collections_address(mut self, address: Address) -> Self {
+        self.collections_address = address;
+        self
+    }
+
+    /// Set the name registry contract address for event fetching.
+    pub fn with_name_registry_address(mut self, address: Address) -> Self {
+        self.name_registry_address = address;
+        self
     }
 
     /// Fetch all Ara contract events in a block range.
@@ -208,6 +256,53 @@ impl<P: Provider + Clone> EventIndexer<P> {
     ) -> Result<Vec<IndexedEvent>> {
         let mut filter = Filter::new()
             .address(self.marketplace_address)
+            .from_block(from_block);
+
+        if let Some(to) = to_block {
+            filter = filter.to_block(to);
+        }
+
+        let logs = self.provider.get_logs(&filter).await?;
+        let mut events = Vec::new();
+
+        for log in logs {
+            let block_number = log.block_number.unwrap_or(0);
+            let tx_hash = log.transaction_hash;
+            let log_index = log.log_index;
+
+            if let Some(event) = self.decode_log(&log.inner) {
+                events.push(IndexedEvent {
+                    block_number,
+                    tx_hash,
+                    log_index,
+                    event,
+                });
+            }
+        }
+
+        events.sort_by_key(|e| (e.block_number, e.log_index.unwrap_or(0)));
+        Ok(events)
+    }
+
+    /// Fetch collection and name registry events for global sync.
+    pub async fn fetch_auxiliary_events(
+        &self,
+        from_block: u64,
+        to_block: Option<u64>,
+    ) -> Result<Vec<IndexedEvent>> {
+        let mut addresses = Vec::new();
+        if self.collections_address != Address::ZERO {
+            addresses.push(self.collections_address);
+        }
+        if self.name_registry_address != Address::ZERO {
+            addresses.push(self.name_registry_address);
+        }
+        if addresses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut filter = Filter::new()
+            .address(addresses)
             .from_block(from_block);
 
         if let Some(to) = to_block {
@@ -338,6 +433,54 @@ impl<P: Provider + Clone> EventIndexer<P> {
                 user: e.user,
                 content_id: e.contentId,
                 amount: e.amount,
+            });
+        }
+
+        // Try Collection events
+        if let Ok(e) = IAraCollections::CollectionCreated::decode_log(log) {
+            return Some(AraEvent::CollectionCreated {
+                collection_id: e.collectionId,
+                creator: e.creator,
+                name: e.name.clone(),
+            });
+        }
+        if let Ok(e) = IAraCollections::CollectionUpdated::decode_log(log) {
+            return Some(AraEvent::CollectionUpdated {
+                collection_id: e.collectionId,
+                name: e.name.clone(),
+                description: e.description.clone(),
+                banner_uri: e.bannerUri.clone(),
+            });
+        }
+        if let Ok(e) = IAraCollections::CollectionDeleted::decode_log(log) {
+            return Some(AraEvent::CollectionDeleted {
+                collection_id: e.collectionId,
+            });
+        }
+        if let Ok(e) = IAraCollections::ItemAddedToCollection::decode_log(log) {
+            return Some(AraEvent::ItemAddedToCollection {
+                collection_id: e.collectionId,
+                content_id: e.contentId,
+            });
+        }
+        if let Ok(e) = IAraCollections::ItemRemovedFromCollection::decode_log(log) {
+            return Some(AraEvent::ItemRemovedFromCollection {
+                collection_id: e.collectionId,
+                content_id: e.contentId,
+            });
+        }
+
+        // Try Name Registry events
+        if let Ok(e) = IAraNameRegistry::NameRegistered::decode_log(log) {
+            return Some(AraEvent::NameRegistered {
+                user: e.user,
+                name: e.name.clone(),
+            });
+        }
+        if let Ok(e) = IAraNameRegistry::NameRemoved::decode_log(log) {
+            return Some(AraEvent::NameRemoved {
+                user: e.user,
+                old_name: e.oldName.clone(),
             });
         }
 
