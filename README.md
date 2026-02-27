@@ -136,7 +136,7 @@ forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast --verify
 ```
 ara-marketplace/
 ├── contracts/              # Solidity smart contracts (Foundry project)
-│   ├── src/                # AraStaking, ContentRegistry, Marketplace, MockARAToken
+│   ├── src/                # AraStaking, AraContent, Marketplace, MockARAToken
 │   ├── test/               # Forge tests (28+ tests)
 │   └── script/             # Deploy.s.sol
 ├── crates/
@@ -160,10 +160,10 @@ ara-marketplace/
 
 | Contract | Address |
 |----------|---------|
-| MockARAToken | `0xE8486e01aA1Da716448a3893792837AF9f1bBFa2` |
-| AraStaking | `0x119554583bDB704CdA18f674054C2C7EF4C2A60c` |
-| ContentRegistry | `0x2ECb7C21A99BcB52CD202a94484C935b31cB0Ea0` |
-| Marketplace | `0xA4bBCCBFc6F7C12ad80c45C0aed386289636Bb6E` |
+| MockARAToken | `0x6E042035Dfe8FF36527E482401D95324afaEB98e` |
+| AraStaking (proxy) | `0x33DE0E7d909EdbFDe5973E8208C0bf3B86E553D1` |
+| AraContent (proxy) | `0xB893FD211bFDd9557Bd60BE96f259966db434679` |
+| Marketplace (proxy) | `0x02ce6E3c0cfD96076d2Fbaf878CCB3043D225138` |
 
 All contracts are verified on [Sepolia Etherscan](https://sepolia.etherscan.io).
 
@@ -183,7 +183,7 @@ Ara is in active development on Sepolia testnet. Core flows are fully functional
 - [x] Reward claiming
 
 In progress:
-- [ ] ERC-1155 conversion for content NFTs
+- [x] ERC-1155 content tokens with edition support (maxSupply, minting on purchase)
 - [ ] Seeder identity broadcast on startup (NodeId → ETH address linking)
 - [ ] Global content discovery feed
 

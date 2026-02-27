@@ -179,11 +179,17 @@ function Marketplace() {
                   <span className="absolute top-2 left-2 px-2 py-0.5 bg-black/50 backdrop-blur-sm text-white text-[10px] font-semibold uppercase tracking-wider rounded-full">
                     {item.content_type}
                   </span>
-                  {/* Sold Out badge for limited editions */}
+                  {/* Sold Out / Resale Available badge for limited editions */}
                   {item.max_supply > 0 && item.total_minted >= item.max_supply && (
-                    <span className="absolute top-2 right-2 px-2 py-0.5 bg-red-600/80 backdrop-blur-sm text-white text-[10px] font-semibold uppercase tracking-wider rounded-full">
-                      Sold Out
-                    </span>
+                    item.resale_count > 0 ? (
+                      <span className="absolute top-2 right-2 px-2 py-0.5 bg-amber-600/80 backdrop-blur-sm text-white text-[10px] font-semibold uppercase tracking-wider rounded-full">
+                        Resale Available
+                      </span>
+                    ) : (
+                      <span className="absolute top-2 right-2 px-2 py-0.5 bg-red-600/80 backdrop-blur-sm text-white text-[10px] font-semibold uppercase tracking-wider rounded-full">
+                        Sold Out
+                      </span>
+                    )
                   )}
                 </div>
 
@@ -198,9 +204,16 @@ function Marketplace() {
                     </p>
                   )}
                   <div className="mt-auto pt-2 flex items-center justify-between">
-                    <span className="text-ara-600 dark:text-ara-400 font-bold text-sm">
-                      {item.price_eth} ETH
-                    </span>
+                    {item.max_supply > 0 && item.total_minted >= item.max_supply && item.min_resale_price_eth ? (
+                      <span className="text-ara-600 dark:text-ara-400 font-bold text-sm">
+                        {item.min_resale_price_eth} ETH
+                        <span className="text-[10px] font-normal text-slate-400 ml-1">resale</span>
+                      </span>
+                    ) : (
+                      <span className="text-ara-600 dark:text-ara-400 font-bold text-sm">
+                        {item.price_eth} ETH
+                      </span>
+                    )}
                     {item.categories && item.categories.length > 0 && (
                       <span className="badge-gray text-[10px]">{item.categories[0]}</span>
                     )}

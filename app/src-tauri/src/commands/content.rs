@@ -44,6 +44,8 @@ pub struct ContentDetail {
     pub categories: Vec<String>,
     pub max_supply: i64,
     pub total_minted: i64,
+    pub resale_count: i64,
+    pub min_resale_price_eth: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1043,6 +1045,8 @@ pub async fn get_my_content(state: State<'_, AppState>) -> Result<Vec<ContentDet
                 categories: serde_json::from_str(&cats_json).unwrap_or_default(),
                 max_supply: row.get(12)?,
                 total_minted: row.get(13)?,
+                resale_count: 0,
+                min_resale_price_eth: None,
             })
         })
         .map_err(|e| format!("DB query failed: {e}"))?;
@@ -1272,6 +1276,8 @@ pub async fn get_content_detail(
                 categories: serde_json::from_str(&cats_json).unwrap_or_default(),
                 max_supply: row.get(12)?,
                 total_minted: row.get(13)?,
+                resale_count: 0,
+                min_resale_price_eth: None,
             })
         })
         .map_err(|e| format!("Content not found: {e}"))?;
@@ -1291,14 +1297,20 @@ pub async fn search_content(
 
     let mut stmt = conn
         .prepare(
-            "SELECT content_id, content_hash, creator, title, description,
-                    content_type, price_wei, active, file_size_bytes,
-                    COALESCE(metadata_uri,''), updated_at, COALESCE(categories,'[]'),
-                    COALESCE(max_supply,0), COALESCE(total_minted,0)
-             FROM content WHERE active = 1
-             AND (title LIKE ?1 OR description LIKE ?1
-                  OR content_type LIKE ?1 OR COALESCE(categories,'') LIKE ?1)
-             ORDER BY created_at DESC LIMIT 50",
+            "SELECT c.content_id, c.content_hash, c.creator, c.title, c.description,
+                    c.content_type, c.price_wei, c.active, c.file_size_bytes,
+                    COALESCE(c.metadata_uri,''), c.updated_at, COALESCE(c.categories,'[]'),
+                    COALESCE(c.max_supply,0), COALESCE(c.total_minted,0),
+                    COALESCE(r.cnt, 0), r.min_price
+             FROM content c
+             LEFT JOIN (
+                 SELECT content_id, COUNT(*) as cnt, MIN(CAST(price_wei AS INTEGER)) as min_price
+                 FROM resale_listings WHERE active = 1 GROUP BY content_id
+             ) r ON c.content_id = r.content_id
+             WHERE c.active = 1
+             AND (c.title LIKE ?1 OR c.description LIKE ?1
+                  OR c.content_type LIKE ?1 OR COALESCE(c.categories,'') LIKE ?1)
+             ORDER BY c.created_at DESC LIMIT 50",
         )
         .map_err(|e| format!("DB query failed: {e}"))?;
 
@@ -1315,6 +1327,11 @@ pub async fn search_content(
                 .parse::<alloy::primitives::U256>()
                 .unwrap_or(alloy::primitives::U256::ZERO);
             let cats_json: String = row.get(11)?;
+            let resale_count: i64 = row.get(14)?;
+            let min_resale_wei: Option<i64> = row.get(15)?;
+            let min_resale_price_eth = min_resale_wei.map(|w| {
+                format_wei(alloy::primitives::U256::from(w as u64))
+            });
             Ok(ContentDetail {
                 content_id: row.get(0)?,
                 content_hash: row.get(1)?,
@@ -1331,6 +1348,8 @@ pub async fn search_content(
                 categories: serde_json::from_str(&cats_json).unwrap_or_default(),
                 max_supply: row.get(12)?,
                 total_minted: row.get(13)?,
+                resale_count,
+                min_resale_price_eth,
             })
         })
         .map_err(|e| format!("DB query failed: {e}"))?;

@@ -17,7 +17,7 @@ A decentralized content marketplace desktop app. Creators publish files, buyers 
 ```
 ara-marketplace/
   contracts/          # Solidity smart contracts (Foundry project)
-    src/              # AraStaking, ContentRegistry, Marketplace, MockARAToken
+    src/              # AraStaking, AraContent, Marketplace, MockARAToken
     test/             # Forge tests (28+ tests)
     script/           # Deploy.s.sol
   crates/
@@ -61,10 +61,10 @@ Two-step pattern used throughout:
 
 | Contract | Address | Purpose |
 |----------|---------|---------|
-| MockARAToken | `0x40A13EF876e3dCf968b4dC372a92ADdCa95b8A3b` | ERC-20 test token (mintable, 18 decimals) |
-| AraStaking | `0xCbb3958d9D6DaAc22518C90CA663CE027AD0D39F` | Stake ARA to publish (10 ARA min) or seed (1 ARA/content) |
-| ContentRegistry | `0x4db94B57425189EEC4C8674Fa5E8f4AC24105b32` | Register content on-chain (nonce-based IDs, fileSize tracking) |
-| Marketplace | `0x8Fe6db4d530538F1f419a8FD39D3C09eE18F1Cc7` | ETH purchases, 85% to creator, 15% per-receipt seeder rewards |
+| MockARAToken | `0x6E042035Dfe8FF36527E482401D95324afaEB98e` | ERC-20 test token (mintable, 18 decimals) |
+| AraStaking (proxy) | `0x33DE0E7d909EdbFDe5973E8208C0bf3B86E553D1` | Stake ARA to publish (10 ARA min) or seed (1 ARA/content) |
+| AraContent (proxy) | `0xB893FD211bFDd9557Bd60BE96f259966db434679` | ERC-1155 content token (editions, nonce-based IDs, fileSize tracking) |
+| Marketplace (proxy) | `0x02ce6E3c0cfD96076d2Fbaf878CCB3043D225138` | ETH purchases, 85% to creator, 15% per-receipt seeder rewards |
 
 ### Reward System (Two-Tier Distribution)
 

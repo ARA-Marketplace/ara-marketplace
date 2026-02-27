@@ -68,6 +68,8 @@ export interface ContentDetail {
   categories: string[];
   max_supply: number;
   total_minted: number;
+  resale_count: number;
+  min_resale_price_eth: string | null;
 }
 
 export interface PublishPrepareResult {

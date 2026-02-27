@@ -61,6 +61,7 @@ function Library() {
   const [resalePrice, setResalePrice] = useState("");
   const [resaleStep, setResaleStep] = useState<"idle" | "signing" | "confirming">("idle");
   const [resaleError, setResaleError] = useState<string | null>(null);
+  const [resaleStatus, setResaleStatus] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const fetchActiveListings = useCallback(async (libraryItems: LibraryItem[]) => {
@@ -188,20 +189,23 @@ function Library() {
   const handleListForResale = async () => {
     if (!resaleModalItem || !resalePrice.trim()) return;
     setResaleError(null);
+    setResaleStatus(null);
     try {
       setResaleStep("signing");
       const txs = await listForResale(resaleModalItem.content_id, resalePrice.trim());
       if (txs.length > 0) {
         if (!walletProvider) { openModal(); throw new Error("Wallet not connected"); }
-        await signAndSendTransactions(walletProvider, txs);
+        await signAndSendTransactions(walletProvider, txs, setResaleStatus);
       }
       setResaleStep("confirming");
+      setResaleStatus(null);
       await confirmListForResale(resaleModalItem.content_id, resalePrice.trim());
       setResaleModalItem(null);
       setResalePrice("");
+      setResaleStatus(null);
       setResaleStep("idle");
       fetchPurchased();
-    } catch (e) { setResaleError(String(e)); setResaleStep("idle"); }
+    } catch (e) { setResaleError(String(e)); setResaleStatus(null); setResaleStep("idle"); }
   };
 
   const handleCancelListing = async (item: LibraryItem) => {
@@ -337,7 +341,7 @@ function Library() {
 
       {/* Resale Price Modal */}
       {resaleModalItem && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => { setResaleModalItem(null); setResaleStep("idle"); }}>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => { setResaleModalItem(null); setResaleStep("idle"); setResaleStatus(null); }}>
           <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-1">
               List for Resale
@@ -359,12 +363,15 @@ function Library() {
                   : resaleStep === "confirming" ? "Confirming…"
                   : "List for Sale"}
               </button>
-              <button onClick={() => { setResaleModalItem(null); setResaleStep("idle"); }}
+              <button onClick={() => { setResaleModalItem(null); setResaleStep("idle"); setResaleStatus(null); }}
                 disabled={resaleStep !== "idle"}
                 className="btn-ghost">
                 Cancel
               </button>
             </div>
+            {resaleStatus && resaleStep === "signing" && (
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-3 text-center">{resaleStatus}</p>
+            )}
           </div>
         </div>
       )}
