@@ -25,6 +25,10 @@ contracts/broadcast/
 # OS
 .DS_Store
 Thumbs.db
+NUL
+
+# Claude local settings
+.claude/settings.local.json
 
 # Tauri
 app/src-tauri/target/
