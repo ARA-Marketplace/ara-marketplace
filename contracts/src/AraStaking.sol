@@ -9,6 +9,8 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeab
 /// @notice Manages ARA token staking for publishers and seeders.
 ///         Publishers must stake a minimum amount to list content.
 ///         Seeders allocate stake to specific content to earn rewards.
+///         All stakers passively earn a share of marketplace purchase fees
+///         proportional to their staked ARA (Synthetix-style accumulator).
 contract AraStaking is Initializable, UUPSUpgradeable {
     IAraToken public araToken;
 
@@ -26,21 +28,62 @@ contract AraStaking is Initializable, UUPSUpgradeable {
 
     address public owner;
 
+    // === V2: Passive staker rewards (Synthetix accumulator) ===
+
+    /// @notice Authorized marketplace contract that can deposit ETH rewards
+    address public authorizedMarketplace;
+
+    /// @notice Total ARA staked across all users (general + content-allocated)
+    uint256 public totalStaked;
+
+    /// @notice Per-user total stake (general + content-allocated)
+    mapping(address => uint256) public totalUserStake;
+
+    /// @notice Accumulated reward per staked token, scaled by 1e18
+    uint256 public rewardPerTokenStored;
+
+    /// @notice Last checkpoint of rewardPerToken for each user
+    mapping(address => uint256) public userRewardPerTokenPaid;
+
+    /// @notice Accrued but unclaimed ETH rewards per user
+    mapping(address => uint256) public pendingRewards;
+
+    /// @notice Total ETH deposited for staker rewards (lifetime)
+    uint256 public totalStakerRewardsDeposited;
+
+    /// @notice Total ETH claimed by stakers (lifetime)
+    uint256 public totalStakerRewardsClaimed;
+
     event Staked(address indexed user, uint256 amount);
     event Unstaked(address indexed user, uint256 amount);
     event ContentStakeAdded(address indexed user, bytes32 indexed contentId, uint256 amount);
     event ContentStakeRemoved(address indexed user, bytes32 indexed contentId, uint256 amount);
     event PublisherMinStakeUpdated(uint256 oldValue, uint256 newValue);
     event SeederMinStakeUpdated(uint256 oldValue, uint256 newValue);
+    event StakerRewardDeposited(uint256 amount);
+    event StakerRewardClaimed(address indexed user, uint256 amount);
+    event AuthorizedMarketplaceUpdated(address indexed oldMarketplace, address indexed newMarketplace);
 
     error InsufficientStakedBalance(uint256 requested, uint256 available);
     error InsufficientContentStake(uint256 requested, uint256 available);
     error TransferFailed();
     error OnlyOwner();
     error ZeroAmount();
+    error OnlyAuthorizedMarketplace();
+    error NoStakerRewardsToClaim();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert OnlyOwner();
+        _;
+    }
+
+    /// @dev Checkpoint a user's accrued rewards before changing their stake.
+    modifier updateReward(address account) {
+        rewardPerTokenStored = rewardPerToken();
+        if (account != address(0)) {
+            pendingRewards[account] = earned(account);
+            userRewardPerTokenPaid[account] = rewardPerTokenStored;
+        }
         _;
     }
 
@@ -60,22 +103,26 @@ contract AraStaking is Initializable, UUPSUpgradeable {
     /// @notice Stake ARA tokens into the general pool.
     ///         User must first call araToken.approve(this, amount).
     /// @param amount Amount of ARA to stake (in wei, 18 decimals)
-    function stake(uint256 amount) external {
+    function stake(uint256 amount) external updateReward(msg.sender) {
         if (amount == 0) revert ZeroAmount();
         if (!araToken.transferFrom(msg.sender, address(this), amount)) revert TransferFailed();
         stakedBalance[msg.sender] += amount;
+        totalStaked += amount;
+        totalUserStake[msg.sender] += amount;
         emit Staked(msg.sender, amount);
     }
 
     /// @notice Unstake ARA tokens from the general pool back to the caller.
     ///         Cannot unstake tokens that are allocated to content.
     /// @param amount Amount of ARA to unstake
-    function unstake(uint256 amount) external {
+    function unstake(uint256 amount) external updateReward(msg.sender) {
         if (amount == 0) revert ZeroAmount();
         if (stakedBalance[msg.sender] < amount) {
             revert InsufficientStakedBalance(amount, stakedBalance[msg.sender]);
         }
         stakedBalance[msg.sender] -= amount;
+        totalStaked -= amount;
+        totalUserStake[msg.sender] -= amount;
         if (!araToken.transfer(msg.sender, amount)) revert TransferFailed();
         emit Unstaked(msg.sender, amount);
     }
@@ -137,6 +184,53 @@ contract AraStaking is Initializable, UUPSUpgradeable {
     /// @notice Transfer ownership
     function transferOwnership(address newOwner) external onlyOwner {
         owner = newOwner;
+    }
+
+    // ============================================================
+    //                     PASSIVE STAKER REWARDS (V2)
+    // ============================================================
+
+    /// @notice V2 initializer for upgrade (can only be called once)
+    function initializeV2(address _marketplace) external reinitializer(2) {
+        authorizedMarketplace = _marketplace;
+    }
+
+    /// @notice Called by Marketplace during purchase to deposit ETH for staker rewards.
+    function addReward() external payable {
+        if (msg.sender != authorizedMarketplace) revert OnlyAuthorizedMarketplace();
+        if (msg.value > 0 && totalStaked > 0) {
+            rewardPerTokenStored += (msg.value * 1e18) / totalStaked;
+        }
+        totalStakerRewardsDeposited += msg.value;
+        emit StakerRewardDeposited(msg.value);
+    }
+
+    /// @notice View: current reward per token
+    function rewardPerToken() public view returns (uint256) {
+        return rewardPerTokenStored;
+    }
+
+    /// @notice View: how much ETH a user has earned but not yet claimed
+    function earned(address account) public view returns (uint256) {
+        return (totalUserStake[account] * (rewardPerToken() - userRewardPerTokenPaid[account])) / 1e18
+            + pendingRewards[account];
+    }
+
+    /// @notice Claim all accrued passive staker ETH rewards
+    function claimStakingReward() external updateReward(msg.sender) {
+        uint256 reward = pendingRewards[msg.sender];
+        if (reward == 0) revert NoStakerRewardsToClaim();
+        pendingRewards[msg.sender] = 0;
+        totalStakerRewardsClaimed += reward;
+        (bool sent,) = payable(msg.sender).call{value: reward}("");
+        if (!sent) revert TransferFailed();
+        emit StakerRewardClaimed(msg.sender, reward);
+    }
+
+    /// @notice Admin: set the authorized marketplace contract
+    function setAuthorizedMarketplace(address _marketplace) external onlyOwner {
+        emit AuthorizedMarketplaceUpdated(authorizedMarketplace, _marketplace);
+        authorizedMarketplace = _marketplace;
     }
 
     /// @dev Sum all content stakes for a user (expensive, for view only).

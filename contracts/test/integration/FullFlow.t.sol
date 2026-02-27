@@ -28,7 +28,9 @@ contract FullFlowForkTest is Test {
     uint256 public constant PUBLISHER_MIN = 1000 ether;
     uint256 public constant SEEDER_MIN = 100 ether;
     uint256 public constant CREATOR_SHARE_BPS = 8500;
-    uint256 public constant RESALE_REWARD_BPS = 500;
+    uint256 public constant RESALE_REWARD_BPS = 400;
+    uint256 public constant STAKER_REWARD_BPS = 250;
+    uint256 public constant RESALE_STAKER_REWARD_BPS = 100;
     uint256 public constant FILE_SIZE = 1_000_000;
 
     function setUp() public {
@@ -62,6 +64,11 @@ contract FullFlowForkTest is Test {
         marketplace = Marketplace(payable(address(marketplaceProxy)));
 
         contentToken.setMinter(address(marketplace));
+
+        // V2 initialization: passive staker rewards
+        staking.initializeV2(address(marketplace));
+        marketplace.initializeV2(STAKER_REWARD_BPS, RESALE_STAKER_REWARD_BPS, RESALE_REWARD_BPS);
+
         vm.stopPrank();
 
         vm.deal(buyer, 10 ether);
@@ -114,8 +121,9 @@ contract FullFlowForkTest is Test {
         assertEq(contentToken.balanceOf(buyer, uint256(contentId)), 1);
 
         uint256 creatorPayment = (0.1 ether * 8500) / 10_000;
+        uint256 stakerReward = (0.1 ether * STAKER_REWARD_BPS) / 10_000;
         assertEq(creator.balance - creatorBalBefore, creatorPayment);
-        assertEq(marketplace.getBuyerReward(contentId, buyer), 0.1 ether - creatorPayment);
+        assertEq(marketplace.getBuyerReward(contentId, buyer), 0.1 ether - creatorPayment - stakerReward);
 
         uint256 ts = block.timestamp;
         bytes memory sig = _signReceipt(buyerPrivKey, contentId, seeder, FILE_SIZE, ts);
@@ -131,6 +139,7 @@ contract FullFlowForkTest is Test {
 
         console.log("Full flow completed successfully!");
         console.log("Creator received:", creatorPayment, "wei");
+        console.log("Staker reward:", stakerReward, "wei");
         console.log("Seeder earned:", expectedReward, "wei");
     }
 }

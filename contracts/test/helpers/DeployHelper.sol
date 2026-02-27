@@ -6,6 +6,8 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {AraStaking} from "../../src/AraStaking.sol";
 import {AraContent} from "../../src/AraContent.sol";
 import {Marketplace} from "../../src/Marketplace.sol";
+import {AraCollections} from "../../src/AraCollections.sol";
+import {AraNameRegistry} from "../../src/AraNameRegistry.sol";
 
 /// @dev Minimal mock ERC20 for test token
 contract MockToken {
@@ -42,11 +44,15 @@ abstract contract DeployHelper is Test {
     AraStaking public staking;
     AraContent public contentToken;
     Marketplace public marketplace;
+    AraCollections public collections;
+    AraNameRegistry public nameRegistry;
 
     uint256 public constant PUBLISHER_MIN = 1000 ether;
     uint256 public constant SEEDER_MIN = 100 ether;
     uint256 public constant CREATOR_SHARE_BPS = 8500;
-    uint256 public constant RESALE_REWARD_BPS = 500;
+    uint256 public constant RESALE_REWARD_BPS = 400; // 4% seeder on resale
+    uint256 public constant STAKER_REWARD_BPS = 250; // 2.5% staker on primary
+    uint256 public constant RESALE_STAKER_REWARD_BPS = 100; // 1% staker on resale
 
     /// @dev Deploy implementations and proxies. Call from setUp().
     function _deployStack() internal {
@@ -79,6 +85,26 @@ abstract contract DeployHelper is Test {
 
         // Authorize marketplace to mint
         contentToken.setMinter(address(marketplace));
+
+        // V2 initialization: passive staker rewards
+        staking.initializeV2(address(marketplace));
+        marketplace.initializeV2(STAKER_REWARD_BPS, RESALE_STAKER_REWARD_BPS, RESALE_REWARD_BPS);
+
+        // Deploy AraCollections proxy
+        AraCollections collectionsImpl = new AraCollections();
+        ERC1967Proxy collectionsProxy = new ERC1967Proxy(
+            address(collectionsImpl),
+            abi.encodeCall(AraCollections.initialize, (address(contentProxy)))
+        );
+        collections = AraCollections(address(collectionsProxy));
+
+        // Deploy AraNameRegistry proxy
+        AraNameRegistry nameRegistryImpl = new AraNameRegistry();
+        ERC1967Proxy nameRegistryProxy = new ERC1967Proxy(
+            address(nameRegistryImpl),
+            abi.encodeCall(AraNameRegistry.initialize, ())
+        );
+        nameRegistry = AraNameRegistry(address(nameRegistryProxy));
     }
 
     /// @dev Compute EIP-712 DeliveryReceipt hash

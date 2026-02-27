@@ -75,6 +75,17 @@ contract Marketplace is Initializable, UUPSUpgradeable {
     /// @notice contentId => seller => listing
     mapping(bytes32 => mapping(address => Listing)) public listings;
 
+    // === V2: Passive staker rewards ===
+
+    /// @notice Staker reward share of primary purchases in basis points (250 = 2.5%)
+    uint256 public stakerRewardBps;
+
+    /// @notice Staker reward share of resale purchases in basis points (100 = 1%)
+    uint256 public resaleStakerRewardBps;
+
+    /// @notice Total ETH forwarded to staking contract for passive rewards (lifetime)
+    uint256 public totalStakerRewardsForwarded;
+
     // --- Structs ---
 
     struct ClaimParams {
@@ -102,6 +113,7 @@ contract Marketplace is Initializable, UUPSUpgradeable {
     );
     event RewardsClaimed(address indexed seeder, uint256 totalAmount, uint256 receiptCount);
     event CreatorShareUpdated(uint256 oldBps, uint256 newBps);
+    event StakerRewardForwarded(bytes32 indexed contentId, uint256 amount);
     event ContentListed(bytes32 indexed contentId, address indexed seller, uint256 price);
     event ListingCancelled(bytes32 indexed contentId, address indexed seller);
     event ResalePurchased(
@@ -171,9 +183,10 @@ contract Marketplace is Initializable, UUPSUpgradeable {
         hasPurchased[contentId][msg.sender] = true;
         purchasers[contentId].push(msg.sender);
 
-        // Split: creator gets their share, rest held for seeder claiming
+        // Split: creator 85%, stakers 2.5%, seeders 12.5%
         uint256 creatorPayment = (price * creatorShareBps) / BPS_DENOMINATOR;
-        uint256 rewardAmount = price - creatorPayment;
+        uint256 stakerReward = (price * stakerRewardBps) / BPS_DENOMINATOR;
+        uint256 rewardAmount = price - creatorPayment - stakerReward;
 
         // Pay creator immediately
         address creator = contentToken.getCreator(contentId);
@@ -181,6 +194,18 @@ contract Marketplace is Initializable, UUPSUpgradeable {
         if (!sent) revert TransferFailed();
 
         totalCreatorPayments += creatorPayment;
+
+        // Forward staker reward to staking contract (if stakers exist)
+        if (stakerReward > 0) {
+            if (staking.totalStaked() > 0) {
+                staking.addReward{value: stakerReward}();
+                totalStakerRewardsForwarded += stakerReward;
+                emit StakerRewardForwarded(contentId, stakerReward);
+            } else {
+                // No stakers — add to seeder pool instead
+                rewardAmount += stakerReward;
+            }
+        }
 
         // Hold reward for seeder claiming (immutable after this point)
         buyerReward[contentId][msg.sender] = rewardAmount;
@@ -295,14 +320,29 @@ contract Marketplace is Initializable, UUPSUpgradeable {
         // 1. Creator royalty (ERC-2981)
         (address royaltyReceiver, uint256 royaltyAmount) = contentToken.royaltyInfo(tokenId, price);
 
-        // 2. Seeder reward
+        // 2. Staker reward (1% of resale)
+        uint256 stakerReward = (price * resaleStakerRewardBps) / BPS_DENOMINATOR;
+
+        // 3. Seeder reward (4% of resale)
         uint256 seederReward = (price * resaleRewardBps) / BPS_DENOMINATOR;
 
-        // 3. Seller gets the rest
-        uint256 sellerProceeds = price - royaltyAmount - seederReward;
+        // 4. Seller gets the rest
+        uint256 sellerProceeds = price - royaltyAmount - stakerReward - seederReward;
 
         // Transfer token from seller to buyer
         contentToken.safeTransferFrom(seller, msg.sender, tokenId, 1, "");
+
+        // Forward staker reward to staking contract (if stakers exist)
+        if (stakerReward > 0) {
+            if (staking.totalStaked() > 0) {
+                staking.addReward{value: stakerReward}();
+                totalStakerRewardsForwarded += stakerReward;
+                emit StakerRewardForwarded(contentId, stakerReward);
+            } else {
+                // No stakers — add to seeder pool instead
+                seederReward += stakerReward;
+            }
+        }
 
         // Set up reward tracking for this buyer (same mechanism as primary purchase)
         hasPurchased[contentId][msg.sender] = true;
@@ -361,10 +401,32 @@ contract Marketplace is Initializable, UUPSUpgradeable {
         creatorShareBps = newCreatorShareBps;
     }
 
-    /// @notice Update the resale reward percentage
+    /// @notice Update the resale seeder reward percentage
     function setResaleRewardBps(uint256 newResaleRewardBps) external onlyOwner {
         if (newResaleRewardBps > BPS_DENOMINATOR) revert InvalidCreatorShare();
         resaleRewardBps = newResaleRewardBps;
+    }
+
+    /// @notice Update the staker reward percentage for primary purchases
+    function setStakerRewardBps(uint256 newStakerRewardBps) external onlyOwner {
+        if (newStakerRewardBps + creatorShareBps > BPS_DENOMINATOR) revert InvalidCreatorShare();
+        stakerRewardBps = newStakerRewardBps;
+    }
+
+    /// @notice Update the staker reward percentage for resale purchases
+    function setResaleStakerRewardBps(uint256 newBps) external onlyOwner {
+        if (newBps > BPS_DENOMINATOR) revert InvalidCreatorShare();
+        resaleStakerRewardBps = newBps;
+    }
+
+    /// @notice V2 initializer for upgrade — sets staker reward BPS
+    function initializeV2(uint256 _stakerRewardBps, uint256 _resaleStakerRewardBps, uint256 _resaleRewardBps)
+        external
+        reinitializer(2)
+    {
+        stakerRewardBps = _stakerRewardBps;
+        resaleStakerRewardBps = _resaleStakerRewardBps;
+        resaleRewardBps = _resaleRewardBps;
     }
 
     /// @notice Transfer ownership
