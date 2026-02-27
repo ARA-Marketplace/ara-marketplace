@@ -18,7 +18,7 @@ A decentralized content marketplace desktop app. Creators publish files, buyers 
 ara-marketplace/
   contracts/          # Solidity smart contracts (Foundry project)
     src/              # AraStaking, AraContent, Marketplace, MockARAToken
-    test/             # Forge tests (28+ tests)
+    test/             # Forge tests (73+ tests)
     script/           # Deploy.s.sol
   crates/
     ara-core/         # Config (AppConfig), SQLite storage (Database), shared types
@@ -61,18 +61,20 @@ Two-step pattern used throughout:
 
 | Contract | Address | Purpose |
 |----------|---------|---------|
-| MockARAToken | `0x6E042035Dfe8FF36527E482401D95324afaEB98e` | ERC-20 test token (mintable, 18 decimals) |
-| AraStaking (proxy) | `0x33DE0E7d909EdbFDe5973E8208C0bf3B86E553D1` | Stake ARA to publish (10 ARA min) or seed (1 ARA/content) |
-| AraContent (proxy) | `0xB893FD211bFDd9557Bd60BE96f259966db434679` | ERC-1155 content token (editions, nonce-based IDs, fileSize tracking) |
-| Marketplace (proxy) | `0x02ce6E3c0cfD96076d2Fbaf878CCB3043D225138` | ETH purchases, 85% to creator, 15% per-receipt seeder rewards |
+| MockARAToken | `0x53720EcdDF71fE618c7A5aEc99ac2e958ad4dF99` | ERC-20 test token (mintable, 18 decimals) |
+| AraStaking (proxy) | `0xfD41Ae37cD729b6a70e42641ea14187e213b29e6` | Stake ARA to publish (10 ARA min) or seed (1 ARA/content) |
+| AraContent (proxy) | `0xd45ff950bBC1c823F66C4EbdF72De23Eb02e4831` | ERC-1155 content token (editions, nonce-based IDs, fileSize tracking) |
+| Marketplace (proxy) | `0xD7992b6A863FBacE3BB58BFE5D31EAe580adF4E0` | ETH purchases, 85% creator / 2.5% stakers / 12.5% seeders |
+| AraCollections (proxy) | `0x59453f1f12D10e4B4210fae8188d666011292997` | On-chain collections for content grouping |
+| AraNameRegistry (proxy) | `0xDA5827A8659271C44174894bbA403FD264198C5d` | Display name registry for wallet addresses |
 
-### Reward System (Two-Tier Distribution)
+### Reward System (Three-Way Split)
 
-Rewards flow: `purchase → 15% to rewardPool[contentId]` on-chain.
+Purchase split: `85% creator / 2.5% stakers / 12.5% seeders`. Resale split: `royalty to creator / 1% stakers / 4% seeders / remainder to seller`.
 
-**Creator fast path** (`distributeRewards()`): Creator calls anytime. Off-chain receipt aggregation, no on-chain proof needed. Rust command `prepare_distribute_rewards` reads `delivery_receipts` DB table, verifies ECDSA signatures, checks `has_purchased` on-chain, computes `weight = receipt_count × content_stake`, returns calldata.
+**Passive staker rewards** (AraStaking V2): Uses a Synthetix-style reward accumulator for O(1) gas-efficient proportional distribution. On each purchase, Marketplace calls `staking.addReward{value: stakerReward}()` which updates `rewardPerTokenStored`. Each staker's payout is proportional to their staked ARA: `earned = userStake * (rewardPerTokenStored - userCheckpoint) / 1e18`. Claim via `claimStakingReward()`. Edge case: if `totalStaked == 0`, the staker share falls back to the seeder pool.
 
-**Trustless fallback** (`publicDistributeWithProofs()`): After `distributionWindow` (30 days from last purchase), any eligible seeder submits buyer-signed EIP-712 receipts. Contract verifies each signature on-chain via `ecrecover`, checks `hasPurchased`, marks receipts used. Rust command `prepare_public_distribute` checks window is open then bundles DB receipts.
+**Seeder rewards** (12.5% of purchases): Held in `buyerReward[contentId][buyer]` per-receipt. Seeders collect via `claimDeliveryReward()` or batch `claimDeliveryRewards()` with buyer-signed EIP-712 receipts.
 
 **Anti-fraud**: Buyers sign `EIP-712 DeliveryReceipt(bytes32 contentId, address seederEthAddress, uint256 timestamp)` with their Ethereum wallet. Domain: `{ name: "AraMarketplace", version: "1", chainId: 11155111, verifyingContract: marketplace_addr }`. These receipts are broadcast on gossip and stored in `delivery_receipts` DB table.
 
@@ -150,12 +152,18 @@ cd contracts && forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --br
 
 **Wallet**: `connect_wallet`, `disconnect_wallet`, `get_balances`
 
-**Content**: `publish_content`, `confirm_publish`, `get_content_detail`, `search_content`, `update_content`, `confirm_update_content`, `get_my_content`, `get_published_content`, `delist_content`, `confirm_delist`
+**Content**: `publish_content`, `confirm_publish`, `get_content_detail`, `search_content`, `update_content`, `confirm_update_content`, `get_my_content`, `get_published_content`, `delist_content`, `confirm_delist`, `update_content_file`, `confirm_content_file_update`, `import_preview_assets`, `get_preview_asset`
 
-**Marketplace**: `purchase_content`, `confirm_purchase`, `get_library`, `open_downloaded_content`, `open_content_folder`, `broadcast_delivery_receipt`, `get_marketplace_address`, `get_receipt_count`, `get_reward_pool`
+**Marketplace**: `purchase_content`, `confirm_purchase`, `get_library`, `open_downloaded_content`, `open_content_folder`, `broadcast_delivery_receipt`, `get_marketplace_address`, `get_receipt_count`, `list_for_resale`, `confirm_list_for_resale`, `cancel_resale_listing`, `confirm_cancel_listing`, `buy_resale`, `get_resale_listings`, `get_edition_info`
 
 **Seeding**: `start_seeding`, `stop_seeding`, `get_seeder_stats`
 
-**Staking**: `stake_ara`, `unstake_ara`, `stake_for_content`, `get_stake_info`, `claim_rewards`, `prepare_distribute_rewards`, `prepare_public_distribute`
+**Staking**: `stake_ara`, `unstake_ara`, `stake_for_content`, `get_stake_info`, `claim_staking_reward`, `prepare_claim_rewards`, `confirm_claim_rewards`, `get_reward_history`, `get_reward_pipeline`
 
-**Utility**: `wait_for_transaction`, `sync_content`
+**Collections**: `create_collection`, `confirm_create_collection`, `update_collection`, `confirm_update_collection`, `delete_collection`, `confirm_delete_collection`, `add_to_collection`, `confirm_add_to_collection`, `remove_from_collection`, `confirm_remove_from_collection`, `get_my_collections`, `get_collection`, `get_collection_items`, `get_all_collections`, `get_content_collection`, `get_top_collections`
+
+**Names**: `register_name`, `confirm_register_name`, `remove_display_name`, `confirm_remove_name`, `get_display_name`, `get_display_names`
+
+**Analytics**: `get_price_history`, `get_item_analytics`, `get_top_collectors`, `get_trending_content`, `get_marketplace_overview`
+
+**Utility**: `wait_for_transaction`, `sync_content`, `sync_rewards`

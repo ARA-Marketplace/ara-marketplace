@@ -2,7 +2,7 @@
 
 **Own your content. Keep your revenue. Trust the math.**
 
-Ara is a decentralized content marketplace where creators publish anything — music, video, software, documents — and keep 85% of every sale. The remaining 15% flows automatically to the people who actually distribute the content: the seeders. No platform cut. No gatekeepers. No single point of failure.
+Ara is a decentralized content marketplace where creators publish anything — music, video, software, documents — and keep 85% of every sale. The remaining 15% is split between the people who secure the network (ARA stakers, 2.5%) and the people who distribute the content (seeders, 12.5%). No platform cut. No gatekeepers. No single point of failure.
 
 ---
 
@@ -20,7 +20,7 @@ Ara flips this. Every rule is enforced by open-source smart contracts on Ethereu
 1. **Stake 10 ARA tokens** — a small deposit that signals serious participation
 2. **Publish any file** — it gets hashed, stored in your iroh node, and registered on Ethereum
 3. **Set your price in ETH** — you receive 85% of every purchase instantly, on-chain
-4. **Distribute seeder rewards** — use the Library tab to allocate the 15% reward pool to the people who helped distribute your content
+4. **Distribute seeder rewards** — use the Library tab to allocate the 12.5% reward pool to the people who helped distribute your content
 
 ### For Buyers
 1. **Browse the marketplace** — search by title, type, or creator
@@ -28,16 +28,45 @@ Ara flips this. Every rule is enforced by open-source smart contracts on Ethereu
 3. **Download via P2P** — content transfers encrypted, directly from seeders using iroh
 4. **Seed and earn** — toggle seeding on any purchased content to share it and collect rewards
 
+### For Stakers
+1. **Stake any amount of ARA** — the more you stake, the larger your share of staking rewards
+2. **Earn passively** — 2.5% of every primary purchase and 1% of every resale is distributed proportionally to all ARA stakers
+3. **Claim anytime** — staking rewards accrue automatically on-chain; claim your ETH from the Wallet page whenever you want
+4. **Secure the network** — staking provides economic security (sybil resistance), ensures serious participation, and lays the foundation for future governance
+
 ### For Seeders
 1. **Stake 1 ARA for the content you seed** — signals commitment, makes you eligible for rewards
 2. **Keep seeding running** — the longer and more reliably you seed, the more delivery receipts you accumulate
-3. **Collect your share** — when the creator distributes rewards (or after 30 days via the trustless fallback), claim your ETH
+3. **Collect your share** — when the creator distributes rewards (or after 30 days via the trustless fallback), claim your ETH from the 12.5% seeder pool
 
 ---
 
 ## The Self-Reinforcing Flywheel
 
-Popular content attracts more seeders. More seeders mean faster downloads and better availability. Better availability drives more purchases. More purchases grow the reward pool. A larger reward pool attracts more seeders. **The network gets stronger as it grows.**
+Popular content attracts more seeders. More seeders mean faster downloads and better availability. Better availability drives more purchases. More purchases grow both the seeder reward pool and staker rewards. A larger reward pool attracts more seeders. Higher staking rewards incentivize more ARA to be staked, strengthening network security. **The network gets stronger as it grows.**
+
+---
+
+## Reward Split
+
+Every ETH payment on Ara is deterministically split by smart contracts — no platform fees, no hidden cuts.
+
+### Primary Purchases
+| Recipient | Share | How It Works |
+|-----------|-------|-------------|
+| Creator | 85% | Sent instantly on purchase |
+| ARA Stakers | 2.5% | Distributed proportionally to all stakers by amount staked |
+| Seeders | 12.5% | Distributed to seeders who deliver content, weighted by delivery receipts |
+
+### Resale Purchases
+| Recipient | Share | How It Works |
+|-----------|-------|-------------|
+| Seller | Remainder after fees | Sent instantly on resale |
+| Creator | Royalty (set at publish) | Enforced on-chain, cannot be bypassed |
+| ARA Stakers | 1% | Same proportional distribution as primary |
+| Seeders | 4% | Same delivery-receipt mechanism as primary |
+
+**Staking rewards are proportional**: if you stake 1% of the total ARA staked across all users, you earn 1% of the staker reward from every purchase. There is no minimum stake to earn — any staked ARA earns its proportional share.
 
 ---
 
@@ -123,7 +152,7 @@ The app opens as a native desktop window. Connect MetaMask on Sepolia testnet, g
 ```bash
 cd contracts
 forge build          # Compile
-forge test -vvv      # Run tests (28+ tests)
+forge test -vvv      # Run tests (73+ tests)
 
 # Deploy to Sepolia (requires DEPLOYER_PRIVATE_KEY + SEPOLIA_RPC_URL)
 forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast --verify
@@ -137,7 +166,7 @@ forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast --verify
 ara-marketplace/
 ├── contracts/              # Solidity smart contracts (Foundry project)
 │   ├── src/                # AraStaking, AraContent, Marketplace, MockARAToken
-│   ├── test/               # Forge tests (28+ tests)
+│   ├── test/               # Forge tests (73+ tests)
 │   └── script/             # Deploy.s.sol
 ├── crates/
 │   ├── ara-core/           # Config, SQLite storage, shared types
@@ -160,10 +189,12 @@ ara-marketplace/
 
 | Contract | Address |
 |----------|---------|
-| MockARAToken | `0x6E042035Dfe8FF36527E482401D95324afaEB98e` |
-| AraStaking (proxy) | `0x33DE0E7d909EdbFDe5973E8208C0bf3B86E553D1` |
-| AraContent (proxy) | `0xB893FD211bFDd9557Bd60BE96f259966db434679` |
-| Marketplace (proxy) | `0x02ce6E3c0cfD96076d2Fbaf878CCB3043D225138` |
+| MockARAToken | `0x53720EcdDF71fE618c7A5aEc99ac2e958ad4dF99` |
+| AraStaking (proxy) | `0xfD41Ae37cD729b6a70e42641ea14187e213b29e6` |
+| AraContent (proxy) | `0xd45ff950bBC1c823F66C4EbdF72De23Eb02e4831` |
+| Marketplace (proxy) | `0xD7992b6A863FBacE3BB58BFE5D31EAe580adF4E0` |
+| AraCollections (proxy) | `0x59453f1f12D10e4B4210fae8188d666011292997` |
+| AraNameRegistry (proxy) | `0xDA5827A8659271C44174894bbA403FD264198C5d` |
 
 All contracts are verified on [Sepolia Etherscan](https://sepolia.etherscan.io).
 
@@ -181,6 +212,8 @@ Ara is in active development on Sepolia testnet. Core flows are fully functional
 - [x] Creator reward distribution (fast path)
 - [x] Trustless fallback distribution (after 30-day window)
 - [x] Reward claiming
+- [x] Passive staking rewards (2.5% of purchases, proportional to stake)
+- [x] Resale marketplace with royalties and staker/seeder reward split
 
 In progress:
 - [x] ERC-1155 content tokens with edition support (maxSupply, minting on purchase)
