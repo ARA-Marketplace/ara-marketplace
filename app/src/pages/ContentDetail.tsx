@@ -858,13 +858,17 @@ function ContentDetail() {
                   </div>
                 )}
 
+                {/* Resale purchase error — prominent, above listings */}
+                {buyResaleError && (
+                  <div className="mt-4 alert-error text-sm">{buyResaleError}</div>
+                )}
+
                 {/* Resale Listings */}
                 {resaleListings.length > 0 && (
                   <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-800">
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-3">
                       Available from Resellers
                     </h3>
-                    {buyResaleError && <div className="alert-error mb-3 text-xs">{buyResaleError}</div>}
                     <div className="space-y-2">
                       {resaleListings.map((listing) => {
                         const isBuying = buyResaleSeller === listing.seller;

@@ -811,22 +811,6 @@ pub async fn buy_resale(
             .unwrap_or_default()
     };
 
-    // Look up listing price from DB
-    let price_wei_str = {
-        let db = state.db.lock().await;
-        let listings = db.get_active_resale_listings(&content_id)
-            .map_err(|e| format!("DB query failed: {e}"))?;
-        let listing = listings.iter()
-            .find(|(_, s, _, _)| s.to_lowercase() == seller.to_lowercase())
-            .ok_or("No active listing found for this seller")?;
-        listing.2.clone()
-    };
-
-    let price_wei: U256 = price_wei_str
-        .parse()
-        .map_err(|e| format!("Invalid price in DB: {e}"))?;
-    let price_eth = format_wei(price_wei);
-
     let content_id_bytes: FixedBytes<32> = content_id
         .strip_prefix("0x")
         .unwrap_or(&content_id)
@@ -840,6 +824,21 @@ pub async fn buy_resale(
     let marketplace_addr: Address = state.config.ethereum.marketplace_address
         .parse()
         .map_err(|e| format!("Invalid marketplace address: {e}"))?;
+
+    // Read listing price from on-chain (source of truth) — not from local DB cache
+    let chain = state.chain_client().map_err(|e| format!("Chain client error: {e}"))?;
+    let (price_wei, active) = chain.marketplace
+        .get_listing(content_id_bytes, seller_addr)
+        .await
+        .map_err(|e| format!("Failed to read listing on-chain: {e}"))?;
+
+    if !active {
+        return Err("This listing is no longer active on-chain".to_string());
+    }
+    if price_wei.is_zero() {
+        return Err("No listing found on-chain for this seller".to_string());
+    }
+    let price_eth = format_wei(price_wei);
 
     let calldata = MarketplaceClient::<()>::buy_resale_calldata(content_id_bytes, seller_addr);
     let value_hex = format!("0x{:x}", price_wei);

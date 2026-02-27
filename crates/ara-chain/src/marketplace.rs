@@ -42,6 +42,18 @@ impl<P: Provider + Clone> MarketplaceClient<P> {
         Ok(result)
     }
 
+    /// Read a resale listing from the on-chain mapping.
+    /// Returns (price, active). price is 0 and active is false if no listing exists.
+    pub async fn get_listing(
+        &self,
+        content_id: FixedBytes<32>,
+        seller: Address,
+    ) -> Result<(U256, bool)> {
+        let contract = IMarketplace::new(self.address, &self.provider);
+        let result = contract.listings(content_id, seller).call().await?;
+        Ok((result.price, result.active))
+    }
+
     /// Get the marketplace contract address.
     pub fn address(&self) -> Address {
         self.address

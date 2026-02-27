@@ -74,6 +74,7 @@ sol! {
         function buyerRewardPaid(bytes32 contentId, address buyer) external view returns (uint256);
         function getBuyerReward(bytes32 contentId, address buyer) external view returns (uint256);
         function totalRewardsClaimed() external view returns (uint256);
+        function listings(bytes32 contentId, address seller) external view returns (uint256 price, bool active);
         function listForResale(bytes32 contentId, uint256 price) external;
         function cancelListing(bytes32 contentId) external;
         function buyResale(bytes32 contentId, address seller) external payable;
