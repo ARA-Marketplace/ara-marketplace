@@ -154,6 +154,146 @@ pub async fn get_trending_content(
     }).collect())
 }
 
+// ─── Collection-level analytics ──────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct CollectionAnalytics {
+    pub total_volume_eth: String,
+    pub total_sales: u32,
+    pub unique_owners: u32,
+    pub floor_price_eth: String,
+    pub total_minted: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CollectionActivity {
+    pub content_id: String,
+    pub title: String,
+    pub buyer: String,
+    pub price_eth: String,
+    pub tx_hash: String,
+    pub block_number: i64,
+    pub is_resale: bool,
+}
+
+#[tauri::command]
+pub async fn get_collection_analytics(
+    state: State<'_, AppState>,
+    collection_id: i64,
+) -> Result<CollectionAnalytics, String> {
+    let db = state.db.lock().await;
+    let conn = db.conn();
+
+    let total_sales: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM all_purchases ap
+         JOIN collection_items ci ON ci.content_id = ap.content_id
+         WHERE ci.collection_id = ?1",
+        rusqlite::params![collection_id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+
+    let total_volume: String = conn.query_row(
+        "SELECT COALESCE(SUM(CAST(ap.price_paid_wei AS INTEGER)), 0) FROM all_purchases ap
+         JOIN collection_items ci ON ci.content_id = ap.content_id
+         WHERE ci.collection_id = ?1",
+        rusqlite::params![collection_id],
+        |row| row.get::<_, String>(0),
+    ).unwrap_or_else(|_| "0".to_string());
+
+    let unique_owners: u32 = conn.query_row(
+        "SELECT COUNT(DISTINCT ap.buyer) FROM all_purchases ap
+         JOIN collection_items ci ON ci.content_id = ap.content_id
+         WHERE ci.collection_id = ?1",
+        rusqlite::params![collection_id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+
+    let floor_price: String = conn.query_row(
+        "SELECT COALESCE(MIN(CAST(ct.price_wei AS INTEGER)), 0) FROM collection_items ci
+         JOIN content ct ON ct.content_id = ci.content_id AND ct.active = 1
+         WHERE ci.collection_id = ?1",
+        rusqlite::params![collection_id],
+        |row| row.get::<_, String>(0),
+    ).unwrap_or_else(|_| "0".to_string());
+
+    let total_minted: u32 = conn.query_row(
+        "SELECT COALESCE(SUM(ct.total_minted), 0) FROM collection_items ci
+         JOIN content ct ON ct.content_id = ci.content_id
+         WHERE ci.collection_id = ?1",
+        rusqlite::params![collection_id],
+        |row| row.get(0),
+    ).unwrap_or(0);
+
+    let vol_wei: U256 = total_volume.parse().unwrap_or(U256::ZERO);
+    let floor_wei: U256 = floor_price.parse().unwrap_or(U256::ZERO);
+
+    Ok(CollectionAnalytics {
+        total_volume_eth: format_wei(vol_wei),
+        total_sales,
+        unique_owners,
+        floor_price_eth: format_wei(floor_wei),
+        total_minted,
+    })
+}
+
+#[tauri::command]
+pub async fn get_collection_activity(
+    state: State<'_, AppState>,
+    collection_id: i64,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<Vec<CollectionActivity>, String> {
+    let db = state.db.lock().await;
+    let conn = db.conn();
+    let lim = limit.unwrap_or(50) as i64;
+    let off = offset.unwrap_or(0) as i64;
+
+    let mut stmt = conn.prepare(
+        "SELECT ap.content_id, COALESCE(ct.title, 'Unknown'), ap.buyer,
+                ap.price_paid_wei, ap.tx_hash, ap.block_number, ap.is_resale
+         FROM all_purchases ap
+         JOIN collection_items ci ON ci.content_id = ap.content_id
+         LEFT JOIN content ct ON ct.content_id = ap.content_id
+         WHERE ci.collection_id = ?1
+         ORDER BY ap.block_number DESC
+         LIMIT ?2 OFFSET ?3"
+    ).map_err(|e| format!("DB error: {e}"))?;
+
+    let rows = stmt.query_map(
+        rusqlite::params![collection_id, lim, off],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, bool>(6)?,
+            ))
+        },
+    ).map_err(|e| format!("DB error: {e}"))?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        let (content_id, title, buyer, price_wei, tx_hash, block_number, is_resale) =
+            row.map_err(|e| format!("Row error: {e}"))?;
+        let wei: U256 = price_wei.parse().unwrap_or(U256::ZERO);
+        result.push(CollectionActivity {
+            content_id,
+            title,
+            buyer,
+            price_eth: format_wei(wei),
+            tx_hash,
+            block_number,
+            is_resale,
+        });
+    }
+    Ok(result)
+}
+
+// ─── Marketplace overview ────────────────────────────────────────────────────
+
 #[tauri::command]
 pub async fn get_marketplace_overview(
     state: State<'_, AppState>,

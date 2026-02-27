@@ -437,7 +437,7 @@ pub async fn confirm_publish(
     state: State<'_, AppState>,
     content_hash: String,
     tx_hash: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     info!(
         "Confirming publish: hash={}, tx={}",
         content_hash, tx_hash
@@ -537,7 +537,7 @@ pub async fn confirm_publish(
         "Content {} (contentId={}) is now active, seeding, and announced on gossip",
         content_hash, content_id_hex
     );
-    Ok(())
+    Ok(content_id_hex)
 }
 
 /// Fetch the transaction receipt and extract the contentId from the ContentPublished event.

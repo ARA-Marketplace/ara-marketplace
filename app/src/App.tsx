@@ -7,6 +7,7 @@ import Library from "./pages/Library";
 import Dashboard from "./pages/Dashboard";
 import Wallet from "./pages/Wallet";
 import CollectionDetailPage from "./pages/CollectionDetail";
+import Collections from "./pages/Collections";
 
 // Apply saved theme before first render to avoid flash
 const savedTheme = localStorage.getItem("ara-theme") ?? "dark";
@@ -22,6 +23,7 @@ function App() {
       <Routes>
         <Route path="/" element={<Marketplace />} />
         <Route path="/content/:contentId" element={<ContentDetail />} />
+        <Route path="/collections" element={<Collections />} />
         <Route path="/collections/:collectionId" element={<CollectionDetailPage />} />
         <Route path="/publish" element={<Publish />} />
         <Route path="/library" element={<Library />} />

@@ -760,7 +760,7 @@ impl Database {
                     COUNT(DISTINCT ci.content_id) as item_count,
                     COALESCE(CAST(SUM(CAST(ap.price_paid_wei AS INTEGER)) AS TEXT), '0') as volume
              FROM collections c
-             JOIN collection_items ci ON ci.collection_id = c.collection_id
+             LEFT JOIN collection_items ci ON ci.collection_id = c.collection_id
              LEFT JOIN content ct ON ct.content_id = ci.content_id AND ct.active = 1
              LEFT JOIN all_purchases ap ON ap.content_id = ci.content_id
              WHERE c.active = 1

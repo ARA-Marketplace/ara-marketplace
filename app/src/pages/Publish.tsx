@@ -1,7 +1,16 @@
 import { useState, useEffect, useCallback, type DragEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { open } from "@tauri-apps/plugin-dialog";
-import { publishContent, confirmPublish } from "../lib/tauri";
+import {
+  publishContent,
+  confirmPublish,
+  getMyCollections,
+  createCollection,
+  confirmCreateCollection,
+  addToCollection,
+  confirmAddToCollection,
+} from "../lib/tauri";
+import type { CollectionInfo } from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
 import {
   useWeb3Modal,
@@ -11,14 +20,15 @@ import {
 import { CATEGORIES_BY_TYPE } from "../lib/categories";
 import type { ContentType } from "../lib/types";
 
-type PublishStep = "form" | "importing" | "signing" | "confirming" | "done";
+type PublishStep = "form" | "importing" | "signing" | "confirming" | "adding-to-collection" | "done";
 
 const STEP_LABELS: Record<PublishStep, string> = {
-  form:       "Publish Content",
-  importing:  "Importing files into P2P network…",
-  signing:    "Waiting for wallet approval…",
-  confirming: "Confirming and activating content…",
-  done:       "Published!",
+  form:                   "Publish Content",
+  importing:              "Importing files into P2P network…",
+  signing:                "Waiting for wallet approval…",
+  confirming:             "Confirming and activating content…",
+  "adding-to-collection": "Adding to collection…",
+  done:                   "Published!",
 };
 
 function Publish() {
@@ -44,7 +54,21 @@ function Publish() {
   const [error, setError] = useState<string | null>(null);
   const [resultHash, setResultHash] = useState<string | null>(null);
 
+  // Collection state
+  const [collectionChoice, setCollectionChoice] = useState<"none" | "existing" | "new">("none");
+  const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
+  const [collections, setCollections] = useState<CollectionInfo[]>([]);
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [newCollectionDescription, setNewCollectionDescription] = useState("");
+
   const isForm = step === "form";
+
+  // Fetch user's collections on mount and when wallet connects
+  useEffect(() => {
+    if (isConnected) {
+      getMyCollections().then(setCollections).catch(() => {});
+    }
+  }, [isConnected]);
 
   const selectFile = async () => {
     const selected = await open({ multiple: false, directory: false, title: "Select content file" });
@@ -122,6 +146,33 @@ function Publish() {
     setError(null);
     setResultHash(null);
     try {
+      // Resolve which collection ID to use (may require creating one first)
+      let targetCollectionId: number | null = null;
+
+      if (collectionChoice === "existing" && selectedCollectionId != null) {
+        targetCollectionId = selectedCollectionId;
+      } else if (collectionChoice === "new" && newCollectionName.trim()) {
+        if (!walletProvider) {
+          openModal();
+          throw new Error("Wallet session expired — reconnect your wallet, then publish again.");
+        }
+        setStep("signing");
+        const createTxs = await createCollection({
+          name: newCollectionName.trim(),
+          description: newCollectionDescription.trim(),
+          bannerUri: "",
+        });
+        const createTxHash = await signAndSendTransactions(walletProvider, createTxs);
+        setStep("confirming");
+        targetCollectionId = await confirmCreateCollection({
+          txHash: createTxHash,
+          name: newCollectionName.trim(),
+          description: newCollectionDescription.trim(),
+          bannerUri: "",
+        });
+      }
+
+      // Import files and prepare publish TX
       setStep("importing");
       const parsedMaxSupply = editionType === "limited" && maxCopies.trim()
         ? parseInt(maxCopies.trim(), 10)
@@ -143,6 +194,9 @@ function Publish() {
         previewPaths: previewPaths.length > 0 ? previewPaths : undefined,
       });
       setResultHash(result.content_hash);
+
+      // Sign publish TX and confirm
+      let contentId: string;
       if (result.transactions.length > 0) {
         if (!walletProvider) {
           openModal();
@@ -151,11 +205,30 @@ function Publish() {
         setStep("signing");
         const txHash = await signAndSendTransactions(walletProvider, result.transactions);
         setStep("confirming");
-        await confirmPublish(result.content_hash, txHash);
+        contentId = await confirmPublish(result.content_hash, txHash);
       } else {
         setStep("confirming");
-        await confirmPublish(result.content_hash, "0x0");
+        contentId = await confirmPublish(result.content_hash, "0x0");
       }
+
+      // Add to collection if requested
+      if (targetCollectionId != null) {
+        try {
+          setStep("adding-to-collection");
+          if (!walletProvider) {
+            throw new Error("Wallet disconnected");
+          }
+          const addTxs = await addToCollection(targetCollectionId, contentId);
+          await signAndSendTransactions(walletProvider, addTxs);
+          await confirmAddToCollection(targetCollectionId, contentId);
+        } catch (collErr) {
+          // Content is safely published — collection add failed non-fatally
+          setError(`Published successfully, but failed to add to collection: ${collErr}. You can add it later from your Library.`);
+          setStep("done");
+          return;
+        }
+      }
+
       setStep("done");
       setTimeout(() => navigate("/library"), 1500);
     } catch (err) {
@@ -387,6 +460,74 @@ function Publish() {
               </ul>
             )}
           </div>
+        </div>
+
+        {/* Collection */}
+        <div className="card p-5 space-y-4">
+          <div>
+            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">Collection</p>
+            <p className="text-xs text-slate-500 dark:text-slate-500 mt-0.5">
+              Optionally add this content to a collection
+            </p>
+          </div>
+
+          <div className="flex gap-3">
+            {(["none", "existing", "new"] as const).map((choice) => (
+              <button key={choice} type="button" disabled={!isForm}
+                onClick={() => { setCollectionChoice(choice); if (choice !== "existing") setSelectedCollectionId(null); }}
+                className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50 ${
+                  collectionChoice === choice
+                    ? "bg-ara-600 border-ara-600 text-white"
+                    : "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-ara-400 dark:hover:border-ara-600 bg-white dark:bg-slate-900"
+                }`}>
+                {choice === "none" ? "None" : choice === "existing" ? "Existing" : "+ New"}
+              </button>
+            ))}
+          </div>
+
+          {collectionChoice === "existing" && (
+            <div>
+              {collections.length === 0 ? (
+                <p className="text-xs text-slate-500 dark:text-slate-500">
+                  No collections yet.{" "}
+                  <button type="button" onClick={() => setCollectionChoice("new")}
+                    className="text-ara-600 dark:text-ara-400 hover:underline">
+                    Create one
+                  </button>
+                </p>
+              ) : (
+                <select value={selectedCollectionId ?? ""} disabled={!isForm}
+                  onChange={(e) => setSelectedCollectionId(e.target.value ? Number(e.target.value) : null)}
+                  className="input-base">
+                  <option value="">Select a collection…</option>
+                  {collections.map((c) => (
+                    <option key={c.collection_id} value={c.collection_id}>
+                      {c.name} ({c.item_count} items)
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+
+          {collectionChoice === "new" && (
+            <div className="space-y-3">
+              <div>
+                <label className="label-xs">Collection Name</label>
+                <input type="text" value={newCollectionName}
+                  onChange={(e) => setNewCollectionName(e.target.value)}
+                  disabled={!isForm} placeholder="My Collection"
+                  className="input-base" />
+              </div>
+              <div>
+                <label className="label-xs">Collection Description</label>
+                <textarea value={newCollectionDescription}
+                  onChange={(e) => setNewCollectionDescription(e.target.value)}
+                  disabled={!isForm} rows={2} placeholder="Describe the collection…"
+                  className="input-base resize-none" />
+              </div>
+            </div>
+          )}
         </div>
 
         {error && <div className="alert-error">{error}</div>}

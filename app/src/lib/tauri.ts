@@ -97,7 +97,7 @@ export async function publishContent(params: {
 export async function confirmPublish(
   contentHash: string,
   txHash: string
-): Promise<void> {
+): Promise<string> {
   return invoke("confirm_publish", { contentHash, txHash });
 }
 
@@ -683,4 +683,38 @@ export async function getTrendingContent(
 
 export async function getMarketplaceOverview(): Promise<MarketplaceOverview> {
   return invoke("get_marketplace_overview");
+}
+
+// Collection Analytics
+
+export interface CollectionAnalytics {
+  total_volume_eth: string;
+  total_sales: number;
+  unique_owners: number;
+  floor_price_eth: string;
+  total_minted: number;
+}
+
+export interface CollectionActivity {
+  content_id: string;
+  title: string;
+  buyer: string;
+  price_eth: string;
+  tx_hash: string;
+  block_number: number;
+  is_resale: boolean;
+}
+
+export async function getCollectionAnalytics(
+  collectionId: number
+): Promise<CollectionAnalytics> {
+  return invoke("get_collection_analytics", { collectionId });
+}
+
+export async function getCollectionActivity(
+  collectionId: number,
+  limit?: number,
+  offset?: number
+): Promise<CollectionActivity[]> {
+  return invoke("get_collection_activity", { collectionId, limit, offset });
 }

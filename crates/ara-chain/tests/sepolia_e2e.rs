@@ -15,11 +15,12 @@ use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::sol;
 use alloy::sol_types::{SolCall, SolEvent};
-use ara_chain::contracts::{IAraStaking, IAraContent, IMarketplace};
+use ara_chain::contracts::{IAraStaking, IAraContent, IMarketplace, IAraCollections};
 use ara_chain::staking::StakingClient;
 use ara_chain::token::TokenClient;
 use ara_chain::content_token::ContentTokenClient;
 use ara_chain::marketplace::MarketplaceClient;
+use ara_chain::collections::CollectionsClient;
 
 // Extend IAraToken with mint (only exists on MockARAToken)
 sol! {
@@ -34,6 +35,7 @@ const ARA_TOKEN: Address = address!("53720EcdDF71fE618c7A5aEc99ac2e958ad4dF99");
 const STAKING: Address = address!("fD41Ae37cD729b6a70e42641ea14187e213b29e6");
 const REGISTRY: Address = address!("d45ff950bBC1c823F66C4EbdF72De23Eb02e4831");
 const MARKETPLACE: Address = address!("D7992b6A863FBacE3BB58BFE5D31EAe580adF4E0");
+const COLLECTIONS: Address = address!("59453f1f12D10e4B4210fae8188d666011292997");
 
 const SEPOLIA_RPC: &str = "https://eth-sepolia.g.alchemy.com/v2/96LkbmgBuleyqzvpKIb15";
 const DEPLOYER_KEY: &str = "e01acca40bdaa73a2ffc56715c14c7bb2f863ecd90872cd55d076f4bfc66d492";
@@ -558,6 +560,247 @@ async fn test_e2e_step7_unstake() {
     println!("After - Staked: {:.2} ARA, Balance: {:.2} ARA", wei_to_eth(staked_after), wei_to_eth(ara_after));
     assert!(staked_after < staked_before, "Staked balance should decrease");
     assert!(ara_after > ara_before, "ARA balance should increase (tokens returned)");
+}
+
+// ─── Collection Tests ────────────────────────────────────────────────────────
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_step8_create_collection() {
+    println!("\n=== Step 8: Create collection ===\n");
+
+    let test_provider = make_provider(TEST_WALLET_KEY);
+    let test_signer: PrivateKeySigner = TEST_WALLET_KEY.parse().unwrap();
+    let test_addr = test_signer.address();
+    let reader = read_provider();
+    let collections = CollectionsClient::new(COLLECTIONS, reader.clone());
+
+    let next_id_before = collections.next_collection_id().await.unwrap();
+    println!("nextCollectionId before: {next_id_before}");
+
+    let calldata = CollectionsClient::<()>::create_collection_calldata(
+        "E2E Test Collection",
+        "Integration test collection created by sepolia_e2e",
+        "",
+    );
+    println!("Creating collection from test wallet ({test_addr})...");
+    let receipt = send_tx(&test_provider, COLLECTIONS, calldata, U256::ZERO).await;
+    println!("Tx: {:?} (status: {:?})", receipt.transaction_hash, receipt.status());
+    assert!(receipt.status(), "Create collection should succeed");
+
+    let event = find_event::<IAraCollections::CollectionCreated>(&receipt)
+        .expect("Should have CollectionCreated event");
+    println!(
+        "CollectionCreated: id={}, creator={}, name={}",
+        event.collectionId, event.creator, event.name
+    );
+    assert_eq!(event.creator, test_addr);
+    assert_eq!(event.name, "E2E Test Collection");
+
+    // Verify on-chain state
+    let (creator, name, desc, _banner, _created_at, active) =
+        collections.get_collection(event.collectionId).await.unwrap();
+    println!("On-chain: creator={creator}, name={name}, desc={desc}, active={active}");
+    assert_eq!(creator, test_addr);
+    assert_eq!(name, "E2E Test Collection");
+    assert!(active);
+
+    let next_id_after = collections.next_collection_id().await.unwrap();
+    assert!(next_id_after > next_id_before, "nextCollectionId should increase");
+    println!("nextCollectionId after: {next_id_after}");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_step9_publish_into_collection() {
+    println!("\n=== Step 9: Publish content and add to collection ===\n");
+
+    let test_provider = make_provider(TEST_WALLET_KEY);
+    let test_signer: PrivateKeySigner = TEST_WALLET_KEY.parse().unwrap();
+    let test_addr = test_signer.address();
+    let reader = read_provider();
+    let collections = CollectionsClient::new(COLLECTIONS, reader.clone());
+    let staking = StakingClient::new(STAKING, reader.clone());
+
+    // Check publisher eligibility
+    let eligible = staking.is_eligible_publisher(test_addr).await.unwrap();
+    if !eligible {
+        println!("SKIP: Test wallet not an eligible publisher. Run step 3 first.");
+        return;
+    }
+
+    // Find the latest collection
+    let next_id = collections.next_collection_id().await.unwrap();
+    if next_id == U256::ZERO {
+        println!("SKIP: No collections exist. Run step 8 first.");
+        return;
+    }
+    let collection_id = next_id - U256::from(1);
+    let (creator, name, _, _, _, active) =
+        collections.get_collection(collection_id).await.unwrap();
+    println!("Using collection {collection_id}: name={name}, creator={creator}, active={active}");
+    assert_eq!(creator, test_addr, "Collection creator should be test wallet");
+    assert!(active, "Collection should be active");
+
+    // Publish a new content item
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let content_hash: FixedBytes<32> = FixedBytes::new(
+        alloy::primitives::keccak256(format!("collection-test-{ts}").as_bytes()).0,
+    );
+    let price_wei = U256::from(1_000_000_000_000_000u64); // 0.001 ETH
+    let metadata = format!(
+        r#"{{"v":2,"title":"Collection Test Item {ts}","description":"E2E test item for collection","content_type":"document","file_size":1024}}"#
+    );
+
+    let publish_calldata = ContentTokenClient::<()>::publish_content_calldata(
+        content_hash,
+        metadata,
+        price_wei,
+        U256::from(1024),
+        U256::ZERO,
+        0u128,
+    );
+    println!("Publishing content (hash={content_hash})...");
+    let receipt = send_tx(&test_provider, REGISTRY, publish_calldata, U256::ZERO).await;
+    assert!(receipt.status(), "Publish should succeed");
+
+    let pub_event = find_event::<IAraContent::ContentPublished>(&receipt)
+        .expect("Should have ContentPublished event");
+    let content_id = pub_event.contentId;
+    println!("ContentPublished: contentId={content_id}");
+
+    // Add to collection
+    let add_calldata = CollectionsClient::<()>::add_item_calldata(collection_id, content_id);
+    println!("Adding contentId={content_id} to collection {collection_id}...");
+    let receipt = send_tx(&test_provider, COLLECTIONS, add_calldata, U256::ZERO).await;
+    println!("Tx: {:?} (status: {:?})", receipt.transaction_hash, receipt.status());
+    assert!(receipt.status(), "Add item should succeed");
+
+    let add_event = find_event::<IAraCollections::ItemAddedToCollection>(&receipt)
+        .expect("Should have ItemAddedToCollection event");
+    println!(
+        "ItemAddedToCollection: collectionId={}, contentId={}",
+        add_event.collectionId, add_event.contentId
+    );
+    assert_eq!(add_event.collectionId, collection_id);
+    assert_eq!(add_event.contentId, content_id);
+
+    // Verify contentCollection mapping
+    let mapped_collection = collections.content_collection(content_id).await.unwrap();
+    println!("contentCollection({content_id}) = {mapped_collection}");
+    assert_eq!(mapped_collection, collection_id, "Content should be mapped to collection");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_step10_verify_collection_state() {
+    println!("\n=== Step 10: Verify collection state (read-only) ===\n");
+
+    let reader = read_provider();
+    let collections = CollectionsClient::new(COLLECTIONS, reader.clone());
+    let test_signer: PrivateKeySigner = TEST_WALLET_KEY.parse().unwrap();
+    let test_addr = test_signer.address();
+
+    // Find the latest collection
+    let next_id = collections.next_collection_id().await.unwrap();
+    if next_id == U256::ZERO {
+        println!("SKIP: No collections exist.");
+        return;
+    }
+    let collection_id = next_id - U256::from(1);
+
+    let (creator, name, desc, banner, created_at, active) =
+        collections.get_collection(collection_id).await.unwrap();
+    println!("Collection {collection_id}:");
+    println!("  creator:    {creator}");
+    println!("  name:       {name}");
+    println!("  description:{desc}");
+    println!("  banner:     {banner}");
+    println!("  createdAt:  {created_at}");
+    println!("  active:     {active}");
+    assert_eq!(creator, test_addr, "Creator should be test wallet");
+    assert!(active, "Collection should be active");
+
+    let items = collections.get_collection_items(collection_id).await.unwrap();
+    println!("  items ({}):", items.len());
+    for (i, item) in items.iter().enumerate() {
+        println!("    [{i}] {item}");
+        // Verify reverse mapping
+        let mapped = collections.content_collection(*item).await.unwrap();
+        assert_eq!(mapped, collection_id, "Item should map back to this collection");
+    }
+    assert!(!items.is_empty(), "Collection should have at least 1 item (from step 9)");
+
+    // Verify creator collections list
+    let creator_colls = collections.get_creator_collections(test_addr).await.unwrap();
+    println!("Creator collections: {:?}", creator_colls);
+    assert!(
+        creator_colls.contains(&collection_id),
+        "Creator's collection list should include this collection"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_e2e_step11_remove_from_collection() {
+    println!("\n=== Step 11: Remove item from collection ===\n");
+
+    let test_provider = make_provider(TEST_WALLET_KEY);
+    let reader = read_provider();
+    let collections = CollectionsClient::new(COLLECTIONS, reader.clone());
+
+    // Find latest collection and its items
+    let next_id = collections.next_collection_id().await.unwrap();
+    if next_id == U256::ZERO {
+        println!("SKIP: No collections exist.");
+        return;
+    }
+    let collection_id = next_id - U256::from(1);
+    let items_before = collections.get_collection_items(collection_id).await.unwrap();
+    if items_before.is_empty() {
+        println!("SKIP: Collection has no items. Run step 9 first.");
+        return;
+    }
+
+    let content_id = items_before[0];
+    println!(
+        "Removing contentId={content_id} from collection {collection_id} ({} items before)...",
+        items_before.len()
+    );
+
+    let remove_calldata = CollectionsClient::<()>::remove_item_calldata(collection_id, content_id);
+    let receipt = send_tx(&test_provider, COLLECTIONS, remove_calldata, U256::ZERO).await;
+    println!("Tx: {:?} (status: {:?})", receipt.transaction_hash, receipt.status());
+    assert!(receipt.status(), "Remove item should succeed");
+
+    let rm_event = find_event::<IAraCollections::ItemRemovedFromCollection>(&receipt)
+        .expect("Should have ItemRemovedFromCollection event");
+    println!(
+        "ItemRemovedFromCollection: collectionId={}, contentId={}",
+        rm_event.collectionId, rm_event.contentId
+    );
+    assert_eq!(rm_event.collectionId, collection_id);
+    assert_eq!(rm_event.contentId, content_id);
+
+    // Verify contentCollection returns 0 (unlinked)
+    let mapped = collections.content_collection(content_id).await.unwrap();
+    println!("contentCollection({content_id}) = {mapped} (expected 0)");
+    assert_eq!(mapped, U256::ZERO, "Content should no longer be in any collection");
+
+    let items_after = collections.get_collection_items(collection_id).await.unwrap();
+    println!("Items after removal: {}", items_after.len());
+    assert_eq!(
+        items_after.len(),
+        items_before.len() - 1,
+        "Item count should decrease by 1"
+    );
+    assert!(
+        !items_after.contains(&content_id),
+        "Removed item should not be in items list"
+    );
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

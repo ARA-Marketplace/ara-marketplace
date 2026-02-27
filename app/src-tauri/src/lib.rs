@@ -205,6 +205,8 @@ pub fn run() {
             commands::analytics::get_top_collectors,
             commands::analytics::get_trending_content,
             commands::analytics::get_marketplace_overview,
+            commands::analytics::get_collection_analytics,
+            commands::analytics::get_collection_activity,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
