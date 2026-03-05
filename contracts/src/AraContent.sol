@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-3.0
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import {ERC1155} from "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
@@ -44,8 +44,28 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
     /// @notice Authorized minter (Marketplace contract)
     address public minter;
 
+    /// @notice Authorized moderator (AraModeration contract)
+    address public moderator;
+
     /// @notice Contract owner (can upgrade, set minter)
     address public owner;
+
+    // === V3: Multi-token payment support ===
+
+    /// @notice contentId => payment token address (address(0) = ETH)
+    mapping(bytes32 => address) public paymentToken;
+
+    // === V4: Collaborator revenue splits ===
+
+    struct Collaborator {
+        address wallet;
+        uint256 shareBps; // basis points out of 10000
+    }
+
+    uint256 public constant MAX_COLLABORATORS = 5;
+
+    /// @notice contentId => collaborator list (immutable after publish)
+    mapping(bytes32 => Collaborator[]) internal _contentCollaborators;
 
     event ContentPublished(
         bytes32 indexed contentId,
@@ -69,7 +89,18 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
     error ZeroFileSize();
     error EditionSoldOut();
     error OnlyMinter();
+    error OnlyModerator();
     error OnlyOwner();
+    error TooManyCollaborators();
+    error InvalidCollaboratorShares();
+    error ZeroCollaboratorAddress();
+    error DuplicateCollaborator();
+    error PublisherNotInCollaborators();
+    error ZeroAddress();
+    error RoyaltyTooHigh();
+
+    // === V5: Security hardening ===
+    address public pendingOwner;
 
     modifier onlyMinter() {
         if (msg.sender != minter) revert OnlyMinter();
@@ -113,6 +144,7 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
         if (!staking.isEligiblePublisher(msg.sender)) revert InsufficientStake();
         if (priceWei == 0) revert ZeroPrice();
         if (fileSize == 0) revert ZeroFileSize();
+        if (royaltyBps > 5000) revert RoyaltyTooHigh(); // 50% max
 
         uint256 nonce = publisherNonce[msg.sender];
         contentId = keccak256(abi.encodePacked(contentHash, msg.sender, nonce));
@@ -135,9 +167,123 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
         creatorContents[msg.sender].push(contentId);
         allContentIds.push(contentId);
 
-        // Set ERC-2981 royalty for this token
         if (royaltyBps > 0) {
             _setTokenRoyalty(uint256(contentId), msg.sender, royaltyBps);
+        }
+
+        // paymentToken defaults to address(0) = ETH
+        emit ContentPublished(contentId, msg.sender, contentHash, metadataURI, priceWei, fileSize, maxSupply);
+    }
+
+    /// @notice Register new content priced in an ERC-20 token.
+    /// @param _paymentToken The ERC-20 token address for pricing (address(0) = ETH)
+    function publishContentWithToken(
+        bytes32 contentHash,
+        string calldata metadataURI,
+        uint256 price,
+        uint256 fileSize,
+        uint256 maxSupply,
+        uint96 royaltyBps,
+        address _paymentToken
+    ) external returns (bytes32 contentId) {
+        if (!staking.isEligiblePublisher(msg.sender)) revert InsufficientStake();
+        if (price == 0) revert ZeroPrice();
+        if (fileSize == 0) revert ZeroFileSize();
+        if (royaltyBps > 5000) revert RoyaltyTooHigh();
+
+        uint256 nonce = publisherNonce[msg.sender];
+        contentId = keccak256(abi.encodePacked(contentHash, msg.sender, nonce));
+        publisherNonce[msg.sender] = nonce + 1;
+        if (contents[contentId].creator != address(0)) revert ContentAlreadyExists(contentId);
+
+        contents[contentId] = ContentMeta({
+            creator: msg.sender,
+            contentHash: contentHash,
+            metadataURI: metadataURI,
+            priceWei: price,
+            fileSize: fileSize,
+            maxSupply: maxSupply,
+            createdAt: block.timestamp,
+            active: true
+        });
+
+        fileSizes[contentId] = fileSize;
+        paymentToken[contentId] = _paymentToken;
+
+        creatorContents[msg.sender].push(contentId);
+        allContentIds.push(contentId);
+
+        if (royaltyBps > 0) {
+            _setTokenRoyalty(uint256(contentId), msg.sender, royaltyBps);
+        }
+
+        emit ContentPublished(contentId, msg.sender, contentHash, metadataURI, price, fileSize, maxSupply);
+    }
+
+    /// @notice Publish content with collaborator revenue splits.
+    /// @param collaborators Array of collaborators and their share in basis points (must sum to 10000).
+    ///        The publisher (msg.sender) must be included. Max 5 collaborators.
+    function publishContentWithCollaborators(
+        bytes32 contentHash,
+        string calldata metadataURI,
+        uint256 priceWei,
+        uint256 fileSize,
+        uint256 maxSupply,
+        uint96 royaltyBps,
+        Collaborator[] calldata collaborators
+    ) external returns (bytes32 contentId) {
+        if (!staking.isEligiblePublisher(msg.sender)) revert InsufficientStake();
+        if (priceWei == 0) revert ZeroPrice();
+        if (fileSize == 0) revert ZeroFileSize();
+        if (royaltyBps > 5000) revert RoyaltyTooHigh();
+        if (collaborators.length == 0 || collaborators.length > MAX_COLLABORATORS) revert TooManyCollaborators();
+
+        // Validate collaborators
+        uint256 totalShares;
+        bool publisherIncluded;
+        for (uint256 i = 0; i < collaborators.length; i++) {
+            if (collaborators[i].wallet == address(0)) revert ZeroCollaboratorAddress();
+            if (collaborators[i].shareBps == 0) revert InvalidCollaboratorShares();
+            totalShares += collaborators[i].shareBps;
+            if (collaborators[i].wallet == msg.sender) publisherIncluded = true;
+            // Check for duplicates
+            for (uint256 j = 0; j < i; j++) {
+                if (collaborators[j].wallet == collaborators[i].wallet) revert DuplicateCollaborator();
+            }
+        }
+        if (totalShares != 10000) revert InvalidCollaboratorShares();
+        if (!publisherIncluded) revert PublisherNotInCollaborators();
+
+        uint256 nonce = publisherNonce[msg.sender];
+        contentId = keccak256(abi.encodePacked(contentHash, msg.sender, nonce));
+        publisherNonce[msg.sender] = nonce + 1;
+        if (contents[contentId].creator != address(0)) revert ContentAlreadyExists(contentId);
+
+        contents[contentId] = ContentMeta({
+            creator: msg.sender,
+            contentHash: contentHash,
+            metadataURI: metadataURI,
+            priceWei: priceWei,
+            fileSize: fileSize,
+            maxSupply: maxSupply,
+            createdAt: block.timestamp,
+            active: true
+        });
+
+        fileSizes[contentId] = fileSize;
+
+        // Store collaborators (immutable)
+        for (uint256 i = 0; i < collaborators.length; i++) {
+            _contentCollaborators[contentId].push(collaborators[i]);
+        }
+
+        creatorContents[msg.sender].push(contentId);
+        allContentIds.push(contentId);
+
+        // Set ERC-2981 royalty receiver to the first collaborator.
+        // The Marketplace contract handles actual distribution among all collaborators.
+        if (royaltyBps > 0) {
+            _setTokenRoyalty(uint256(contentId), collaborators[0].wallet, royaltyBps);
         }
 
         emit ContentPublished(contentId, msg.sender, contentHash, metadataURI, priceWei, fileSize, maxSupply);
@@ -162,6 +308,7 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
         ContentMeta storage c = contents[contentId];
         if (c.creator != msg.sender) revert NotContentCreator();
         if (!c.active) revert ContentNotActive();
+        if (newPriceWei == 0) revert ZeroPrice();
 
         c.priceWei = newPriceWei;
         c.metadataURI = newMetadataURI;
@@ -195,6 +342,18 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
         if (c.creator != msg.sender) revert NotContentCreator();
         c.active = false;
         emit ContentDelisted(contentId);
+    }
+
+    /// @notice Delist content via moderation contract (governance decision)
+    function moderatorDelist(bytes32 contentId) external {
+        if (msg.sender != moderator) revert OnlyModerator();
+        contents[contentId].active = false;
+        emit ContentDelisted(contentId);
+    }
+
+    /// @notice Set the authorized moderator contract
+    function setModerator(address _moderator) external onlyOwner {
+        moderator = _moderator;
     }
 
     // --- View functions ---
@@ -231,6 +390,26 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
         return contents[contentId].maxSupply;
     }
 
+    /// @notice Get the payment token for content (address(0) = ETH)
+    function getPaymentToken(bytes32 contentId) external view returns (address) {
+        return paymentToken[contentId];
+    }
+
+    /// @notice Check if content has collaborator splits
+    function hasCollaborators(bytes32 contentId) external view returns (bool) {
+        return _contentCollaborators[contentId].length > 0;
+    }
+
+    /// @notice Get collaborator list for content
+    function getCollaborators(bytes32 contentId) external view returns (Collaborator[] memory) {
+        return _contentCollaborators[contentId];
+    }
+
+    /// @notice Get collaborator count for content
+    function getCollaboratorCount(bytes32 contentId) external view returns (uint256) {
+        return _contentCollaborators[contentId].length;
+    }
+
     /// @notice Get total minted for a content item
     function getTotalMinted(bytes32 contentId) external view returns (uint256) {
         return totalSupply(uint256(contentId));
@@ -251,9 +430,17 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
         minter = _minter;
     }
 
-    /// @notice Transfer ownership
+    /// @notice Propose a new owner (two-step transfer)
     function transferOwnership(address newOwner) external onlyOwner {
-        owner = newOwner;
+        if (newOwner == address(0)) revert ZeroAddress();
+        pendingOwner = newOwner;
+    }
+
+    /// @notice Accept ownership (must be called by the pending owner)
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert OnlyOwner();
+        owner = msg.sender;
+        pendingOwner = address(0);
     }
 
     // --- Required overrides ---
@@ -268,6 +455,9 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
     function supportsInterface(bytes4 interfaceId) public view override(ERC1155, ERC2981) returns (bool) {
         return super.supportsInterface(interfaceId);
     }
+
+    /// @dev Reserved storage for future upgrades
+    uint256[50] private __gap;
 
     function _authorizeUpgrade(address) internal override onlyOwner {}
 }

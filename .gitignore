@@ -33,3 +33,10 @@ NUL
 # Tauri
 app/src-tauri/target/
 app/src-tauri/data/
+
+# Bundled sidecar binaries (downloaded via scripts/download-ffmpeg.sh)
+app/src-tauri/binaries/*
+!app/src-tauri/binaries/.gitkeep
+
+# Test assets
+test_video/

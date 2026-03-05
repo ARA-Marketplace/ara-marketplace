@@ -13,6 +13,7 @@ fn test_addresses() -> ContractAddresses {
         marketplace: address!("D7992b6A863FBacE3BB58BFE5D31EAe580adF4E0"),
         collections: address!("59453f1f12D10e4B4210fae8188d666011292997"),
         name_registry: address!("DA5827A8659271C44174894bbA403FD264198C5d"),
+        moderation: Address::ZERO,
     }
 }
 

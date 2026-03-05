@@ -491,13 +491,23 @@ function Library() {
                             {item.updated_at !== null && (
                               <span className="badge-blue">Updated</span>
                             )}
+                            {item.arweave_url && (
+                              <a href={item.arweave_url} target="_blank" rel="noopener noreferrer"
+                                title="View on Arweave"
+                                className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 hover:bg-amber-200 dark:hover:bg-amber-900/40 transition-colors">
+                                Arweave
+                              </a>
+                            )}
                           </div>
                         </td>
                         <td className="px-4 py-3 text-right text-slate-500 dark:text-slate-400">
                           {fmtBytes(item.file_size_bytes)}
                         </td>
                         <td className="px-4 py-3 text-right text-slate-600 dark:text-slate-300 font-medium">
-                          {item.price_eth} ETH
+                          <span title={`${item.price_display} ${item.price_symbol}`}>
+                            {item.price_display.length > 10 ? item.price_display.slice(0, 10) + "…" : item.price_display}
+                          </span>{" "}
+                          <span className="text-xs text-slate-400">{item.price_symbol}</span>
                         </td>
                         <td className="px-4 py-3 text-right">
                           {rd ? (

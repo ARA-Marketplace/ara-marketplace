@@ -2,6 +2,7 @@ pub mod analytics;
 pub mod collections;
 pub mod content;
 pub mod marketplace;
+pub mod moderation;
 pub mod names;
 pub mod seeding;
 pub mod staking;

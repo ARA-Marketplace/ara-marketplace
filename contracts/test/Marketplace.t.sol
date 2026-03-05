@@ -62,7 +62,7 @@ contract MarketplaceTest is DeployHelper {
         uint256 stakingBalBefore = address(staking).balance;
 
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         assertTrue(marketplace.hasPurchased(contentId, buyer));
         assertEq(marketplace.getPurchaserCount(contentId), 1);
@@ -82,7 +82,7 @@ contract MarketplaceTest is DeployHelper {
 
     function test_PurchaseMintsERC1155Token() public {
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         // Buyer should now hold 1 ERC-1155 token
         assertEq(contentToken.balanceOf(buyer, uint256(contentId)), 1);
@@ -92,14 +92,14 @@ contract MarketplaceTest is DeployHelper {
     function test_RevertPurchaseInsufficientPayment() public {
         vm.prank(buyer);
         vm.expectRevert();
-        marketplace.purchase{value: 0.01 ether}(contentId);
+        marketplace.purchase{value: 0.01 ether}(contentId, type(uint256).max);
     }
 
     function test_RevertDoublePurchase() public {
         vm.startPrank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
         vm.expectRevert();
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
         vm.stopPrank();
     }
 
@@ -109,7 +109,7 @@ contract MarketplaceTest is DeployHelper {
 
         vm.prank(buyer);
         vm.expectRevert();
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
     }
 
     function test_OverpaymentRefund() public {
@@ -117,7 +117,7 @@ contract MarketplaceTest is DeployHelper {
         uint256 buyerBalanceBefore = buyer.balance;
 
         vm.prank(buyer);
-        marketplace.purchase{value: overpayment}(contentId);
+        marketplace.purchase{value: overpayment}(contentId, type(uint256).max);
 
         assertEq(buyerBalanceBefore - buyer.balance, contentPrice);
     }
@@ -126,7 +126,7 @@ contract MarketplaceTest is DeployHelper {
 
     function test_ClaimDeliveryReward() public {
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         uint256 rewardBefore = marketplace.getBuyerReward(contentId, buyer);
         assertTrue(rewardBefore > 0);
@@ -145,7 +145,7 @@ contract MarketplaceTest is DeployHelper {
 
     function test_ClaimDeliveryRewardPartialBytes() public {
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         uint256 rewardBefore = marketplace.getBuyerReward(contentId, buyer);
         uint256 halfFileSize = fileSize / 2;
@@ -165,7 +165,7 @@ contract MarketplaceTest is DeployHelper {
 
     function test_ClaimRevertInvalidSignature() public {
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         uint256 wrongKey = 0xDEAD;
         uint256 ts = block.timestamp;
@@ -188,7 +188,7 @@ contract MarketplaceTest is DeployHelper {
 
     function test_ClaimReplayProtection() public {
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         uint256 ts = block.timestamp;
         bytes memory sig = _signReceipt(buyerPrivKey, contentId, seeder1, fileSize, ts);
@@ -205,7 +205,7 @@ contract MarketplaceTest is DeployHelper {
 
     function test_TwoSeedersProportionalClaim() public {
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         uint256 originalReward = marketplace.getBuyerReward(contentId, buyer);
         uint256 ts = block.timestamp;
@@ -242,9 +242,9 @@ contract MarketplaceTest is DeployHelper {
         vm.deal(buyer2, 10 ether);
 
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
         vm.prank(buyer2);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         uint256 reward1 = marketplace.getBuyerReward(contentId, buyer);
         uint256 reward2 = marketplace.getBuyerReward(contentId, buyer2);
@@ -281,7 +281,7 @@ contract MarketplaceTest is DeployHelper {
 
     function test_BatchClaimSkipsInvalid() public {
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         uint256 ts = block.timestamp;
         bytes memory validSig = _signReceipt(buyerPrivKey, contentId, seeder1, fileSize, ts);
@@ -315,7 +315,7 @@ contract MarketplaceTest is DeployHelper {
 
     function test_ListForResale() public {
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         uint256 resalePrice = 0.2 ether;
         vm.prank(buyer);
@@ -328,7 +328,7 @@ contract MarketplaceTest is DeployHelper {
 
     function test_CancelListing() public {
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         vm.startPrank(buyer);
         marketplace.listForResale(contentId, 0.2 ether);
@@ -342,7 +342,7 @@ contract MarketplaceTest is DeployHelper {
     function test_BuyResale() public {
         // 1. Buyer purchases
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         // 2. Buyer lists for resale
         uint256 resalePrice = 0.2 ether;
@@ -359,7 +359,7 @@ contract MarketplaceTest is DeployHelper {
         uint256 creatorBalBefore = creator.balance;
 
         vm.prank(buyer2);
-        marketplace.buyResale{value: resalePrice}(contentId, buyer);
+        marketplace.buyResale{value: resalePrice}(contentId, buyer, type(uint256).max);
 
         // Verify token transferred
         assertEq(contentToken.balanceOf(buyer, uint256(contentId)), 0);
@@ -388,7 +388,7 @@ contract MarketplaceTest is DeployHelper {
 
         // 1. Original buyer purchases
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         // 2. Original buyer lists for resale
         uint256 resalePrice = 0.2 ether;
@@ -403,7 +403,7 @@ contract MarketplaceTest is DeployHelper {
         vm.deal(buyer2, 10 ether);
 
         vm.prank(buyer2);
-        marketplace.buyResale{value: resalePrice}(contentId, buyer);
+        marketplace.buyResale{value: resalePrice}(contentId, buyer, type(uint256).max);
 
         // 4. Seeder claims reward from resale buyer
         uint256 buyer2Reward = marketplace.getBuyerReward(contentId, buyer2);
@@ -427,7 +427,7 @@ contract MarketplaceTest is DeployHelper {
 
         // 1. Buyer purchases
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         uint256 originalReward = marketplace.getBuyerReward(contentId, buyer);
 
@@ -440,7 +440,7 @@ contract MarketplaceTest is DeployHelper {
         address buyer2 = makeAddr("buyer2");
         vm.deal(buyer2, 10 ether);
         vm.prank(buyer2);
-        marketplace.buyResale{value: 0.2 ether}(contentId, buyer);
+        marketplace.buyResale{value: 0.2 ether}(contentId, buyer, type(uint256).max);
 
         // 3. Original buyer no longer holds token
         assertEq(contentToken.balanceOf(buyer, uint256(contentId)), 0);
@@ -465,13 +465,13 @@ contract MarketplaceTest is DeployHelper {
 
         vm.prank(buyer2);
         vm.expectRevert(Marketplace.NoActiveListing.selector);
-        marketplace.buyResale{value: 1 ether}(contentId, buyer);
+        marketplace.buyResale{value: 1 ether}(contentId, buyer, type(uint256).max);
     }
 
     function test_RevertBuyResaleSellerTransferredToken() public {
         // Buyer lists, then transfers token directly, then someone tries to buy the listing
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         vm.startPrank(buyer);
         contentToken.setApprovalForAll(address(marketplace), true);
@@ -486,7 +486,7 @@ contract MarketplaceTest is DeployHelper {
 
         vm.prank(buyer2);
         vm.expectRevert(Marketplace.NotTokenOwner.selector);
-        marketplace.buyResale{value: 0.2 ether}(contentId, buyer);
+        marketplace.buyResale{value: 0.2 ether}(contentId, buyer, type(uint256).max);
     }
 
     // ======== Full lifecycle ========
@@ -494,7 +494,7 @@ contract MarketplaceTest is DeployHelper {
     function test_FullLifecycle() public {
         // 1. Purchase
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
         assertTrue(marketplace.hasPurchased(contentId, buyer));
         assertEq(contentToken.balanceOf(buyer, uint256(contentId)), 1);
 
@@ -530,23 +530,23 @@ contract MarketplaceTest is DeployHelper {
 
         // First two purchases succeed
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(limitedId);
+        marketplace.purchase{value: contentPrice}(limitedId, type(uint256).max);
         vm.prank(buyer2);
-        marketplace.purchase{value: contentPrice}(limitedId);
+        marketplace.purchase{value: contentPrice}(limitedId, type(uint256).max);
 
         assertEq(contentToken.getTotalMinted(limitedId), 2);
 
         // Third purchase should fail (sold out)
         vm.prank(buyer3);
         vm.expectRevert(AraContent.EditionSoldOut.selector);
-        marketplace.purchase{value: contentPrice}(limitedId);
+        marketplace.purchase{value: contentPrice}(limitedId, type(uint256).max);
     }
 
     // ======== View functions ========
 
     function test_GetBuyerReward() public {
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         uint256 expectedReward = contentPrice - (contentPrice * CREATOR_SHARE_BPS) / 10_000
             - (contentPrice * STAKER_REWARD_BPS) / 10_000;
@@ -557,7 +557,7 @@ contract MarketplaceTest is DeployHelper {
         assertFalse(marketplace.checkPurchase(contentId, buyer));
 
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         assertTrue(marketplace.checkPurchase(contentId, buyer));
     }
@@ -568,7 +568,7 @@ contract MarketplaceTest is DeployHelper {
         uint256 stakingBalBefore = address(staking).balance;
 
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         uint256 expectedStakerReward = (contentPrice * STAKER_REWARD_BPS) / 10_000;
         assertEq(address(staking).balance - stakingBalBefore, expectedStakerReward);
@@ -582,7 +582,7 @@ contract MarketplaceTest is DeployHelper {
 
         // Purchase happens
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         uint256 stakerReward = (contentPrice * STAKER_REWARD_BPS) / 10_000;
 
@@ -606,7 +606,7 @@ contract MarketplaceTest is DeployHelper {
         uint256 marketplaceBalBefore = address(marketplace).balance;
 
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         uint256 creatorReceived = creator.balance - creatorBalBefore;
         uint256 stakerReceived = address(staking).balance - stakingBalBefore;
@@ -640,7 +640,7 @@ contract MarketplaceTest is DeployHelper {
     function test_ResaleForwardsStakerReward() public {
         // 1. Buyer purchases
         vm.prank(buyer);
-        marketplace.purchase{value: contentPrice}(contentId);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
 
         // 2. Buyer lists for resale
         uint256 resalePrice = 0.2 ether;
@@ -656,7 +656,7 @@ contract MarketplaceTest is DeployHelper {
         uint256 stakingBalBefore = address(staking).balance;
 
         vm.prank(buyer2);
-        marketplace.buyResale{value: resalePrice}(contentId, buyer);
+        marketplace.buyResale{value: resalePrice}(contentId, buyer, type(uint256).max);
 
         // Verify 1% of resale price was forwarded to staking
         uint256 expectedStakerReward = (resalePrice * RESALE_STAKER_REWARD_BPS) / 10_000;

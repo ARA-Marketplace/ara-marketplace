@@ -237,6 +237,7 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                     &categories_json,
                     max_supply_i64,
                     0, // royalty_bps not available from event; fetched on-demand via get_edition_info
+                    "", // payment_token not in event; defaults to ETH, updated on-demand
                 ) {
                     Ok(n) if n > 0 => {
                         new_count += 1;

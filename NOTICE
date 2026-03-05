@@ -1,0 +1,27 @@
+Ara Marketplace
+Copyright 2024-2026 AraBlocks
+
+This product is licensed under the Business Source License 1.1.
+See the LICENSE file for full license text.
+
+This product includes software developed by third parties:
+
+- OpenZeppelin Contracts (MIT License)
+  https://github.com/OpenZeppelin/openzeppelin-contracts
+  Copyright (c) 2016-2024 zOS Global Limited and contributors
+
+- Foundry / forge-std (MIT License)
+  https://github.com/foundry-rs/forge-std
+  Copyright (c) 2022 Foundry Contributors
+
+- alloy (MIT/Apache-2.0 License)
+  https://github.com/alloy-rs/alloy
+  Copyright (c) 2024 Alloy Contributors
+
+- iroh (MIT/Apache-2.0 License)
+  https://github.com/n0-computer/iroh
+  Copyright (c) 2023 n0, inc.
+
+- Tauri (MIT/Apache-2.0 License)
+  https://github.com/tauri-apps/tauri
+  Copyright (c) 2019-2024 Tauri Programme within The Commons Conservancy

@@ -1,0 +1,84 @@
+name: Contracts CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "contracts/**"
+      - ".github/workflows/contracts.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "contracts/**"
+      - ".github/workflows/contracts.yml"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Build contracts
+        run: forge build --sizes
+
+      - name: Run tests
+        run: forge test -vvv --no-match-test "Fork|fork"
+
+      - name: Run fuzz tests (10,000 runs)
+        run: forge test --match-path "test/FuzzEconomics.t.sol" --fuzz-runs 10000 -vv
+
+      - name: Run invariant tests
+        run: forge test --match-path "test/Invariants.t.sol" -vv
+
+      - name: Check gas snapshot
+        run: forge snapshot --no-match-test "Fork|fork" --check || true
+
+  coverage:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Generate coverage report
+        run: forge coverage --no-match-test "Fork|fork" --report summary
+
+  slither:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Build for Slither
+        run: forge build
+
+      - name: Run Slither
+        uses: crytic/slither-action@v0.4.0
+        with:
+          target: contracts
+          slither-config: contracts/slither.config.json
+          fail-on: high

@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, type DragEvent } from "react";
+import { useState, useEffect, useCallback, useRef, type DragEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   publishContent,
   confirmPublish,
@@ -9,8 +10,11 @@ import {
   confirmCreateCollection,
   addToCollection,
   confirmAddToCollection,
+  getSupportedTokens,
+  prepareArweaveUpload,
+  executeArweaveUpload,
 } from "../lib/tauri";
-import type { CollectionInfo } from "../lib/tauri";
+import type { CollectionInfo, SupportedToken } from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
 import {
   useWeb3Modal,
@@ -34,7 +38,7 @@ const STEP_LABELS: Record<PublishStep, string> = {
 function Publish() {
   const navigate = useNavigate();
   const { open: openModal } = useWeb3Modal();
-  const { isConnected } = useWeb3ModalAccount();
+  const { isConnected, address } = useWeb3ModalAccount();
   const { walletProvider } = useWeb3ModalProvider();
 
   const [title, setTitle] = useState("");
@@ -54,6 +58,40 @@ function Publish() {
   const [error, setError] = useState<string | null>(null);
   const [resultHash, setResultHash] = useState<string | null>(null);
 
+  // Payment token state
+  const [paymentToken, setPaymentToken] = useState<string | null>(null); // null = ETH
+  const [supportedTokens, setSupportedTokens] = useState<SupportedToken[]>([]);
+
+  // Collaborator revenue splits
+  const [splitMode, setSplitMode] = useState<"solo" | "split">("solo");
+  const [collaborators, setCollaborators] = useState<{ wallet: string; percent: string }[]>([]);
+
+  // Arweave permanent storage
+  const [enableArweave, setEnableArweave] = useState(false);
+  const [arweaveStatus, setArweaveStatus] = useState<string | null>(null);
+  const unlistenRef = useRef<UnlistenFn | null>(null);
+
+  // Listen for real-time Arweave progress events from the backend
+  useEffect(() => {
+    let cancelled = false;
+    listen<{ step: string; detail: string }>("arweave-progress", (event) => {
+      if (!cancelled) {
+        setArweaveStatus(event.payload.detail);
+      }
+    }).then((unlisten) => {
+      if (cancelled) {
+        unlisten();
+      } else {
+        unlistenRef.current = unlisten;
+      }
+    });
+    return () => {
+      cancelled = true;
+      unlistenRef.current?.();
+      unlistenRef.current = null;
+    };
+  }, []);
+
   // Collection state
   const [collectionChoice, setCollectionChoice] = useState<"none" | "existing" | "new">("none");
   const [selectedCollectionId, setSelectedCollectionId] = useState<number | null>(null);
@@ -69,6 +107,11 @@ function Publish() {
       getMyCollections().then(setCollections).catch(() => {});
     }
   }, [isConnected]);
+
+  // Fetch supported tokens on mount
+  useEffect(() => {
+    getSupportedTokens().then(setSupportedTokens).catch(() => {});
+  }, []);
 
   const selectFile = async () => {
     const selected = await open({ multiple: false, directory: false, title: "Select content file" });
@@ -135,7 +178,13 @@ function Publish() {
   }, []);
 
   const fileName = filePath ? filePath.split(/[\\/]/).pop() ?? filePath : null;
-  const canPublish = filePath && title.trim() && priceEth.trim() && isForm;
+  const splitsValid = splitMode === "solo" || (
+    collaborators.length >= 2 &&
+    collaborators.length <= 5 &&
+    collaborators.every((c) => /^0x[a-fA-F0-9]{40}$/.test(c.wallet)) &&
+    Math.abs(collaborators.reduce((s, c) => s + (parseFloat(c.percent) || 0), 0) - 100) < 0.01
+  );
+  const canPublish = filePath && title.trim() && priceEth.trim() && isForm && splitsValid;
 
   const handlePublish = async () => {
     if (!filePath || !title.trim() || !priceEth.trim()) return;
@@ -180,6 +229,14 @@ function Publish() {
       const parsedRoyaltyBps = royaltyPercent.trim()
         ? Math.round(parseFloat(royaltyPercent.trim()) * 100)
         : undefined;
+      // Build collaborator list (convert percentages to basis points)
+      const collabInput = splitMode === "split" && collaborators.length > 0
+        ? collaborators.map((c) => ({
+            wallet: c.wallet.trim(),
+            shareBps: Math.round(parseFloat(c.percent) * 100),
+          }))
+        : undefined;
+
       const result = await publishContent({
         filePath,
         title: title.trim(),
@@ -192,6 +249,8 @@ function Publish() {
         mainPreviewImagePath: mainPreviewImagePath ?? undefined,
         mainPreviewTrailerPath: mainPreviewTrailerPath ?? undefined,
         previewPaths: previewPaths.length > 0 ? previewPaths : undefined,
+        paymentToken: paymentToken ?? undefined,
+        collaborators: collabInput,
       });
       setResultHash(result.content_hash);
 
@@ -209,6 +268,29 @@ function Publish() {
       } else {
         setStep("confirming");
         contentId = await confirmPublish(result.content_hash, "0x0");
+      }
+
+      // Arweave permanent storage (best-effort, non-fatal)
+      // Backend emits "arweave-progress" events for real-time step updates.
+      if (enableArweave && contentId) {
+        try {
+          if (!walletProvider) {
+            setArweaveStatus("Arweave skipped: wallet disconnected");
+          } else {
+            setArweaveStatus("Preparing Arweave permanent storage...");
+            const plan = await prepareArweaveUpload(contentId);
+            setArweaveStatus(`Approve in wallet: fund Arweave storage (${plan.cost_eth} ETH)`);
+            const fundTxHash = await signAndSendTransactions(walletProvider, plan.transactions);
+            // Progress updates now come from backend events; final result updates here
+            const arResult = await executeArweaveUpload(contentId, fundTxHash);
+            setArweaveStatus(`Permanently stored: ${arResult.arweave_tx_id.slice(0, 12)}... (devnet.irys.xyz/${arResult.arweave_tx_id})`);
+          }
+        } catch (arErr: unknown) {
+          const msg = arErr instanceof Error ? arErr.message
+            : typeof arErr === "string" ? arErr
+            : (arErr as { message?: string })?.message ?? JSON.stringify(arErr);
+          setArweaveStatus(`Arweave upload failed: ${msg}`);
+        }
       }
 
       // Add to collection if requested
@@ -231,8 +313,11 @@ function Publish() {
 
       setStep("done");
       setTimeout(() => navigate("/library"), 1500);
-    } catch (err) {
-      setError(String(err));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message
+        : typeof err === "string" ? err
+        : (err as { message?: string })?.message ?? JSON.stringify(err);
+      setError(msg);
       setStep("form");
     }
   };
@@ -242,7 +327,7 @@ function Publish() {
       <div className="mb-6">
         <h1 className="page-title">Publish Content</h1>
         <p className="page-subtitle">
-          Share your content with the world. You'll earn 85% of every purchase in ETH.
+          Share your content with the world. You'll earn 85% of every purchase.
         </p>
       </div>
 
@@ -276,9 +361,24 @@ function Publish() {
             </select>
           </div>
           <div>
-            <label className="label">Price (ETH)</label>
-            <input type="text" value={priceEth} onChange={(e) => setPriceEth(e.target.value)}
-              disabled={!isForm} placeholder="0.01" className="input-base" />
+            <label className="label">
+              Price ({paymentToken ? supportedTokens.find(t => t.address === paymentToken)?.symbol ?? "Token" : "ETH"})
+            </label>
+            <div className="flex gap-2">
+              <input type="text" value={priceEth} onChange={(e) => setPriceEth(e.target.value)}
+                disabled={!isForm} placeholder="0.01" className="input-base flex-1" />
+              <select
+                value={paymentToken ?? ""}
+                onChange={(e) => setPaymentToken(e.target.value || null)}
+                disabled={!isForm}
+                className="input-base w-auto text-sm"
+              >
+                <option value="">ETH</option>
+                {supportedTokens.map((t) => (
+                  <option key={t.address} value={t.address}>{t.symbol}</option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 
@@ -358,6 +458,115 @@ function Publish() {
               <span className="text-xs text-slate-500 dark:text-slate-500">% earned on every resale</span>
             </div>
           </div>
+        </div>
+
+        {/* Revenue Splits */}
+        <div className="card p-5 space-y-4">
+          <div>
+            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">Revenue Splits</p>
+            <p className="text-xs text-slate-500 dark:text-slate-500 mt-0.5">Split purchase revenue with collaborators. Splits are immutable after publishing.</p>
+          </div>
+
+          <div className="flex gap-2">
+            <button type="button" disabled={!isForm}
+              onClick={() => { setSplitMode("solo"); setCollaborators([]); }}
+              className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50 ${
+                splitMode === "solo"
+                  ? "bg-ara-600 border-ara-600 text-white"
+                  : "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-ara-400 dark:hover:border-ara-600 bg-white dark:bg-slate-900"
+              }`}>
+              Solo
+            </button>
+            <button type="button" disabled={!isForm}
+              onClick={() => {
+                setSplitMode("split");
+                if (collaborators.length === 0) {
+                  setCollaborators([{ wallet: address ?? "", percent: "100" }]);
+                }
+              }}
+              className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium border transition-colors disabled:opacity-50 ${
+                splitMode === "split"
+                  ? "bg-ara-600 border-ara-600 text-white"
+                  : "border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-ara-400 dark:hover:border-ara-600 bg-white dark:bg-slate-900"
+              }`}>
+              Split Revenue
+            </button>
+          </div>
+
+          {splitMode === "split" && (
+            <div className="space-y-3">
+              {collaborators.map((collab, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={collab.wallet}
+                    onChange={(e) => {
+                      const updated = [...collaborators];
+                      updated[i] = { ...updated[i], wallet: e.target.value };
+                      setCollaborators(updated);
+                    }}
+                    disabled={!isForm}
+                    placeholder="0x..."
+                    className={`input-base flex-1 font-mono text-xs ${
+                      collab.wallet && !/^0x[a-fA-F0-9]{40}$/.test(collab.wallet)
+                        ? "border-red-400 dark:border-red-600"
+                        : ""
+                    }`}
+                  />
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min="0.01"
+                      max="100"
+                      step="0.01"
+                      value={collab.percent}
+                      onChange={(e) => {
+                        const updated = [...collaborators];
+                        updated[i] = { ...updated[i], percent: e.target.value };
+                        setCollaborators(updated);
+                      }}
+                      disabled={!isForm}
+                      className="input-base w-20 text-right"
+                    />
+                    <span className="text-xs text-slate-500">%</span>
+                  </div>
+                  {collaborators.length > 1 && (
+                    <button type="button" disabled={!isForm}
+                      onClick={() => setCollaborators(collaborators.filter((_, j) => j !== i))}
+                      className="p-1.5 text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50"
+                      title="Remove collaborator">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              ))}
+
+              {/* Validation feedback */}
+              {(() => {
+                const total = collaborators.reduce((sum, c) => sum + (parseFloat(c.percent) || 0), 0);
+                const hasInvalidAddr = collaborators.some((c) => c.wallet && !/^0x[a-fA-F0-9]{40}$/.test(c.wallet));
+                return (
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs space-x-3">
+                      <span className={Math.abs(total - 100) < 0.01 ? "text-green-600 dark:text-green-400" : "text-red-500"}>
+                        Total: {total.toFixed(2)}%{Math.abs(total - 100) >= 0.01 && " (must equal 100%)"}
+                      </span>
+                      {hasInvalidAddr && (
+                        <span className="text-red-500">Invalid address</span>
+                      )}
+                    </div>
+                    <button type="button" disabled={!isForm || collaborators.length >= 5}
+                      onClick={() => setCollaborators([...collaborators, { wallet: "", percent: "" }])}
+                      className="text-xs text-ara-600 dark:text-ara-400 hover:text-ara-700 dark:hover:text-ara-300 font-medium disabled:opacity-40 disabled:cursor-not-allowed">
+                      + Add Collaborator {collaborators.length >= 5 && "(max 5)"}
+                    </button>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
         </div>
 
         {/* Content file drop zone */}
@@ -462,6 +671,41 @@ function Publish() {
           </div>
         </div>
 
+        {/* Permanent Storage (Arweave) */}
+        <div className="card p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">Permanent Storage</p>
+              <p className="text-xs text-slate-500 dark:text-slate-500 mt-0.5">
+                Back up content to Arweave for permanent availability, even if all seeders go offline
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setEnableArweave(!enableArweave)}
+              disabled={!isForm}
+              className={`relative w-11 h-6 rounded-full transition-colors disabled:opacity-50 ${
+                enableArweave
+                  ? "bg-ara-600"
+                  : "bg-slate-300 dark:bg-slate-700"
+              }`}
+            >
+              <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                enableArweave ? "translate-x-5" : "translate-x-0"
+              }`} />
+            </button>
+          </div>
+          {enableArweave && (
+            <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-2">
+              Arweave upload will run after publish. A small fee (paid in ETH to Irys) covers permanent storage.
+              Cost scales with file size — not recommended for files over 100 MB.
+            </p>
+          )}
+          {arweaveStatus && (
+            <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">{arweaveStatus}</p>
+          )}
+        </div>
+
         {/* Collection */}
         <div className="card p-5 space-y-4">
           <div>
@@ -536,6 +780,27 @@ function Publish() {
           <div className="alert-success">
             <p className="font-medium">Published successfully!</p>
             <p className="mt-1 break-all text-xs opacity-80">Content hash: {resultHash}</p>
+          </div>
+        )}
+
+        {/* Transaction count heads-up */}
+        {isForm && canPublish && (enableArweave || collectionChoice !== "none") && (
+          <div className="bg-slate-800/50 border border-slate-700 rounded-lg px-4 py-3">
+            <p className="text-xs text-slate-300 font-medium">
+              Wallet approvals needed:{" "}
+              <span className="text-amber-400 font-bold">
+                {1 + (enableArweave ? 1 : 0) + (collectionChoice !== "none" ? 1 : 0) + (collectionChoice === "new" ? 1 : 0)}
+              </span>
+            </p>
+            <ul className="text-[10px] text-slate-400 mt-1 space-y-0.5 list-disc list-inside">
+              {collectionChoice === "new" && <li>Create new collection</li>}
+              <li>Publish content to blockchain</li>
+              {enableArweave && <li>Fund Arweave permanent storage (small ETH fee)</li>}
+              {collectionChoice !== "none" && <li>Add to collection</li>}
+            </ul>
+            <p className="text-[10px] text-slate-500 mt-1">
+              Keep your wallet open — each step requires a separate approval.
+            </p>
           </div>
         )}
 

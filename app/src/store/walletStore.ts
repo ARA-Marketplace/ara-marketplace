@@ -7,6 +7,7 @@ import {
   stakeAra as stakeAraIpc,
   unstakeAra as unstakeAraIpc,
   claimStakingReward as claimStakingRewardIpc,
+  claimTokenStakingReward as claimTokenStakingRewardIpc,
   syncRewards as syncRewardsIpc,
 } from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
@@ -24,6 +25,7 @@ interface WalletState {
 
   // Passive staker rewards
   stakerRewardEarned: string;
+  tokenRewards: Array<{ token_address: string; symbol: string; earned: string }>;
 
   // Loading / error state
   isLoadingBalances: boolean;
@@ -38,6 +40,7 @@ interface WalletState {
   stakeAra: (amount: string, walletProvider: Eip1193Provider) => Promise<string>;
   unstakeAra: (amount: string, walletProvider: Eip1193Provider) => Promise<string>;
   claimStakingReward: (walletProvider: Eip1193Provider) => Promise<string>;
+  claimTokenStakingReward: (tokenAddress: string, walletProvider: Eip1193Provider) => Promise<string>;
   clearError: () => void;
   clearTxStatus: () => void;
 }
@@ -49,6 +52,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   araBalance: "0",
   araStaked: "0",
   stakerRewardEarned: "0",
+  tokenRewards: [],
   isLoadingBalances: false,
   isSendingTx: false,
   txStatus: null,
@@ -83,6 +87,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       araBalance: "0",
       araStaked: "0",
       stakerRewardEarned: "0",
+      tokenRewards: [],
       txStatus: null,
       error: null,
     });
@@ -102,6 +107,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         araBalance: balances.ara_balance,
         araStaked: stakeInfo.total_staked,
         stakerRewardEarned: stakeInfo.staker_reward_earned,
+        tokenRewards: stakeInfo.token_rewards ?? [],
         isLoadingBalances: false,
       });
     } catch (e) {
@@ -162,6 +168,24 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       return txHash;
     } catch (e) {
       set({ error: `Claim failed: ${e}`, isSendingTx: false, txStatus: null });
+      throw e;
+    }
+  },
+
+  claimTokenStakingReward: async (tokenAddress: string, walletProvider: Eip1193Provider) => {
+    set({ isSendingTx: true, txStatus: "Building token claim transaction...", error: null });
+    try {
+      const txRequests = await claimTokenStakingRewardIpc(tokenAddress);
+      const txHash = await signAndSendTransactions(
+        walletProvider,
+        txRequests,
+        (msg) => set({ txStatus: msg })
+      );
+      set({ txStatus: `Claimed successfully! Tx: ${txHash.slice(0, 10)}…`, isSendingTx: false });
+      await get().refreshBalances();
+      return txHash;
+    } catch (e) {
+      set({ error: `Token claim failed: ${e}`, isSendingTx: false, txStatus: null });
       throw e;
     }
   },

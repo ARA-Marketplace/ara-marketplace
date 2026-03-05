@@ -116,7 +116,7 @@ contract FullFlowForkTest is Test {
 
         uint256 creatorBalBefore = creator.balance;
         vm.prank(buyer);
-        marketplace.purchase{value: 0.1 ether}(contentId);
+        marketplace.purchase{value: 0.1 ether}(contentId, type(uint256).max);
         assertTrue(marketplace.hasPurchased(contentId, buyer));
         assertEq(contentToken.balanceOf(buyer, uint256(contentId)), 1);
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-3.0
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
@@ -9,6 +9,11 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeab
 ///         display name (max 32 chars, alphanumeric + hyphens + underscores).
 ///         Names are globally visible after sync, replacing raw wallet addresses.
 contract AraNameRegistry is Initializable, UUPSUpgradeable {
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
     address public owner;
 
     /// @notice address => display name
@@ -19,6 +24,9 @@ contract AraNameRegistry is Initializable, UUPSUpgradeable {
 
     event NameRegistered(address indexed user, string name);
     event NameRemoved(address indexed user, string oldName);
+
+    // === V2: Security hardening ===
+    address public pendingOwner;
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Not owner");
@@ -111,6 +119,20 @@ contract AraNameRegistry is Initializable, UUPSUpgradeable {
         }
         return true;
     }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "Zero address");
+        pendingOwner = newOwner;
+    }
+
+    function acceptOwnership() external {
+        require(msg.sender == pendingOwner, "Not pending owner");
+        owner = msg.sender;
+        pendingOwner = address(0);
+    }
+
+    /// @dev Reserved storage for future upgrades
+    uint256[50] private __gap;
 
     function _authorizeUpgrade(address) internal override onlyOwner {}
 }

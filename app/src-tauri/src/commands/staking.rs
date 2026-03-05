@@ -1,4 +1,4 @@
-use crate::commands::types::{format_wei, hex_encode, parse_token_amount, TransactionRequest};
+use crate::commands::types::{format_token_amount, format_wei, hex_encode, parse_token_amount, TransactionRequest};
 use crate::state::AppState;
 use alloy::primitives::{Address, Bytes, FixedBytes, TxHash, U256};
 use alloy::providers::{Provider, ProviderBuilder};
@@ -20,6 +20,22 @@ pub struct StakeInfo {
     pub staker_reward_earned: String,
     /// Total stake used for reward weight (general + content-allocated)
     pub total_user_stake: String,
+    /// Unclaimed token staking rewards (one entry per supported token with non-zero balance)
+    pub token_rewards: Vec<TokenRewardInfo>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct TokenRewardInfo {
+    pub token_address: String,
+    pub symbol: String,
+    pub earned: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SupportedTokenInfo {
+    pub address: String,
+    pub symbol: String,
+    pub decimals: u8,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -182,13 +198,45 @@ pub async fn get_stake_info(state: State<'_, AppState>) -> Result<StakeInfo, Str
         .await
         .unwrap_or(U256::ZERO);
 
+    // Query token rewards for each supported token
+    let mut token_rewards = Vec::new();
+    for token_cfg in &state.config.ethereum.supported_tokens {
+        if let Ok(token_addr) = token_cfg.address.parse::<Address>() {
+            let token_earned = chain
+                .staking
+                .earned_token(address, token_addr)
+                .await
+                .unwrap_or(U256::ZERO);
+            if !token_earned.is_zero() {
+                token_rewards.push(TokenRewardInfo {
+                    token_address: token_cfg.address.clone(),
+                    symbol: token_cfg.symbol.clone(),
+                    earned: format_token_amount(token_earned, token_cfg.decimals),
+                });
+            }
+        }
+    }
+
     Ok(StakeInfo {
         total_staked: format_wei(general_balance),
         general_balance: format_wei(general_balance),
         content_stakes: vec![],
         staker_reward_earned: format_wei(earned),
         total_user_stake: format_wei(total_user),
+        token_rewards,
     })
+}
+
+/// Get the list of supported payment tokens from config.
+#[tauri::command]
+pub async fn get_supported_tokens(
+    state: State<'_, AppState>,
+) -> Result<Vec<SupportedTokenInfo>, String> {
+    Ok(state.config.ethereum.supported_tokens.iter().map(|t| SupportedTokenInfo {
+        address: t.address.clone(),
+        symbol: t.symbol.clone(),
+        decimals: t.decimals,
+    }).collect())
 }
 
 // ── Passive staker reward claiming ──
@@ -235,6 +283,61 @@ pub async fn claim_staking_reward(
         data: hex_encode(&calldata),
         value: "0x0".to_string(),
         description: format!("Claim {} ETH staking rewards", format_wei(earned)),
+    }])
+}
+
+/// Build a transaction to claim ERC-20 token staking rewards.
+/// Same as `claim_staking_reward` but for rewards earned via token-priced purchases.
+#[tauri::command]
+pub async fn claim_token_staking_reward(
+    state: State<'_, AppState>,
+    token_address: String,
+) -> Result<Vec<TransactionRequest>, String> {
+    info!("Building claim token staking reward for token {}", token_address);
+
+    let wallet = state.wallet_address.lock().await;
+    let wallet_str = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    drop(wallet);
+
+    let staking_addr = state
+        .config
+        .ethereum
+        .staking_address
+        .parse::<Address>()
+        .map_err(|e| format!("Invalid staking address: {e}"))?;
+
+    let token_addr: Address = token_address
+        .parse()
+        .map_err(|e| format!("Invalid token address: {e}"))?;
+    let user_addr: Address = wallet_str
+        .parse()
+        .map_err(|e| format!("Invalid address: {e}"))?;
+
+    // Check if there's anything to claim
+    let chain = state.chain_client()?;
+    let earned = chain
+        .staking
+        .earned_token(user_addr, token_addr)
+        .await
+        .map_err(|e| format!("Query failed: {e}"))?;
+
+    if earned.is_zero() {
+        return Err("No token staking rewards to claim".to_string());
+    }
+
+    // Find token symbol and decimals from config
+    let token_cfg = state.config.ethereum.supported_tokens.iter()
+        .find(|t| t.address.eq_ignore_ascii_case(&token_address));
+    let symbol = token_cfg.map(|t| t.symbol.as_str()).unwrap_or("TOKEN");
+    let decimals = token_cfg.map(|t| t.decimals).unwrap_or(18);
+
+    let calldata = StakingClient::<()>::claim_token_reward_calldata(token_addr);
+
+    Ok(vec![TransactionRequest {
+        to: format!("{staking_addr:#x}"),
+        data: hex_encode(&calldata),
+        value: "0x0".to_string(),
+        description: format!("Claim {} {} staking rewards", format_token_amount(earned, decimals), symbol),
     }])
 }
 

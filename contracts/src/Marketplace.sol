@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: LGPL-3.0
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import {AraContent} from "./AraContent.sol";
 import {AraStaking} from "./AraStaking.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 
@@ -19,7 +22,9 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeab
 ///
 ///         Also supports marketplace-facilitated resales: sellers list tokens, buyers pay ETH,
 ///         creator gets royalty, seeders get reward share, seller gets the rest.
-contract Marketplace is Initializable, UUPSUpgradeable {
+contract Marketplace is Initializable, UUPSUpgradeable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     AraContent public contentToken;
     AraStaking public staking;
 
@@ -86,6 +91,14 @@ contract Marketplace is Initializable, UUPSUpgradeable {
     /// @notice Total ETH forwarded to staking contract for passive rewards (lifetime)
     uint256 public totalStakerRewardsForwarded;
 
+    // === V3: Multi-token payment support ===
+
+    /// @notice Whitelisted ERC-20 tokens that can be used for purchases
+    mapping(address => bool) public supportedTokens;
+
+    /// @notice Per-buyer reward token: contentId => buyer => token address used for purchase
+    mapping(bytes32 => mapping(address => address)) public buyerRewardToken;
+
     // --- Structs ---
 
     struct ClaimParams {
@@ -111,7 +124,7 @@ contract Marketplace is Initializable, UUPSUpgradeable {
         uint256 amount,
         uint256 bytesServed
     );
-    event RewardsClaimed(address indexed seeder, uint256 totalAmount, uint256 receiptCount);
+    event RewardsClaimed(address indexed seeder, uint256 totalEthAmount, uint256 totalTokenAmount, uint256 receiptCount);
     event CreatorShareUpdated(uint256 oldBps, uint256 newBps);
     event StakerRewardForwarded(bytes32 indexed contentId, uint256 amount);
     event ContentListed(bytes32 indexed contentId, address indexed seller, uint256 price);
@@ -140,6 +153,12 @@ contract Marketplace is Initializable, UUPSUpgradeable {
     error NotTokenOwner();
     error NotApproved();
     error EditionSoldOut();
+    error UnsupportedToken();
+    error TokenMismatch();
+    error ZeroAddress();
+
+    // === V4: Security hardening ===
+    address public pendingOwner;
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert OnlyOwner();
@@ -172,12 +191,16 @@ contract Marketplace is Initializable, UUPSUpgradeable {
     // ============================================================
 
     /// @notice Purchase content with ETH. Creator gets their share, rest is held for seeders.
+    ///         Only works for content priced in ETH (paymentToken = address(0)).
     /// @param contentId The content to purchase
-    function purchase(bytes32 contentId) external payable {
+    function purchase(bytes32 contentId, uint256 maxPrice) external payable nonReentrant {
         if (hasPurchased[contentId][msg.sender]) revert AlreadyPurchased();
         if (!contentToken.isActive(contentId)) revert ContentNotActive();
+        // Ensure content is priced in ETH, not an ERC-20 token
+        if (contentToken.getPaymentToken(contentId) != address(0)) revert TokenMismatch();
 
         uint256 price = contentToken.getPrice(contentId);
+        if (price > maxPrice) revert InsufficientPayment(maxPrice, price);
         if (msg.value < price) revert InsufficientPayment(msg.value, price);
 
         hasPurchased[contentId][msg.sender] = true;
@@ -188,10 +211,8 @@ contract Marketplace is Initializable, UUPSUpgradeable {
         uint256 stakerReward = (price * stakerRewardBps) / BPS_DENOMINATOR;
         uint256 rewardAmount = price - creatorPayment - stakerReward;
 
-        // Pay creator immediately
-        address creator = contentToken.getCreator(contentId);
-        (bool sent,) = payable(creator).call{value: creatorPayment}("");
-        if (!sent) revert TransferFailed();
+        // Pay creator (or split among collaborators)
+        _payCreatorETH(contentId, creatorPayment);
 
         totalCreatorPayments += creatorPayment;
 
@@ -223,36 +244,109 @@ contract Marketplace is Initializable, UUPSUpgradeable {
     }
 
     // ============================================================
+    //                     ERC-20 TOKEN PURCHASES (V3)
+    // ============================================================
+
+    /// @notice Purchase content with an ERC-20 token.
+    ///         The content must be priced in `token`, and `token` must be whitelisted.
+    ///         Buyer must approve this contract for `amount` of `token` first.
+    /// @param contentId The content to purchase
+    /// @param token The ERC-20 token to pay with
+    /// @param amount The amount of tokens to pay (must match content price)
+    function purchaseWithToken(bytes32 contentId, address token, uint256 amount) external nonReentrant {
+        if (hasPurchased[contentId][msg.sender]) revert AlreadyPurchased();
+        if (!contentToken.isActive(contentId)) revert ContentNotActive();
+        if (!supportedTokens[token]) revert UnsupportedToken();
+
+        // Verify the content is priced in this token
+        address expectedToken = contentToken.getPaymentToken(contentId);
+        if (expectedToken != token) revert TokenMismatch();
+
+        uint256 price = contentToken.getPrice(contentId);
+        if (amount < price) revert InsufficientPayment(amount, price);
+
+        hasPurchased[contentId][msg.sender] = true;
+        purchasers[contentId].push(msg.sender);
+
+        // Split: creator 85%, stakers 2.5%, seeders 12.5%
+        uint256 creatorPayment = (price * creatorShareBps) / BPS_DENOMINATOR;
+        uint256 stakerReward = (price * stakerRewardBps) / BPS_DENOMINATOR;
+        uint256 rewardAmount = price - creatorPayment - stakerReward;
+
+        // Transfer tokens from buyer to this contract
+        IERC20(token).safeTransferFrom(msg.sender, address(this), price);
+
+        // Pay creator (or split among collaborators)
+        _payCreatorToken(contentId, token, creatorPayment);
+        totalCreatorPayments += creatorPayment;
+
+        // Forward staker reward to staking contract as token reward
+        if (stakerReward > 0) {
+            if (staking.totalStaked() > 0) {
+                // Approve staking contract to pull tokens
+                IERC20(token).forceApprove(address(staking), stakerReward);
+                staking.addTokenReward(token, stakerReward);
+                totalStakerRewardsForwarded += stakerReward;
+                emit StakerRewardForwarded(contentId, stakerReward);
+            } else {
+                // No stakers — add to seeder pool
+                rewardAmount += stakerReward;
+            }
+        }
+
+        // Hold token reward for seeder claiming
+        buyerReward[contentId][msg.sender] = rewardAmount;
+        buyerRewardToken[contentId][msg.sender] = token;
+
+        // Mint ERC-1155 token to buyer
+        contentToken.mint(msg.sender, contentId);
+
+        emit ContentPurchased(contentId, msg.sender, price, creatorPayment, rewardAmount);
+    }
+
+    // ============================================================
     //                     REWARD CLAIMING
-    // (Identical logic to pre-ERC-1155 Marketplace — untouched)
     // ============================================================
 
     /// @notice Claim reward for delivering content to a single buyer.
     ///         The calling seeder submits a buyer-signed delivery receipt.
+    ///         Pays out in whatever token the buyer purchased with (ETH or ERC-20).
     function claimDeliveryReward(
         bytes32 contentId,
         address buyer,
         uint256 bytesServed,
         uint256 timestamp,
         bytes calldata signature
-    ) external {
+    ) external nonReentrant {
         uint256 payout = _verifyAndCalculateClaim(contentId, buyer, bytesServed, timestamp, signature);
         if (payout == 0) revert NoRewardsToClaim();
 
         totalRewardsClaimed += payout;
 
-        (bool sent,) = payable(msg.sender).call{value: payout}("");
-        if (!sent) revert TransferFailed();
+        // Pay in the token the buyer used for purchase (address(0) = ETH)
+        address rewardToken = buyerRewardToken[contentId][buyer];
+        if (rewardToken == address(0)) {
+            (bool sent,) = payable(msg.sender).call{value: payout}("");
+            if (!sent) revert TransferFailed();
+        } else {
+            IERC20(rewardToken).safeTransfer(msg.sender, payout);
+        }
 
         emit DeliveryRewardClaimed(contentId, msg.sender, buyer, payout, bytesServed);
-        emit RewardsClaimed(msg.sender, payout, 1);
+        if (rewardToken == address(0)) {
+            emit RewardsClaimed(msg.sender, payout, 0, 1);
+        } else {
+            emit RewardsClaimed(msg.sender, 0, payout, 1);
+        }
     }
 
     /// @notice Batch claim: submit multiple delivery receipts in one transaction.
     ///         All receipts must be for the calling seeder (msg.sender).
     ///         Invalid or already-claimed receipts are silently skipped.
-    function claimDeliveryRewards(ClaimParams[] calldata claims) external {
-        uint256 totalPayout = 0;
+    ///         Supports mixed ETH and token rewards — each claim pays in its original token.
+    function claimDeliveryRewards(ClaimParams[] calldata claims) external nonReentrant {
+        uint256 ethPayout = 0;
+        uint256 tokenPayout = 0;
         uint256 validCount = 0;
 
         for (uint256 i = 0; i < claims.length; i++) {
@@ -264,22 +358,33 @@ contract Marketplace is Initializable, UUPSUpgradeable {
                 claims[i].signature
             );
             if (payout > 0) {
-                totalPayout += payout;
                 validCount++;
+                totalRewardsClaimed += payout;
+
+                address rewardToken = buyerRewardToken[claims[i].contentId][claims[i].buyer];
+                if (rewardToken == address(0)) {
+                    ethPayout += payout;
+                } else {
+                    // Pay token immediately (can't aggregate different tokens)
+                    IERC20(rewardToken).safeTransfer(msg.sender, payout);
+                    tokenPayout += payout;
+                }
+
                 emit DeliveryRewardClaimed(
                     claims[i].contentId, msg.sender, claims[i].buyer, payout, claims[i].bytesServed
                 );
             }
         }
 
-        if (totalPayout == 0) revert NoRewardsToClaim();
+        if (validCount == 0) revert NoRewardsToClaim();
 
-        totalRewardsClaimed += totalPayout;
+        // Pay aggregated ETH
+        if (ethPayout > 0) {
+            (bool sent,) = payable(msg.sender).call{value: ethPayout}("");
+            if (!sent) revert TransferFailed();
+        }
 
-        (bool sent,) = payable(msg.sender).call{value: totalPayout}("");
-        if (!sent) revert TransferFailed();
-
-        emit RewardsClaimed(msg.sender, totalPayout, validCount);
+        emit RewardsClaimed(msg.sender, ethPayout, tokenPayout, validCount);
     }
 
     // ============================================================
@@ -303,9 +408,10 @@ contract Marketplace is Initializable, UUPSUpgradeable {
 
     /// @notice Buy a content token from a reseller.
     ///         Payment split: creator royalty + seeder reward + seller proceeds.
-    function buyResale(bytes32 contentId, address seller) external payable {
+    function buyResale(bytes32 contentId, address seller, uint256 maxPrice) external payable nonReentrant {
         Listing storage listing = listings[contentId][seller];
         if (!listing.active) revert NoActiveListing();
+        if (listing.price > maxPrice) revert InsufficientPayment(maxPrice, listing.price);
         if (msg.value < listing.price) revert InsufficientPayment(msg.value, listing.price);
 
         uint256 tokenId = uint256(contentId);
@@ -318,7 +424,7 @@ contract Marketplace is Initializable, UUPSUpgradeable {
         listing.active = false;
 
         // 1. Creator royalty (ERC-2981)
-        (address royaltyReceiver, uint256 royaltyAmount) = contentToken.royaltyInfo(tokenId, price);
+        (, uint256 royaltyAmount) = contentToken.royaltyInfo(tokenId, price);
 
         // 2. Staker reward (1% of resale)
         uint256 stakerReward = (price * resaleStakerRewardBps) / BPS_DENOMINATOR;
@@ -349,10 +455,9 @@ contract Marketplace is Initializable, UUPSUpgradeable {
         purchasers[contentId].push(msg.sender);
         buyerReward[contentId][msg.sender] = seederReward;
 
-        // Pay creator royalty
+        // Pay creator royalty (split among collaborators if they exist)
         if (royaltyAmount > 0) {
-            (bool sentRoyalty,) = payable(royaltyReceiver).call{value: royaltyAmount}("");
-            if (!sentRoyalty) revert TransferFailed();
+            _payCreatorETH(contentId, royaltyAmount);
             totalCreatorPayments += royaltyAmount;
         }
 
@@ -422,16 +527,32 @@ contract Marketplace is Initializable, UUPSUpgradeable {
     /// @notice V2 initializer for upgrade — sets staker reward BPS
     function initializeV2(uint256 _stakerRewardBps, uint256 _resaleStakerRewardBps, uint256 _resaleRewardBps)
         external
+        onlyOwner
         reinitializer(2)
     {
+        if (_stakerRewardBps + creatorShareBps > BPS_DENOMINATOR) revert InvalidCreatorShare();
+        if (_resaleStakerRewardBps + _resaleRewardBps > BPS_DENOMINATOR) revert InvalidCreatorShare();
         stakerRewardBps = _stakerRewardBps;
         resaleStakerRewardBps = _resaleStakerRewardBps;
         resaleRewardBps = _resaleRewardBps;
     }
 
-    /// @notice Transfer ownership
+    /// @notice Add or remove an ERC-20 token from the supported tokens whitelist
+    function setSupportedToken(address token, bool supported) external onlyOwner {
+        supportedTokens[token] = supported;
+    }
+
+    /// @notice Propose a new owner (two-step transfer)
     function transferOwnership(address newOwner) external onlyOwner {
-        owner = newOwner;
+        if (newOwner == address(0)) revert ZeroAddress();
+        pendingOwner = newOwner;
+    }
+
+    /// @notice Accept ownership (must be called by the pending owner)
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert OnlyOwner();
+        owner = msg.sender;
+        pendingOwner = address(0);
     }
 
     receive() external payable {}
@@ -461,7 +582,10 @@ contract Marketplace is Initializable, UUPSUpgradeable {
         // 2. Verify buyer actually purchased this content
         if (!hasPurchased[contentId][buyer]) return 0;
 
-        // 3. Replay protection: one claim per (content, buyer, seeder)
+        // 3. bytesServed must be positive
+        if (bytesServed == 0) return 0;
+
+        // 4. Replay protection: one claim per (content, buyer, seeder)
         if (bytesClaimed[contentId][buyer][msg.sender] > 0) return 0;
         bytesClaimed[contentId][buyer][msg.sender] = bytesServed;
 
@@ -486,6 +610,52 @@ contract Marketplace is Initializable, UUPSUpgradeable {
         return share;
     }
 
+    /// @dev Pay the creator's ETH share, splitting among collaborators if they exist.
+    ///      If no collaborators, pays the single creator address.
+    function _payCreatorETH(bytes32 contentId, uint256 amount) internal {
+        AraContent.Collaborator[] memory collabs = contentToken.getCollaborators(contentId);
+        if (collabs.length == 0) {
+            // Original path: single creator, no extra gas
+            address creator = contentToken.getCreator(contentId);
+            (bool sent,) = payable(creator).call{value: amount}("");
+            if (!sent) revert TransferFailed();
+        } else {
+            uint256 totalPaid;
+            for (uint256 i = 0; i < collabs.length; i++) {
+                uint256 share;
+                if (i == collabs.length - 1) {
+                    share = amount - totalPaid; // dust goes to last collaborator
+                } else {
+                    share = (amount * collabs[i].shareBps) / BPS_DENOMINATOR;
+                }
+                (bool sent,) = payable(collabs[i].wallet).call{value: share}("");
+                if (!sent) revert TransferFailed();
+                totalPaid += share;
+            }
+        }
+    }
+
+    /// @dev Pay the creator's ERC-20 token share, splitting among collaborators if they exist.
+    function _payCreatorToken(bytes32 contentId, address token, uint256 amount) internal {
+        AraContent.Collaborator[] memory collabs = contentToken.getCollaborators(contentId);
+        if (collabs.length == 0) {
+            address creator = contentToken.getCreator(contentId);
+            IERC20(token).safeTransfer(creator, amount);
+        } else {
+            uint256 totalPaid;
+            for (uint256 i = 0; i < collabs.length; i++) {
+                uint256 share;
+                if (i == collabs.length - 1) {
+                    share = amount - totalPaid;
+                } else {
+                    share = (amount * collabs[i].shareBps) / BPS_DENOMINATOR;
+                }
+                IERC20(token).safeTransfer(collabs[i].wallet, share);
+                totalPaid += share;
+            }
+        }
+    }
+
     /// @dev Recover the signer of an EIP-712 hash from a 65-byte signature.
     ///      Returns address(0) on invalid input.
     function _ecrecover(bytes32 hash, bytes calldata sig) internal pure returns (address) {
@@ -503,6 +673,9 @@ contract Marketplace is Initializable, UUPSUpgradeable {
         if (v != 27 && v != 28) return address(0);
         return ecrecover(hash, v, r, s);
     }
+
+    /// @dev Reserved storage for future upgrades
+    uint256[50] private __gap;
 
     function _authorizeUpgrade(address) internal override onlyOwner {}
 }

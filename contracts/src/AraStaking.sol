@@ -1,9 +1,12 @@
-// SPDX-License-Identifier: LGPL-3.0
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import {IAraToken} from "./interfaces/IAraToken.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title AraStaking
 /// @notice Manages ARA token staking for publishers and seeders.
@@ -11,7 +14,9 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeab
 ///         Seeders allocate stake to specific content to earn rewards.
 ///         All stakers passively earn a share of marketplace purchase fees
 ///         proportional to their staked ARA (Synthetix-style accumulator).
-contract AraStaking is Initializable, UUPSUpgradeable {
+contract AraStaking is Initializable, UUPSUpgradeable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     IAraToken public araToken;
 
     /// @notice General staked balance per user (not allocated to any content)
@@ -54,6 +59,26 @@ contract AraStaking is Initializable, UUPSUpgradeable {
     /// @notice Total ETH claimed by stakers (lifetime)
     uint256 public totalStakerRewardsClaimed;
 
+    // === V3: Multi-token staker rewards ===
+
+    /// @notice Per-token accumulated reward per staked ARA, scaled by 1e18
+    mapping(address => uint256) public tokenRewardPerTokenStored;
+
+    /// @notice Per-user, per-token checkpoint
+    mapping(address => mapping(address => uint256)) public userTokenRewardPerTokenPaid;
+
+    /// @notice Per-user, per-token pending rewards
+    mapping(address => mapping(address => uint256)) public pendingTokenRewards;
+
+    /// @notice List of ERC-20 tokens that have received rewards (for checkpoint iteration)
+    address[] public rewardTokens;
+
+    /// @notice Quick lookup to avoid duplicates in rewardTokens array
+    mapping(address => bool) public isRewardToken;
+
+    /// @notice Maximum number of distinct reward tokens (bounds gas cost of updateReward loop)
+    uint256 public constant MAX_REWARD_TOKENS = 20;
+
     event Staked(address indexed user, uint256 amount);
     event Unstaked(address indexed user, uint256 amount);
     event ContentStakeAdded(address indexed user, bytes32 indexed contentId, uint256 amount);
@@ -62,6 +87,8 @@ contract AraStaking is Initializable, UUPSUpgradeable {
     event SeederMinStakeUpdated(uint256 oldValue, uint256 newValue);
     event StakerRewardDeposited(uint256 amount);
     event StakerRewardClaimed(address indexed user, uint256 amount);
+    event TokenRewardDeposited(address indexed token, uint256 amount);
+    event TokenRewardClaimed(address indexed user, address indexed token, uint256 amount);
     event AuthorizedMarketplaceUpdated(address indexed oldMarketplace, address indexed newMarketplace);
 
     error InsufficientStakedBalance(uint256 requested, uint256 available);
@@ -71,18 +98,29 @@ contract AraStaking is Initializable, UUPSUpgradeable {
     error ZeroAmount();
     error OnlyAuthorizedMarketplace();
     error NoStakerRewardsToClaim();
+    error TooManyRewardTokens();
+    error ZeroAddress();
+
+    // === V4: Security hardening ===
+    address public pendingOwner;
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert OnlyOwner();
         _;
     }
 
-    /// @dev Checkpoint a user's accrued rewards before changing their stake.
+    /// @dev Checkpoint a user's accrued rewards (ETH + all tokens) before changing their stake.
     modifier updateReward(address account) {
         rewardPerTokenStored = rewardPerToken();
         if (account != address(0)) {
             pendingRewards[account] = earned(account);
             userRewardPerTokenPaid[account] = rewardPerTokenStored;
+            // Checkpoint all token rewards
+            for (uint256 i = 0; i < rewardTokens.length; i++) {
+                address t = rewardTokens[i];
+                pendingTokenRewards[account][t] = earnedToken(account, t);
+                userTokenRewardPerTokenPaid[account][t] = tokenRewardPerTokenStored[t];
+            }
         }
         _;
     }
@@ -181,9 +219,17 @@ contract AraStaking is Initializable, UUPSUpgradeable {
         seederMinStake = newMinStake;
     }
 
-    /// @notice Transfer ownership
+    /// @notice Propose a new owner (two-step transfer)
     function transferOwnership(address newOwner) external onlyOwner {
-        owner = newOwner;
+        if (newOwner == address(0)) revert ZeroAddress();
+        pendingOwner = newOwner;
+    }
+
+    /// @notice Accept ownership (must be called by the pending owner)
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert OnlyOwner();
+        owner = msg.sender;
+        pendingOwner = address(0);
     }
 
     // ============================================================
@@ -191,7 +237,7 @@ contract AraStaking is Initializable, UUPSUpgradeable {
     // ============================================================
 
     /// @notice V2 initializer for upgrade (can only be called once)
-    function initializeV2(address _marketplace) external reinitializer(2) {
+    function initializeV2(address _marketplace) external onlyOwner reinitializer(2) {
         authorizedMarketplace = _marketplace;
     }
 
@@ -217,7 +263,7 @@ contract AraStaking is Initializable, UUPSUpgradeable {
     }
 
     /// @notice Claim all accrued passive staker ETH rewards
-    function claimStakingReward() external updateReward(msg.sender) {
+    function claimStakingReward() external nonReentrant updateReward(msg.sender) {
         uint256 reward = pendingRewards[msg.sender];
         if (reward == 0) revert NoStakerRewardsToClaim();
         pendingRewards[msg.sender] = 0;
@@ -233,6 +279,46 @@ contract AraStaking is Initializable, UUPSUpgradeable {
         authorizedMarketplace = _marketplace;
     }
 
+    // ============================================================
+    //                     MULTI-TOKEN STAKER REWARDS (V3)
+    // ============================================================
+
+    /// @notice Called by Marketplace to deposit ERC-20 token rewards for stakers.
+    ///         Marketplace must approve this contract for `amount` of `token` first.
+    /// @param token The ERC-20 token address
+    /// @param amount Amount of tokens to deposit
+    function addTokenReward(address token, uint256 amount) external {
+        if (msg.sender != authorizedMarketplace) revert OnlyAuthorizedMarketplace();
+        if (amount > 0 && totalStaked > 0) {
+            // Register token if first time
+            if (!isRewardToken[token]) {
+                if (rewardTokens.length >= MAX_REWARD_TOKENS) revert TooManyRewardTokens();
+                rewardTokens.push(token);
+                isRewardToken[token] = true;
+            }
+            // Transfer tokens from marketplace to this contract (SafeERC20 for non-standard tokens)
+            IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+            tokenRewardPerTokenStored[token] += (amount * 1e18) / totalStaked;
+        }
+        emit TokenRewardDeposited(token, amount);
+    }
+
+    /// @notice View: how much of a specific token a user has earned but not yet claimed
+    function earnedToken(address account, address token) public view returns (uint256) {
+        return (totalUserStake[account] * (tokenRewardPerTokenStored[token] - userTokenRewardPerTokenPaid[account][token])) / 1e18
+            + pendingTokenRewards[account][token];
+    }
+
+    /// @notice Claim all accrued rewards for a specific ERC-20 token
+    function claimTokenReward(address token) external nonReentrant updateReward(msg.sender) {
+        uint256 reward = pendingTokenRewards[msg.sender][token];
+        if (reward == 0) revert NoStakerRewardsToClaim();
+        pendingTokenRewards[msg.sender][token] = 0;
+
+        IERC20(token).safeTransfer(msg.sender, reward);
+        emit TokenRewardClaimed(msg.sender, token, reward);
+    }
+
     /// @dev Sum all content stakes for a user (expensive, for view only).
     function _totalContentStake(address) internal pure returns (uint256) {
         // NOTE: Cannot iterate mappings in Solidity. For publisher eligibility,
@@ -240,6 +326,9 @@ contract AraStaking is Initializable, UUPSUpgradeable {
         // used for per-content seeder eligibility.
         return 0;
     }
+
+    /// @dev Reserved storage for future upgrades
+    uint256[50] private __gap;
 
     function _authorizeUpgrade(address) internal override onlyOwner {}
 }

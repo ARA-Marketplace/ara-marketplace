@@ -76,6 +76,17 @@ enum RecvEvent {
         node_id: NodeId,
         eth_address_hex: String,
     },
+    /// Content was flagged via moderation — update local DB.
+    ContentFlagged {
+        content_id_hex: String,
+        reason: u8,
+        is_emergency: bool,
+    },
+    /// Content was purged via moderation consensus — delete blob and stop seeding.
+    ContentPurged {
+        content_id_hex: String,
+        content_hash: ContentHash,
+    },
 }
 
 /// Known seeders discovered via gossip, keyed by content hash.
@@ -195,6 +206,27 @@ impl GossipActor {
                             ) {
                                 warn!("Failed to store seeder identity: {e}");
                             }
+                        }
+                        Some(RecvEvent::ContentFlagged { content_id_hex, reason, is_emergency }) => {
+                            info!("Processing content flag for {} (reason={}, emergency={})", content_id_hex, reason, is_emergency);
+                            let status = if is_emergency { "emergency_flagged" } else { "flagged" };
+                            let db = self.db.lock().await;
+                            let _ = db.conn().execute(
+                                "UPDATE content SET moderation_status = ?1 WHERE content_id = ?2",
+                                rusqlite::params![status, &content_id_hex],
+                            );
+                        }
+                        Some(RecvEvent::ContentPurged { content_id_hex, content_hash: _ }) => {
+                            info!("Processing content purge for {}", content_id_hex);
+                            let db = self.db.lock().await;
+                            let _ = db.conn().execute(
+                                "UPDATE content SET moderation_status = 'purged', active = 0 WHERE content_id = ?1",
+                                rusqlite::params![&content_id_hex],
+                            );
+                            let _ = db.conn().execute(
+                                "UPDATE seeding SET active = 0 WHERE content_id = ?1",
+                                rusqlite::params![&content_id_hex],
+                            );
                         }
                         None => {} // all recv_loop senders dropped — fine
                     }
@@ -446,6 +478,38 @@ impl GossipActor {
                                     eth_address_hex: eth_hex,
                                 });
                             }
+                        }
+                        Ok(GossipMessage::ContentFlagged {
+                            content_id,
+                            reason,
+                            is_emergency,
+                            ..
+                        }) => {
+                            let content_id_hex = format!("0x{}", alloy::hex::encode(content_id));
+                            info!(
+                                "Content flagged via gossip: {} (reason={}, emergency={})",
+                                content_id_hex, reason, is_emergency
+                            );
+                            let _ = event_tx.send(RecvEvent::ContentFlagged {
+                                content_id_hex,
+                                reason,
+                                is_emergency,
+                            });
+                        }
+                        Ok(GossipMessage::ContentPurge {
+                            content_id,
+                            content_hash: purge_hash,
+                            ..
+                        }) => {
+                            let content_id_hex = format!("0x{}", alloy::hex::encode(content_id));
+                            info!(
+                                "Content purge received via gossip: {}",
+                                content_id_hex
+                            );
+                            let _ = event_tx.send(RecvEvent::ContentPurged {
+                                content_id_hex,
+                                content_hash: purge_hash,
+                            });
                         }
                         Err(e) => {
                             warn!("Failed to parse gossip message: {e}");

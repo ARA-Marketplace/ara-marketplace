@@ -12,6 +12,7 @@ import {
   confirmClaimRewards,
   syncRewards,
   getDisplayName,
+  checkNameAvailable,
   registerName,
   confirmRegisterName,
   removeDisplayName,
@@ -50,9 +51,9 @@ function Wallet() {
   const { walletProvider } = useWeb3ModalProvider();
 
   const {
-    address, ethBalance, araBalance, araStaked, stakerRewardEarned,
+    address, ethBalance, araBalance, araStaked, stakerRewardEarned, tokenRewards,
     isLoadingBalances, isSendingTx, txStatus, error,
-    refreshBalances, stakeAra, unstakeAra, claimStakingReward, clearError, clearTxStatus,
+    refreshBalances, stakeAra, unstakeAra, claimStakingReward, claimTokenStakingReward, clearError, clearTxStatus,
   } = useWalletStore();
 
   const [showStakeModal, setShowStakeModal] = useState(false);
@@ -77,6 +78,8 @@ function Wallet() {
   const [nameInput, setNameInput] = useState("");
   const [nameStep, setNameStep] = useState<"idle" | "signing" | "confirming" | "done">("idle");
   const [nameError, setNameError] = useState<string | null>(null);
+  const [nameAvailable, setNameAvailable] = useState<boolean | null>(null);
+  const [checkingName, setCheckingName] = useState(false);
 
   const fetchPipeline = useCallback(async () => {
     try {
@@ -127,6 +130,29 @@ function Wallet() {
       setNameInput("");
     }
   }, [address]);
+
+  // Debounced name availability check
+  const nameValid = /^[a-zA-Z0-9_-]{1,32}$/.test(nameInput.trim());
+  const nameChanged = nameInput.trim() !== "" && nameInput.trim() !== currentName;
+  useEffect(() => {
+    if (!nameInput.trim() || !nameValid || !nameChanged) {
+      setNameAvailable(null);
+      setCheckingName(false);
+      return;
+    }
+    setCheckingName(true);
+    setNameAvailable(null);
+    const timer = setTimeout(async () => {
+      try {
+        const available = await checkNameAvailable(nameInput.trim());
+        setNameAvailable(available);
+      } catch {
+        setNameAvailable(null);
+      }
+      setCheckingName(false);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [nameInput, nameValid, nameChanged]);
 
   const handleSetName = async () => {
     if (!walletProvider || !nameInput.trim()) return;
@@ -225,6 +251,13 @@ function Wallet() {
     if (!walletProvider) { open(); return; }
     try {
       await claimStakingReward(walletProvider);
+    } catch { /* error set in store */ }
+  };
+
+  const handleClaimTokenReward = async (tokenAddress: string) => {
+    if (!walletProvider) { open(); return; }
+    try {
+      await claimTokenStakingReward(tokenAddress, walletProvider);
     } catch { /* error set in store */ }
   };
 
@@ -333,17 +366,32 @@ function Wallet() {
               <div className="alert-error text-xs mb-2">{nameError}</div>
             )}
             <div className="flex gap-2">
-              <input
-                type="text"
-                value={nameInput}
-                onChange={(e) => setNameInput(e.target.value)}
-                placeholder="Choose a display name"
-                className="input-base flex-1"
-                maxLength={32}
-              />
+              <div className="flex-1">
+                <input
+                  type="text"
+                  value={nameInput}
+                  onChange={(e) => setNameInput(e.target.value)}
+                  placeholder="Choose a display name"
+                  className="input-base w-full"
+                  maxLength={32}
+                />
+                {nameInput.trim() && nameChanged && (
+                  <div className="mt-1 text-xs">
+                    {!nameValid ? (
+                      <span className="text-red-500">Letters, numbers, hyphens, and underscores only (1-32 chars)</span>
+                    ) : checkingName ? (
+                      <span className="text-slate-400">Checking availability...</span>
+                    ) : nameAvailable === true ? (
+                      <span className="text-green-500">Name available</span>
+                    ) : nameAvailable === false ? (
+                      <span className="text-red-500">Name already taken</span>
+                    ) : null}
+                  </div>
+                )}
+              </div>
               <button
                 onClick={handleSetName}
-                disabled={nameStep !== "idle" || !nameInput.trim()}
+                disabled={nameStep !== "idle" || !nameInput.trim() || !nameValid || nameAvailable === false || checkingName}
                 className="btn-primary text-sm px-4"
               >
                 {nameStep === "signing" ? "Sign..." : nameStep === "confirming" ? "Confirming..." : nameStep === "done" ? "Set!" : "Set Name"}
@@ -436,6 +484,34 @@ function Wallet() {
               </div>
             </div>
           )}
+
+          {/* Token Staking Rewards */}
+          {tokenRewards.map((tr) => (
+            <div className="card p-5" key={tr.token_address}>
+              <div className="flex justify-between items-center">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-0.5">
+                    Staking Rewards ({tr.symbol})
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-600 mb-2">
+                    Earned from staking ARA (2.5% of {tr.symbol} purchases)
+                  </p>
+                  <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
+                    {tr.earned} <span className="text-sm font-normal text-slate-500">{tr.symbol}</span>
+                  </p>
+                </div>
+                <div className="flex-shrink-0 ml-4">
+                  <button
+                    onClick={() => handleClaimTokenReward(tr.token_address)}
+                    disabled={isSendingTx}
+                    className="btn-success px-5 py-2 text-sm"
+                  >
+                    {isSendingTx ? "Claiming..." : "Claim"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
 
           {/* Rewards: Ready to Collect + Lifetime Earnings */}
           {collectError && (

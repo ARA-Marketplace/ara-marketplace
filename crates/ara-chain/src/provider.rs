@@ -6,6 +6,7 @@ use crate::collections::CollectionsClient;
 use crate::content_token::ContentTokenClient;
 use crate::events::EventIndexer;
 use crate::marketplace::MarketplaceClient;
+use crate::moderation::ModerationClient;
 use crate::names::NameRegistryClient;
 use crate::staking::StakingClient;
 use crate::token::TokenClient;
@@ -19,6 +20,7 @@ pub struct ContractAddresses {
     pub marketplace: Address,
     pub collections: Address,
     pub name_registry: Address,
+    pub moderation: Address,
 }
 
 /// Main entry point for all Ethereum interactions.
@@ -31,6 +33,7 @@ pub struct AraChain<P> {
     pub marketplace: MarketplaceClient<P>,
     pub collections: CollectionsClient<P>,
     pub name_registry: NameRegistryClient<P>,
+    pub moderation: ModerationClient<P>,
     pub events: EventIndexer<P>,
 }
 
@@ -43,6 +46,7 @@ impl<P: Provider + Clone> AraChain<P> {
             marketplace: MarketplaceClient::new(addresses.marketplace, provider.clone()),
             collections: CollectionsClient::new(addresses.collections, provider.clone()),
             name_registry: NameRegistryClient::new(addresses.name_registry, provider.clone()),
+            moderation: ModerationClient::new(addresses.moderation, provider.clone()),
             events: EventIndexer::new(
                 addresses.registry,
                 addresses.marketplace,
@@ -89,6 +93,11 @@ impl<P: Provider + Clone> AraChain<P> {
 
     pub fn name_registry_address(&self) -> Address {
         self.name_registry.address()
+    }
+
+    /// Get a reference to the underlying provider (e.g. for ENS resolution).
+    pub fn provider(&self) -> &P {
+        &self.provider
     }
 }
 

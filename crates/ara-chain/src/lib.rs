@@ -1,6 +1,7 @@
 pub mod contracts;
 pub mod events;
 pub mod marketplace;
+pub mod moderation;
 pub mod provider;
 pub mod content_token;
 pub mod staking;

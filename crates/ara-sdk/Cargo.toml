@@ -1,0 +1,24 @@
+[package]
+name = "ara-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Programmatic SDK for the Ara Marketplace — publish, purchase, seed, stake, and manage content without the Tauri desktop app."
+
+[dependencies]
+ara-core = { path = "../ara-core" }
+ara-chain = { path = "../ara-chain" }
+ara-p2p = { path = "../ara-p2p" }
+
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+alloy.workspace = true
+tracing.workspace = true
+rusqlite.workspace = true
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

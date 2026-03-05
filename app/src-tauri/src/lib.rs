@@ -1,10 +1,11 @@
+mod arweave;
 mod blob_events;
 mod commands;
 mod gossip_actor;
 mod setup;
 mod state;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 /// Percent-decode a URL path component. Handles ASCII byte sequences produced by
@@ -27,6 +28,16 @@ fn percent_decode(s: &str) -> String {
         i += 1;
     }
     result
+}
+
+/// Parse an `ara://` deep link URL into a frontend route path.
+/// e.g. `ara://content/0xabc123` → `/content/0xabc123`
+fn parse_ara_deep_link(url: &str) -> Option<String> {
+    let stripped = url.strip_prefix("ara://")?;
+    if stripped.is_empty() {
+        return None;
+    }
+    Some(format!("/{}", stripped.trim_end_matches('/')))
 }
 
 pub fn run() {
@@ -117,13 +128,20 @@ pub fn run() {
                     .unwrap(),
             }
         })
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // Focus the existing window when a second instance is launched
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
+            // Check args for deep link URLs (second instance launched via ara://...)
+            for arg in &args {
+                if let Some(path) = parse_ara_deep_link(arg) {
+                    let _ = app.emit("deep-link-navigate", path);
+                }
+            }
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(setup::init)
@@ -145,6 +163,12 @@ pub fn run() {
             commands::content::confirm_content_file_update,
             commands::content::import_preview_assets,
             commands::content::get_preview_asset,
+            // Arweave permanent storage
+            commands::content::estimate_arweave_cost,
+            commands::content::prepare_arweave_upload,
+            commands::content::execute_arweave_upload,
+            commands::content::confirm_arweave_upload,
+            commands::content::get_arweave_config,
             commands::marketplace::purchase_content,
             commands::marketplace::confirm_purchase,
             commands::marketplace::get_library,
@@ -168,10 +192,12 @@ pub fn run() {
             commands::staking::stake_for_content,
             commands::staking::get_stake_info,
             commands::staking::claim_staking_reward,
+            commands::staking::claim_token_staking_reward,
             commands::staking::prepare_claim_rewards,
             commands::staking::confirm_claim_rewards,
             commands::staking::get_reward_history,
             commands::staking::get_reward_pipeline,
+            commands::staking::get_supported_tokens,
             commands::tx::wait_for_transaction,
             commands::sync::sync_content,
             commands::sync::sync_rewards,
@@ -199,6 +225,15 @@ pub fn run() {
             commands::names::confirm_remove_name,
             commands::names::get_display_name,
             commands::names::get_display_names,
+            commands::names::check_name_available,
+            // Moderation
+            commands::moderation::set_nsfw,
+            commands::moderation::confirm_set_nsfw,
+            commands::moderation::flag_content,
+            commands::moderation::vote_on_flag,
+            commands::moderation::resolve_flag,
+            commands::moderation::appeal_flag,
+            commands::moderation::get_moderation_status,
             // Analytics
             commands::analytics::get_price_history,
             commands::analytics::get_item_analytics,

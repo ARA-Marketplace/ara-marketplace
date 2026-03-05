@@ -95,6 +95,20 @@ impl<P: Provider + Clone> StakingClient<P> {
         let result = contract.earned(user).call().await?;
         Ok(result)
     }
+
+    // --- V3: Multi-token rewards ---
+
+    /// Get the unclaimed ERC-20 token reward for a user.
+    pub async fn earned_token(
+        &self,
+        user: Address,
+        token: Address,
+    ) -> Result<U256> {
+        info!("Querying earned token reward for {} (token={})", user, token);
+        let contract = IAraStaking::new(self.address, &self.provider);
+        let result = contract.earnedToken(user, token).call().await?;
+        Ok(result)
+    }
 }
 
 // Calldata encoding — no provider needed.
@@ -136,5 +150,11 @@ impl<P> StakingClient<P> {
     /// Encode calldata for `claimStakingReward()`.
     pub fn claim_staking_reward_calldata() -> Vec<u8> {
         IAraStaking::claimStakingRewardCall {}.abi_encode()
+    }
+
+    /// Encode calldata for `claimTokenReward(token)`.
+    /// Claim accrued ERC-20 staker rewards for a specific token.
+    pub fn claim_token_reward_calldata(token: Address) -> Vec<u8> {
+        IAraStaking::claimTokenRewardCall { token }.abi_encode()
     }
 }

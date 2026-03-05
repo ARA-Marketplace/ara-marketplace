@@ -38,6 +38,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { CATEGORIES_BY_TYPE } from "../lib/categories";
 import type { ContentType } from "../lib/types";
 import AddressDisplay from "../components/AddressDisplay";
+import { IconShare } from "../components/Icons";
 import TabPanel from "../components/TabPanel";
 import PriceHistoryChart from "../components/PriceHistoryChart";
 import ActivityTable from "../components/ActivityTable";
@@ -132,6 +133,7 @@ function ContentDetail() {
   const [editCategories, setEditCategories] = useState<string[]>([]);
   const [editStep, setEditStep] = useState<EditStep>("idle");
   const [editError, setEditError] = useState<string | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   const loadContent = async (id: string) => {
     setLoading(true);
@@ -746,6 +748,19 @@ function ContentDetail() {
                     {content.updated_at !== null && (
                       <span className="badge-blue">File updated</span>
                     )}
+                    <button
+                      onClick={() => {
+                        const link = `ara://content/${encodeURIComponent(content.content_id)}`;
+                        navigator.clipboard.writeText(link);
+                        setLinkCopied(true);
+                        setTimeout(() => setLinkCopied(false), 2000);
+                      }}
+                      className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 border border-indigo-200 dark:border-indigo-800 transition-colors"
+                      title="Copy shareable link"
+                    >
+                      <IconShare className="w-4 h-4" />
+                      {linkCopied ? "Copied!" : "Share"}
+                    </button>
                   </div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mt-1">
                     {content.content_type}
@@ -794,7 +809,7 @@ function ContentDetail() {
 
                 <div className="text-right flex flex-col items-end gap-2 flex-shrink-0">
                   <p className="text-2xl font-bold text-ara-600 dark:text-ara-400">
-                    {content.price_eth} ETH
+                    {content.price_eth} {content.payment_token_symbol ?? "ETH"}
                   </p>
                   {isCreator && (
                     <button
@@ -910,7 +925,7 @@ function ContentDetail() {
                       {purchaseStep === "idle"
                         ? !isConnected
                           ? "Connect Wallet to Purchase"
-                          : `Purchase for ${content.price_eth} ETH`
+                          : `Purchase for ${content.price_eth} ${content.payment_token_symbol ?? "ETH"}`
                         : purchaseStep === "confirming" && downloadProgress
                           ? "Downloading content..."
                           : STEP_LABELS[purchaseStep]}
@@ -959,6 +974,19 @@ function ContentDetail() {
                             <span className="font-semibold text-slate-500 dark:text-slate-500 w-28 flex-shrink-0">Creator</span>
                             <AddressDisplay address={content.creator} className="text-slate-700 dark:text-slate-300" />
                           </div>
+                          {content.collaborators && content.collaborators.length > 0 && (
+                            <div className="flex gap-2">
+                              <span className="font-semibold text-slate-500 dark:text-slate-500 w-28 flex-shrink-0">Revenue Split</span>
+                              <div className="space-y-1">
+                                {content.collaborators.map((c, i) => (
+                                  <div key={i} className="flex items-center gap-2">
+                                    <AddressDisplay address={c.wallet} className="text-slate-700 dark:text-slate-300" />
+                                    <span className="text-slate-500">({(c.share_bps / 100).toFixed(c.share_bps % 100 === 0 ? 0 : 1)}%)</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                           <div className="flex gap-2">
                             <span className="font-semibold text-slate-500 dark:text-slate-500 w-28 flex-shrink-0">Content Hash</span>
                             <span className="font-mono text-slate-700 dark:text-slate-300 break-all">{content.content_hash}</span>

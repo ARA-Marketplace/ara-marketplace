@@ -106,6 +106,7 @@ impl AppState {
             marketplace: parse_address(&eth.marketplace_address, "marketplace")?,
             collections: parse_address(&eth.collections_address, "collections")?,
             name_registry: parse_address(&eth.name_registry_address, "name_registry")?,
+            moderation: parse_address(&eth.moderation_address, "moderation")?,
         };
 
         connect_http(&eth.rpc_url, addresses).map_err(|e| format!("Chain connect failed: {e}"))

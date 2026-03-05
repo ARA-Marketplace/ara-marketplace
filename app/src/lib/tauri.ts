@@ -70,12 +70,20 @@ export interface ContentDetail {
   total_minted: number;
   resale_count: number;
   min_resale_price_eth: string | null;
+  payment_token?: string;
+  payment_token_symbol?: string;
+  collaborators: { wallet: string; share_bps: number }[];
 }
 
 export interface PublishPrepareResult {
   content_hash: string;
   metadata_uri: string;
   transactions: TransactionRequest[];
+}
+
+export interface CollaboratorInput {
+  wallet: string;
+  shareBps: number;
 }
 
 export async function publishContent(params: {
@@ -90,6 +98,8 @@ export async function publishContent(params: {
   mainPreviewImagePath?: string;
   mainPreviewTrailerPath?: string;
   previewPaths?: string[];
+  paymentToken?: string;
+  collaborators?: CollaboratorInput[];
 }): Promise<PublishPrepareResult> {
   return invoke("publish_content", params);
 }
@@ -141,10 +151,12 @@ export interface PublishedItem {
   content_id: string;
   title: string;
   content_type: string;
-  price_eth: string;
+  price_display: string;
+  price_symbol: string;
   is_seeding: boolean;
   file_size_bytes: number;
   updated_at: number | null;
+  arweave_url: string | null;
 }
 
 export interface UpdateFileResult {
@@ -197,6 +209,7 @@ export interface PurchasePrepareResult {
   content_id: string;
   title: string;
   price_eth: string;
+  price_unit?: string;
   transactions: TransactionRequest[];
 }
 
@@ -294,6 +307,8 @@ export interface StakeInfo {
   staker_reward_earned: string;
   /** Total stake used for reward weight */
   total_user_stake: string;
+  /** Unclaimed token staking rewards (one per supported token with non-zero balance) */
+  token_rewards: Array<{ token_address: string; symbol: string; earned: string }>;
 }
 
 export async function getStakeInfo(): Promise<StakeInfo> {
@@ -302,6 +317,60 @@ export async function getStakeInfo(): Promise<StakeInfo> {
 
 export async function claimStakingReward(): Promise<TransactionRequest[]> {
   return invoke("claim_staking_reward");
+}
+
+export async function claimTokenStakingReward(tokenAddress: string): Promise<TransactionRequest[]> {
+  return invoke("claim_token_staking_reward", { tokenAddress });
+}
+
+// Supported tokens
+export interface SupportedToken {
+  address: string;
+  symbol: string;
+  decimals: number;
+}
+
+export async function getSupportedTokens(): Promise<SupportedToken[]> {
+  return invoke("get_supported_tokens");
+}
+
+// Arweave permanent storage
+export interface ArweaveCostEstimate {
+  cost_wei: string;
+  cost_eth: string;
+  file_size: number;
+}
+
+export async function estimateArweaveCost(contentId: string): Promise<ArweaveCostEstimate> {
+  return invoke("estimate_arweave_cost", { contentId });
+}
+
+export interface ArweaveUploadPlan {
+  cost_wei: string;
+  cost_eth: string;
+  file_size: number;
+  transactions: TransactionRequest[];
+}
+
+export interface ArweaveUploadResult {
+  arweave_tx_id: string;
+  gateway_url: string;
+}
+
+export async function prepareArweaveUpload(contentId: string): Promise<ArweaveUploadPlan> {
+  return invoke("prepare_arweave_upload", { contentId });
+}
+
+export async function executeArweaveUpload(contentId: string, fundTxHash: string): Promise<ArweaveUploadResult> {
+  return invoke("execute_arweave_upload", { contentId, fundTxHash });
+}
+
+export async function confirmArweaveUpload(contentId: string, arweaveTxId: string): Promise<void> {
+  return invoke("confirm_arweave_upload", { contentId, arweaveTxId });
+}
+
+export async function getArweaveConfig(): Promise<{ node_url: string; gateway_url: string }> {
+  return invoke("get_arweave_config");
 }
 
 // Sync — pull content listings from on-chain events
@@ -618,6 +687,12 @@ export async function getDisplayNames(
   addresses: string[]
 ): Promise<Record<string, string>> {
   return invoke("get_display_names", { addresses });
+}
+
+export async function checkNameAvailable(
+  name: string
+): Promise<boolean> {
+  return invoke("check_name_available", { name });
 }
 
 // Analytics

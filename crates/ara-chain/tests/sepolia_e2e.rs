@@ -353,7 +353,7 @@ async fn test_e2e_step5_publish_and_purchase() {
 
     let test_eth_before = reader.get_balance(test_addr).await.unwrap();
 
-    let purchase_calldata = MarketplaceClient::<()>::purchase_calldata(content_id);
+    let purchase_calldata = MarketplaceClient::<()>::purchase_calldata(content_id, price_wei);
     println!("Purchasing for 0.001 ETH from deployer wallet...");
     let receipt = send_tx(&deployer_provider, MARKETPLACE, purchase_calldata, price_wei).await;
     println!("Purchase tx: {:?} (status: {:?})", receipt.transaction_hash, receipt.status());

@@ -286,12 +286,12 @@ function Marketplace() {
                   <div className="mt-auto pt-2 flex items-center justify-between">
                     {item.max_supply > 0 && item.total_minted >= item.max_supply && item.min_resale_price_eth ? (
                       <span className="text-ara-600 dark:text-ara-400 font-bold text-sm">
-                        {item.min_resale_price_eth} ETH
+                        {item.min_resale_price_eth} {item.payment_token_symbol ?? "ETH"}
                         <span className="text-[10px] font-normal text-slate-400 ml-1">resale</span>
                       </span>
                     ) : (
                       <span className="text-ara-600 dark:text-ara-400 font-bold text-sm">
-                        {item.price_eth} ETH
+                        {item.price_eth} {item.payment_token_symbol ?? "ETH"}
                       </span>
                     )}
                     {item.categories && item.categories.length > 0 && (

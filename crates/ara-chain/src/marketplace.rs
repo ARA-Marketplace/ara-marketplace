@@ -54,6 +54,13 @@ impl<P: Provider + Clone> MarketplaceClient<P> {
         Ok((result.price, result.active))
     }
 
+    /// Check if a token is whitelisted for payments.
+    pub async fn is_supported_token(&self, token: Address) -> Result<bool> {
+        let contract = IMarketplace::new(self.address, &self.provider);
+        let result = contract.supportedTokens(token).call().await?;
+        Ok(result)
+    }
+
     /// Get the marketplace contract address.
     pub fn address(&self) -> Address {
         self.address
@@ -62,11 +69,13 @@ impl<P: Provider + Clone> MarketplaceClient<P> {
 
 // Calldata encoding — no provider needed.
 impl<P> MarketplaceClient<P> {
-    /// Encode calldata for `purchase(contentId)`.
+    /// Encode calldata for `purchase(contentId, maxPrice)`.
     /// The frontend sends this with the correct ETH value attached.
-    pub fn purchase_calldata(content_id: FixedBytes<32>) -> Vec<u8> {
+    /// `max_price` provides slippage protection — reverts if on-chain price exceeds it.
+    pub fn purchase_calldata(content_id: FixedBytes<32>, max_price: U256) -> Vec<u8> {
         IMarketplace::purchaseCall {
             contentId: content_id,
+            maxPrice: max_price,
         }
         .abi_encode()
     }
@@ -100,16 +109,43 @@ impl<P> MarketplaceClient<P> {
         .abi_encode()
     }
 
-    /// Encode calldata for `buyResale(contentId, seller)`.
+    /// Encode calldata for `buyResale(contentId, seller, maxPrice)`.
     /// The frontend sends this with the listing price as ETH value.
+    /// `max_price` provides slippage protection — reverts if listing price exceeds it.
     pub fn buy_resale_calldata(
         content_id: FixedBytes<32>,
         seller: Address,
+        max_price: U256,
     ) -> Vec<u8> {
         IMarketplace::buyResaleCall {
             contentId: content_id,
             seller,
+            maxPrice: max_price,
         }
         .abi_encode()
+    }
+
+    /// Encode calldata for `purchaseWithToken(contentId, token, amount)`.
+    /// Buyer must have already approved the marketplace to spend `amount` of `token`.
+    pub fn purchase_with_token_calldata(
+        content_id: FixedBytes<32>,
+        token: Address,
+        amount: U256,
+    ) -> Vec<u8> {
+        IMarketplace::purchaseWithTokenCall {
+            contentId: content_id,
+            token,
+            amount,
+        }
+        .abi_encode()
+    }
+
+    /// Encode calldata for `setSupportedToken(token, supported)`.
+    /// Owner-only: whitelist or delist an ERC-20 token for marketplace payments.
+    pub fn set_supported_token_calldata(
+        token: Address,
+        supported: bool,
+    ) -> Vec<u8> {
+        IMarketplace::setSupportedTokenCall { token, supported }.abi_encode()
     }
 }

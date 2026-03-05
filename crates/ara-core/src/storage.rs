@@ -226,8 +226,39 @@ impl Database {
                 is_resale INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (tx_hash, content_id)
             );
+
+            CREATE TABLE IF NOT EXISTS moderation_flags (
+                content_id TEXT PRIMARY KEY,
+                flagger TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                is_emergency INTEGER NOT NULL DEFAULT 0,
+                flag_count INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'pending',
+                voting_deadline INTEGER,
+                uphold_weight TEXT NOT NULL DEFAULT '0',
+                dismiss_weight TEXT NOT NULL DEFAULT '0',
+                appealed INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                resolved_at INTEGER
+            );
             ",
         )?;
+
+        // Moderation columns on content table (incremental migration)
+        let _ = self
+            .conn
+            .execute("ALTER TABLE content ADD COLUMN is_nsfw INTEGER NOT NULL DEFAULT 0", []);
+        let _ = self
+            .conn
+            .execute("ALTER TABLE content ADD COLUMN moderation_status TEXT NOT NULL DEFAULT 'active'", []);
+        // Arweave permanent storage — TX ID stored when publisher opts in
+        let _ = self
+            .conn
+            .execute("ALTER TABLE content ADD COLUMN arweave_tx_id TEXT", []);
+        // Multi-token payments — ERC-20 payment token address (NULL or "" = ETH)
+        let _ = self
+            .conn
+            .execute("ALTER TABLE content ADD COLUMN payment_token TEXT", []);
 
         Ok(())
     }
@@ -527,14 +558,15 @@ impl Database {
         categories: &str,
         max_supply: i64,
         royalty_bps: i64,
+        payment_token: &str,
     ) -> rusqlite::Result<usize> {
         self.conn.execute(
             "INSERT INTO content
              (content_id, content_hash, creator, metadata_uri, price_wei,
               title, description, content_type, file_size_bytes, active,
               created_at, publisher_node_id, publisher_relay_url, filename, categories,
-              max_supply, royalty_bps)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+              max_supply, royalty_bps, payment_token)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT(content_id) DO UPDATE SET
                price_wei = excluded.price_wei,
                metadata_uri = excluded.metadata_uri,
@@ -548,12 +580,13 @@ impl Database {
                categories = CASE WHEN excluded.categories != '' THEN excluded.categories ELSE categories END,
                max_supply = CASE WHEN excluded.max_supply > 0 THEN excluded.max_supply ELSE max_supply END,
                royalty_bps = CASE WHEN excluded.royalty_bps > 0 THEN excluded.royalty_bps ELSE royalty_bps END,
+               payment_token = CASE WHEN excluded.payment_token != '' THEN excluded.payment_token ELSE payment_token END,
                active = 1",
             rusqlite::params![
                 content_id, content_hash, creator, metadata_uri, price_wei,
                 title, description, content_type, file_size, created_at,
                 publisher_node_id, publisher_relay_url, filename, categories,
-                max_supply, royalty_bps,
+                max_supply, royalty_bps, payment_token,
             ],
         )
     }

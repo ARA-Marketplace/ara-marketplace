@@ -8,6 +8,7 @@ import {AraContent} from "../../src/AraContent.sol";
 import {Marketplace} from "../../src/Marketplace.sol";
 import {AraCollections} from "../../src/AraCollections.sol";
 import {AraNameRegistry} from "../../src/AraNameRegistry.sol";
+import {AraModeration} from "../../src/AraModeration.sol";
 
 /// @dev Minimal mock ERC20 for test token
 contract MockToken {
@@ -46,6 +47,7 @@ abstract contract DeployHelper is Test {
     Marketplace public marketplace;
     AraCollections public collections;
     AraNameRegistry public nameRegistry;
+    AraModeration public moderation;
 
     uint256 public constant PUBLISHER_MIN = 1000 ether;
     uint256 public constant SEEDER_MIN = 100 ether;
@@ -105,6 +107,30 @@ abstract contract DeployHelper is Test {
             abi.encodeCall(AraNameRegistry.initialize, ())
         );
         nameRegistry = AraNameRegistry(address(nameRegistryProxy));
+
+        // Deploy AraModeration proxy
+        AraModeration moderationImpl = new AraModeration();
+        ERC1967Proxy moderationProxy = new ERC1967Proxy(
+            address(moderationImpl),
+            abi.encodeCall(
+                AraModeration.initialize,
+                (
+                    address(contentProxy),
+                    address(stakingProxy),
+                    1000 ether,     // flagMinStake: 1000 ARA
+                    10_000 ether,   // emergencyMinStake: 10000 ARA
+                    3,              // flagThreshold: 3 flags to activate voting
+                    7 days,         // votingPeriod
+                    1 days,         // emergencyVotingPeriod
+                    500,            // quorumBps: 5% of totalStaked
+                    6600            // supermajorityBps: 66%
+                )
+            )
+        );
+        moderation = AraModeration(address(moderationProxy));
+
+        // Authorize moderation contract to delist content
+        contentToken.setModerator(address(moderation));
     }
 
     /// @dev Compute EIP-712 DeliveryReceipt hash

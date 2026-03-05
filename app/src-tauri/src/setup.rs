@@ -25,6 +25,20 @@ pub fn init(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         config.ethereum.rpc_url = rpc_url;
     }
 
+    // Default supported ERC-20 payment tokens (Sepolia testnet)
+    config.ethereum.supported_tokens = vec![
+        ara_core::config::TokenConfig {
+            address: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238".to_string(),
+            symbol: "USDC".to_string(),
+            decimals: 6,
+        },
+    ];
+
+    // Use Irys devnet for testnets (mainnet Irys rejects Sepolia ETH)
+    if config.ethereum.chain_id != 1 {
+        config.arweave.node_url = "https://devnet.irys.xyz".to_string();
+    }
+
     config.iroh.data_dir = app_data_dir
         .join("iroh")
         .to_string_lossy()
@@ -148,6 +162,22 @@ pub fn init(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
+
+    // Handle deep link on first launch (app opened via ara:// URL).
+    // The URL arrives as a command-line argument. Emit after a delay so the
+    // frontend has time to mount its event listener.
+    {
+        let handle = app.handle().clone();
+        for arg in std::env::args().skip(1) {
+            if let Some(path) = crate::parse_ara_deep_link(&arg) {
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    let _ = handle.emit("deep-link-navigate", path);
+                });
+                break; // only handle the first deep link arg
+            }
+        }
+    }
 
     info!("Ara Marketplace initialized successfully");
     Ok(())

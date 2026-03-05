@@ -111,9 +111,11 @@ fn test_purchase_calldata() {
     let content_id =
         fixed_bytes!("aabbccdd00000000000000000000000000000000000000000000000000000000");
 
-    let calldata = MarketplaceClient::<()>::purchase_calldata(content_id);
+    let max_price = U256::from(100_000_000_000_000_000u128); // 0.1 ETH
+    let calldata = MarketplaceClient::<()>::purchase_calldata(content_id, max_price);
     let decoded = IMarketplace::purchaseCall::abi_decode(&calldata).unwrap();
     assert_eq!(decoded.contentId, content_id);
+    assert_eq!(decoded.maxPrice, max_price);
 }
 
 /// Verify listForResale calldata encoding.
@@ -136,10 +138,12 @@ fn test_buy_resale_calldata() {
         fixed_bytes!("2222222222222222222222222222222222222222222222222222222222222222");
     let seller = address!("0000000000000000000000000000000000000099");
 
-    let calldata = MarketplaceClient::<()>::buy_resale_calldata(content_id, seller);
+    let max_price = U256::from(200_000_000_000_000_000u128); // 0.2 ETH
+    let calldata = MarketplaceClient::<()>::buy_resale_calldata(content_id, seller, max_price);
     let decoded = IMarketplace::buyResaleCall::abi_decode(&calldata).unwrap();
     assert_eq!(decoded.contentId, content_id);
     assert_eq!(decoded.seller, seller);
+    assert_eq!(decoded.maxPrice, max_price);
 }
 
 /// Verify ContractAddresses with real ARA token address.
@@ -154,6 +158,7 @@ fn test_contract_addresses() {
         marketplace: Address::ZERO,
         collections: Address::ZERO,
         name_registry: Address::ZERO,
+        moderation: Address::ZERO,
     };
 
     assert_eq!(

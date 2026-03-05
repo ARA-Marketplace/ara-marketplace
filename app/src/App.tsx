@@ -1,4 +1,6 @@
-import { Routes, Route } from "react-router-dom";
+import { useEffect } from "react";
+import { Routes, Route, useNavigate } from "react-router-dom";
+import { listen } from "@tauri-apps/api/event";
 import Layout from "./components/Layout";
 import Marketplace from "./pages/Marketplace";
 import ContentDetail from "./pages/ContentDetail";
@@ -18,6 +20,18 @@ if (savedTheme === "dark") {
 }
 
 function App() {
+  const navigate = useNavigate();
+
+  // Listen for deep link navigation events (ara:// protocol)
+  useEffect(() => {
+    const unlisten = listen<string>("deep-link-navigate", (event) => {
+      navigate(event.payload);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [navigate]);
+
   return (
     <Layout>
       <Routes>

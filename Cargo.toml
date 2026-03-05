@@ -4,13 +4,14 @@ members = [
     "crates/ara-core",
     "crates/ara-p2p",
     "crates/ara-chain",
+    "crates/ara-sdk",
     "app/src-tauri",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "LGPL-3.0"
+license = "BUSL-1.1"
 repository = "https://github.com/AraBlocks/ara-marketplace"
 
 [workspace.dependencies]

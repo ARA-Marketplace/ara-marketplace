@@ -82,6 +82,35 @@ impl<P: Provider + Clone> ContentTokenClient<P> {
         Ok(result)
     }
 
+    /// Get the payment token address for a content item.
+    /// Returns `Address::ZERO` for ETH-priced content.
+    pub async fn get_payment_token(
+        &self,
+        content_id: FixedBytes<32>,
+    ) -> Result<Address> {
+        let contract = IAraContent::new(self.address, &self.provider);
+        let result = contract.getPaymentToken(content_id).call().await?;
+        Ok(result)
+    }
+
+    /// Check if content has collaborator revenue splits.
+    pub async fn has_collaborators(&self, content_id: FixedBytes<32>) -> Result<bool> {
+        let contract = IAraContent::new(self.address, &self.provider);
+        let result = contract.hasCollaborators(content_id).call().await?;
+        Ok(result)
+    }
+
+    /// Get the collaborator list for a content item.
+    /// Returns Vec of (wallet, shareBps) tuples.
+    pub async fn get_collaborators(
+        &self,
+        content_id: FixedBytes<32>,
+    ) -> Result<Vec<IAraContent::Collaborator>> {
+        let contract = IAraContent::new(self.address, &self.provider);
+        let result = contract.getCollaborators(content_id).call().await?;
+        Ok(result)
+    }
+
     /// Get the content token contract address.
     pub fn address(&self) -> Address {
         self.address
@@ -141,6 +170,52 @@ impl<P> ContentTokenClient<P> {
     pub fn delist_content_calldata(content_id: FixedBytes<32>) -> Vec<u8> {
         IAraContent::delistContentCall {
             contentId: content_id,
+        }
+        .abi_encode()
+    }
+
+    /// Encode calldata for `publishContentWithToken(...)`.
+    /// Same as `publishContent` but specifies an ERC-20 payment token address.
+    pub fn publish_content_with_token_calldata(
+        content_hash: FixedBytes<32>,
+        metadata_uri: String,
+        price: U256,
+        file_size: U256,
+        max_supply: U256,
+        royalty_bps: u128,
+        payment_token: Address,
+    ) -> Vec<u8> {
+        IAraContent::publishContentWithTokenCall {
+            contentHash: content_hash,
+            metadataURI: metadata_uri,
+            price,
+            fileSize: file_size,
+            maxSupply: max_supply,
+            royaltyBps: Uint::<96, 2>::from(royalty_bps),
+            paymentToken: payment_token,
+        }
+        .abi_encode()
+    }
+
+    /// Encode calldata for `publishContentWithCollaborators(...)`.
+    /// Same as `publishContent` but includes collaborator revenue splits.
+    pub fn publish_content_with_collaborators_calldata(
+        content_hash: FixedBytes<32>,
+        metadata_uri: String,
+        price_wei: U256,
+        file_size: U256,
+        max_supply: U256,
+        royalty_bps: u128,
+        collaborators: Vec<IAraContent::Collaborator>,
+    ) -> Vec<u8> {
+        IAraContent::publishContentWithCollaboratorsCall {
+            contentHash: content_hash,
+            metadataURI: metadata_uri,
+            priceWei: price_wei,
+            fileSize: file_size,
+            maxSupply: max_supply,
+            royaltyBps: Uint::<96, 2>::from(royalty_bps),
+            collaborators,
         }
         .abi_encode()
     }

@@ -43,7 +43,8 @@ pub enum AraEvent {
     },
     RewardsClaimed {
         seeder: Address,
-        total_amount: U256,
+        total_eth_amount: U256,
+        total_token_amount: U256,
         receipt_count: U256,
     },
     ResalePurchased {
@@ -380,7 +381,8 @@ impl<P: Provider + Clone> EventIndexer<P> {
         if let Ok(e) = IMarketplace::RewardsClaimed::decode_log(log) {
             return Some(AraEvent::RewardsClaimed {
                 seeder: e.seeder,
-                total_amount: e.totalAmount,
+                total_eth_amount: e.totalEthAmount,
+                total_token_amount: e.totalTokenAmount,
                 receipt_count: e.receiptCount,
             });
         }

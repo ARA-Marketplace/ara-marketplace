@@ -6,6 +6,8 @@ pub struct AppConfig {
     pub ethereum: EthereumConfig,
     pub iroh: IrohConfig,
     pub storage: StorageConfig,
+    #[serde(default)]
+    pub arweave: ArweaveConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,8 +30,25 @@ pub struct EthereumConfig {
     /// AraNameRegistry contract address
     #[serde(default)]
     pub name_registry_address: String,
+    /// AraModeration contract address
+    #[serde(default)]
+    pub moderation_address: String,
     /// Block number where contracts were deployed (floor for event sync)
     pub deployment_block: u64,
+    /// Supported ERC-20 payment tokens (address → {symbol, decimals})
+    #[serde(default)]
+    pub supported_tokens: Vec<TokenConfig>,
+}
+
+/// Configuration for a supported ERC-20 payment token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenConfig {
+    /// Contract address (checksummed)
+    pub address: String,
+    /// Token symbol (e.g. "USDC", "DAI")
+    pub symbol: String,
+    /// Number of decimals (e.g. 6 for USDC, 18 for DAI)
+    pub decimals: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +67,23 @@ pub struct StorageConfig {
     pub downloads_dir: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArweaveConfig {
+    /// Irys bundler node URL (e.g. "https://node2.irys.xyz")
+    pub node_url: String,
+    /// Arweave gateway URL for downloads (e.g. "https://arweave.net")
+    pub gateway_url: String,
+}
+
+impl Default for ArweaveConfig {
+    fn default() -> Self {
+        Self {
+            node_url: "https://node2.irys.xyz".to_string(),
+            gateway_url: "https://arweave.net".to_string(),
+        }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -62,7 +98,9 @@ impl Default for AppConfig {
                 marketplace_address: "0xD7992b6A863FBacE3BB58BFE5D31EAe580adF4E0".to_string(),
                 collections_address: "0x59453f1f12D10e4B4210fae8188d666011292997".to_string(),
                 name_registry_address: "0xDA5827A8659271C44174894bbA403FD264198C5d".to_string(),
+                moderation_address: String::new(), // Not yet deployed
                 deployment_block: 10_349_200, // Sepolia deploy block (2026-02-27)
+                supported_tokens: vec![],     // No ERC-20 tokens configured by default
             },
             iroh: IrohConfig {
                 relay_urls: vec!["https://relay.iroh.network".to_string()],
@@ -72,6 +110,7 @@ impl Default for AppConfig {
                 db_path: "data/ara-marketplace.db".to_string(),
                 downloads_dir: "downloads".to_string(),
             },
+            arweave: ArweaveConfig::default(),
         }
     }
 }

@@ -51,6 +51,34 @@ pub enum GossipMessage {
         /// Ed25519 signature — Vec to satisfy serde bounds
         signature: Vec<u8>,
     },
+    /// Broadcast that content has been flagged by moderation.
+    /// Nodes receiving this should hide content from marketplace UI.
+    ContentFlagged {
+        /// On-chain keccak256 content ID
+        content_id: [u8; 32],
+        /// BLAKE3 content hash (gossip topic key)
+        content_hash: ContentHash,
+        /// Flagger's Ethereum address
+        flagged_by: [u8; 20],
+        /// Reason category (0=Copyright, 1=Spam, 2=Malware, 3=Fraud, 4=IllegalContent, 5=Other)
+        reason: u8,
+        /// Whether this is an emergency flag
+        is_emergency: bool,
+        /// Unix timestamp
+        timestamp: u64,
+    },
+    /// Broadcast that content has been purged by moderation consensus.
+    /// Nodes receiving this should delete the iroh blob and stop seeding.
+    ContentPurge {
+        /// On-chain keccak256 content ID
+        content_id: [u8; 32],
+        /// BLAKE3 content hash (identifies the blob to delete)
+        content_hash: ContentHash,
+        /// Transaction hash of the resolution (on-chain proof)
+        resolution_tx_hash: Vec<u8>,
+        /// Unix timestamp
+        timestamp: u64,
+    },
 }
 
 /// Derive a gossip topic from a content hash.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-3.0
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.24;
 
 import {AraContent} from "./AraContent.sol";
@@ -10,6 +10,11 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeab
 ///         named collections with a banner image and description, visible to all
 ///         marketplace users after sync.
 contract AraCollections is Initializable, UUPSUpgradeable {
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
     AraContent public contentToken;
     address public owner;
 
@@ -41,6 +46,9 @@ contract AraCollections is Initializable, UUPSUpgradeable {
     event CollectionDeleted(uint256 indexed collectionId);
     event ItemAddedToCollection(uint256 indexed collectionId, bytes32 indexed contentId);
     event ItemRemovedFromCollection(uint256 indexed collectionId, bytes32 indexed contentId);
+
+    // === V2: Security hardening ===
+    address public pendingOwner;
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Not owner");
@@ -121,8 +129,7 @@ contract AraCollections is Initializable, UUPSUpgradeable {
         onlyCollectionCreator(collectionId)
     {
         // Verify caller is the content creator
-        (address contentCreator,,,,,,, ) = contentToken.contents(contentId);
-        require(contentCreator == msg.sender, "Not content creator");
+        require(contentToken.getCreator(contentId) == msg.sender, "Not content creator");
         require(contentCollection[contentId] == 0, "Already in a collection");
 
         collectionItems[collectionId].push(contentId);
@@ -168,6 +175,20 @@ contract AraCollections is Initializable, UUPSUpgradeable {
     function getCollectionItemCount(uint256 collectionId) external view returns (uint256) {
         return collectionItems[collectionId].length;
     }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "Zero address");
+        pendingOwner = newOwner;
+    }
+
+    function acceptOwnership() external {
+        require(msg.sender == pendingOwner, "Not pending owner");
+        owner = msg.sender;
+        pendingOwner = address(0);
+    }
+
+    /// @dev Reserved storage for future upgrades
+    uint256[50] private __gap;
 
     function _authorizeUpgrade(address) internal override onlyOwner {}
 }

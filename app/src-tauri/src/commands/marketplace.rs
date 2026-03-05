@@ -1,4 +1,5 @@
-use crate::commands::types::{format_wei, hex_encode, parse_token_amount, TransactionRequest};
+use crate::commands::types::{format_token_amount, format_wei, hex_encode, parse_token_amount, TransactionRequest};
+use ara_chain::token::TokenClient;
 use crate::gossip_actor::GossipCmd;
 use crate::state::AppState;
 use alloy::primitives::{Address, FixedBytes, U256};
@@ -55,12 +56,12 @@ pub async fn purchase_content(
     let buyer_addr_str = wallet.as_ref().ok_or("No wallet connected")?.clone();
     drop(wallet);
 
-    // Look up content in local DB to get price and title
-    let (title, price_wei_str, _content_type) = {
+    // Look up content in local DB to get price, title, and payment token
+    let (title, price_wei_str, _content_type, payment_token_str) = {
         let db = state.db.lock().await;
         let conn = db.conn();
         conn.query_row(
-            "SELECT title, price_wei, content_type FROM content
+            "SELECT title, price_wei, content_type, COALESCE(payment_token, '') FROM content
              WHERE content_id = ?1 AND active = 1",
             rusqlite::params![&content_id],
             |row| {
@@ -68,6 +69,7 @@ pub async fn purchase_content(
                     row.get::<_, Option<String>>(0)?.unwrap_or_default(),
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    row.get::<_, String>(3)?,
                 ))
             },
         )
@@ -77,7 +79,22 @@ pub async fn purchase_content(
     let price_wei: U256 = price_wei_str
         .parse()
         .map_err(|e| format!("Invalid price in DB: {e}"))?;
-    let price_eth = format_wei(price_wei);
+
+    // Determine if this is a token purchase
+    let is_token_purchase = !payment_token_str.is_empty()
+        && payment_token_str != "0x0000000000000000000000000000000000000000";
+
+    // Format price with correct decimals
+    let (price_display, price_unit) = if is_token_purchase {
+        let token_cfg = state.config.ethereum.supported_tokens.iter()
+            .find(|t| t.address.eq_ignore_ascii_case(&payment_token_str));
+        let decimals = token_cfg.map(|t| t.decimals).unwrap_or(18);
+        let symbol = token_cfg.map(|t| t.symbol.as_str()).unwrap_or("TOKEN");
+        (format_token_amount(price_wei, decimals), symbol.to_string())
+    } else {
+        (format_wei(price_wei), "ETH".to_string())
+    };
+    let price_eth = price_display.clone();
 
     // Build purchase transaction
     let marketplace_addr_str = &state.config.ethereum.marketplace_address;
@@ -120,8 +137,35 @@ pub async fn purchase_content(
                 content_id
             );
             vec![] // empty = local-only path, confirm_purchase will record it
+        } else if is_token_purchase {
+            // Token purchase: approve token + purchaseWithToken
+            let token_addr: Address = payment_token_str
+                .parse()
+                .map_err(|e| format!("Invalid payment token address: {e}"))?;
+
+            let approve_calldata = TokenClient::<()>::approve_calldata(marketplace_addr, price_wei);
+            let purchase_calldata = MarketplaceClient::<()>::purchase_with_token_calldata(
+                content_id_bytes,
+                token_addr,
+                price_wei,
+            );
+
+            vec![
+                TransactionRequest {
+                    to: format!("{token_addr:#x}"),
+                    data: hex_encode(&approve_calldata),
+                    value: "0x0".to_string(),
+                    description: format!("Approve {} {} for marketplace", price_display, price_unit),
+                },
+                TransactionRequest {
+                    to: format!("{marketplace_addr:#x}"),
+                    data: hex_encode(&purchase_calldata),
+                    value: "0x0".to_string(),
+                    description: format!("Purchase \"{}\" for {} {}", title, price_display, price_unit),
+                },
+            ]
         } else {
-            let calldata = MarketplaceClient::<()>::purchase_calldata(content_id_bytes);
+            let calldata = MarketplaceClient::<()>::purchase_calldata(content_id_bytes, price_wei);
 
             // value = price in wei (hex-encoded) — this is a payable call
             let value_hex = format!("0x{:x}", price_wei);
@@ -177,12 +221,12 @@ pub async fn confirm_purchase(
         .unwrap()
         .as_secs() as i64;
 
-    // Get content_hash (BLAKE3, for iroh), publisher node ID, relay URL, and filename from content table
-    let (content_hash_str, publisher_node_id_opt, publisher_relay_url_opt, filename_opt) = {
+    // Get content_hash (BLAKE3, for iroh), publisher node ID, relay URL, filename, and arweave_tx_id from content table
+    let (content_hash_str, publisher_node_id_opt, publisher_relay_url_opt, filename_opt, arweave_tx_id_opt) = {
         let db = state.db.lock().await;
         let row = db.conn()
             .query_row(
-                "SELECT content_hash, publisher_node_id, publisher_relay_url, filename FROM content WHERE content_id = ?1",
+                "SELECT content_hash, publisher_node_id, publisher_relay_url, filename, arweave_tx_id FROM content WHERE content_id = ?1",
                 rusqlite::params![&content_id],
                 |row| {
                     Ok((
@@ -190,12 +234,13 @@ pub async fn confirm_purchase(
                         row.get::<_, Option<String>>(1)?,
                         row.get::<_, Option<String>>(2)?,
                         row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 },
             )
             .map_err(|e| format!("Content not found: {e}"))?;
         // Filter empty strings — legacy content may store "" instead of NULL
-        (row.0, row.1.filter(|s| !s.is_empty()), row.2.filter(|s| !s.is_empty()), row.3)
+        (row.0, row.1.filter(|s| !s.is_empty()), row.2.filter(|s| !s.is_empty()), row.3, row.4.filter(|s| !s.is_empty()))
     };
 
     // Insert into purchases table
@@ -249,8 +294,12 @@ pub async fn confirm_purchase(
 
     let is_self = publisher_node_id_opt.as_deref() == Some(our_node_id_str.as_str());
 
+    // Track whether we downloaded from Arweave (skip iroh export if so)
+    let mut downloaded_from_arweave = false;
+
     if !already_local && !is_self {
-        if let Some(node_id_str) = &publisher_node_id_opt {
+        // Try P2P download first
+        let p2p_result = if let Some(node_id_str) = &publisher_node_id_opt {
             let node_id: iroh::NodeId = node_id_str
                 .parse()
                 .map_err(|e| format!("Invalid publisher node ID: {e}"))?;
@@ -299,9 +348,39 @@ pub async fn confirm_purchase(
                     },
                 )
                 .await
-                .map_err(|e| format!("P2P download failed: {e}"))?;
         } else {
-            return Err("Publisher node ID not available — cannot download content".to_string());
+            Err(anyhow::anyhow!("Publisher node ID not available"))
+        };
+
+        if let Err(p2p_err) = p2p_result {
+            // P2P download failed — try Arweave fallback if available
+            if let Some(ref tx_id) = arweave_tx_id_opt {
+                info!(
+                    "P2P download failed ({}), falling back to Arweave tx {}",
+                    p2p_err, tx_id
+                );
+
+                let arweave_config = crate::arweave::IrysConfig {
+                    node_url: state.config.arweave.node_url.clone(),
+                    gateway_url: state.config.arweave.gateway_url.clone(),
+                };
+                let client = reqwest::Client::new();
+                let bytes = crate::arweave::download_from_arweave(&client, &arweave_config, tx_id)
+                    .await
+                    .map_err(|e| format!("Arweave fallback download also failed: {e}"))?;
+
+                // Write directly to output path
+                std::fs::write(&output_path, &bytes)
+                    .map_err(|e| format!("Failed to save Arweave download: {e}"))?;
+                downloaded_from_arweave = true;
+
+                info!(
+                    "Downloaded {} bytes from Arweave permanent storage (no active seeders)",
+                    bytes.len()
+                );
+            } else {
+                return Err(format!("P2P download failed: {p2p_err}"));
+            }
         }
     } else if already_local {
         info!("Blob already in local store, skipping download");
@@ -309,9 +388,11 @@ pub async fn confirm_purchase(
         info!("Buyer is the publisher — blob already in local store");
     }
 
-    // Export blob to downloads directory
-    // Skip if the file already exists (e.g. re-confirming a previous purchase)
-    if output_path.exists() {
+    // Export blob to downloads directory (skip if already downloaded from Arweave)
+    // Also skip if the file already exists (e.g. re-confirming a previous purchase)
+    if downloaded_from_arweave {
+        info!("File saved directly from Arweave, skipping iroh export");
+    } else if output_path.exists() {
         info!("File already exists at {}, skipping export", output_path.display());
     } else {
         content_mgr
@@ -840,7 +921,7 @@ pub async fn buy_resale(
     }
     let price_eth = format_wei(price_wei);
 
-    let calldata = MarketplaceClient::<()>::buy_resale_calldata(content_id_bytes, seller_addr);
+    let calldata = MarketplaceClient::<()>::buy_resale_calldata(content_id_bytes, seller_addr, price_wei);
     let value_hex = format!("0x{:x}", price_wei);
 
     Ok(BuyResalePrepareResult {
