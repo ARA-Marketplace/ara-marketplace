@@ -52,7 +52,7 @@ impl MarketplaceOps<'_> {
 
             let approve = TokenClient::<()>::approve_calldata(marketplace_addr, price_wei);
             let purchase = MarketplaceClient::<()>::purchase_with_token_calldata(
-                content_id_bytes, token_addr, price_wei,
+                content_id_bytes, token_addr, price_wei, price_wei,
             );
 
             (display.clone(), symbol.to_string(), vec![

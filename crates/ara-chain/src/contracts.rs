@@ -43,7 +43,7 @@ sol! {
         event ContentStakeAdded(address indexed user, bytes32 indexed contentId, uint256 amount);
         event ContentStakeRemoved(address indexed user, bytes32 indexed contentId, uint256 amount);
         event StakerRewardClaimed(address indexed user, uint256 amount);
-        event TokenRewardDeposited(address indexed token, uint256 amount, uint256 newRewardPerToken);
+        event TokenRewardDeposited(address indexed token, uint256 amount);
         event TokenRewardClaimed(address indexed user, address indexed token, uint256 amount);
     }
 
@@ -59,7 +59,6 @@ sol! {
         function publishContentWithCollaborators(bytes32 contentHash, string metadataURI, uint256 priceWei, uint256 fileSize, uint256 maxSupply, uint96 royaltyBps, Collaborator[] collaborators) external returns (bytes32 contentId);
         function updateContent(bytes32 contentId, uint256 newPriceWei, string newMetadataURI) external;
         function updateContentFile(bytes32 contentId, bytes32 newContentHash) external;
-        function updateFileSize(bytes32 contentId, uint256 newFileSize) external;
         function delistContent(bytes32 contentId) external;
         function getContentCount() external view returns (uint256);
         function getContentHash(bytes32 contentId) external view returns (bytes32);
@@ -94,7 +93,7 @@ sol! {
         }
 
         function purchase(bytes32 contentId, uint256 maxPrice) external payable;
-        function purchaseWithToken(bytes32 contentId, address token, uint256 amount) external;
+        function purchaseWithToken(bytes32 contentId, address token, uint256 amount, uint256 maxPrice) external;
         function claimDeliveryReward(bytes32 contentId, address buyer, uint256 bytesServed, uint256 timestamp, bytes signature) external;
         function claimDeliveryRewards(ClaimParams[] claims) external;
         function hasPurchased(bytes32 contentId, address buyer) external view returns (bool);

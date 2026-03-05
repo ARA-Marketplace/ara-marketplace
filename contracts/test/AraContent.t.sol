@@ -67,10 +67,13 @@ contract AraContentTest is DeployHelper {
         assertEq(contentToken.getContentCount(), 2);
     }
 
-    function test_RevertPublishZeroPrice() public {
+    function test_RevertPublishPriceTooLow() public {
         vm.prank(creator);
-        vm.expectRevert();
+        vm.expectRevert(AraContent.PriceTooLow.selector);
         contentToken.publishContent(contentHash, metadataURI, 0, fileSize, 0, 0);
+        vm.prank(creator);
+        vm.expectRevert(AraContent.PriceTooLow.selector);
+        contentToken.publishContent(contentHash, metadataURI, 999, fileSize, 0, 0);
     }
 
     function test_RevertPublishZeroFileSize() public {
@@ -215,15 +218,13 @@ contract AraContentTest is DeployHelper {
         assertEq(contentToken.getContentHash(contentId), newHash);
     }
 
-    function test_UpdateFileSize() public {
+    /// @notice updateFileSize was removed — fileSize is immutable after publish
+    function test_FileSizeImmutableAfterPublish() public {
         vm.prank(creator);
         bytes32 contentId = contentToken.publishContent(contentHash, metadataURI, price, fileSize, 0, 0);
 
-        uint256 newSize = 2_000_000;
-        vm.prank(creator);
-        contentToken.updateFileSize(contentId, newSize);
-
-        assertEq(contentToken.getFileSize(contentId), newSize);
+        // fileSize is set at publish and cannot be changed
+        assertEq(contentToken.getFileSize(contentId), fileSize);
     }
 
     function test_DelistContent() public {

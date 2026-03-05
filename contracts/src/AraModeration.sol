@@ -109,6 +109,8 @@ contract AraModeration is Initializable, UUPSUpgradeable {
     error ContentIsPurged();
     error ContentNotActive();
     error ZeroAddress();
+    error QuorumTooLow();
+    error SupermajorityTooLow();
 
     // === V2: Security hardening ===
     address public pendingOwner;
@@ -364,11 +366,13 @@ contract AraModeration is Initializable, UUPSUpgradeable {
     }
 
     function setQuorumBps(uint256 _val) external onlyOwner {
+        if (_val < 500) revert QuorumTooLow(); // 5% minimum
         quorumBps = _val;
         emit ConfigUpdated("quorumBps", _val);
     }
 
     function setSupermajorityBps(uint256 _val) external onlyOwner {
+        if (_val < 5000) revert SupermajorityTooLow(); // 50% minimum
         supermajorityBps = _val;
         emit ConfigUpdated("supermajorityBps", _val);
     }

@@ -156,6 +156,11 @@ contract Marketplace is Initializable, UUPSUpgradeable, ReentrancyGuard {
     error UnsupportedToken();
     error TokenMismatch();
     error ZeroAddress();
+    error PriceTooLow();
+    error ExcessiveFees();
+
+    /// @notice Minimum resale price to prevent dust listings that bypass royalties via rounding
+    uint256 public constant MIN_RESALE_PRICE = 1000;
 
     // === V4: Security hardening ===
     address public pendingOwner;
@@ -253,7 +258,7 @@ contract Marketplace is Initializable, UUPSUpgradeable, ReentrancyGuard {
     /// @param contentId The content to purchase
     /// @param token The ERC-20 token to pay with
     /// @param amount The amount of tokens to pay (must match content price)
-    function purchaseWithToken(bytes32 contentId, address token, uint256 amount) external nonReentrant {
+    function purchaseWithToken(bytes32 contentId, address token, uint256 amount, uint256 maxPrice) external nonReentrant {
         if (hasPurchased[contentId][msg.sender]) revert AlreadyPurchased();
         if (!contentToken.isActive(contentId)) revert ContentNotActive();
         if (!supportedTokens[token]) revert UnsupportedToken();
@@ -263,6 +268,7 @@ contract Marketplace is Initializable, UUPSUpgradeable, ReentrancyGuard {
         if (expectedToken != token) revert TokenMismatch();
 
         uint256 price = contentToken.getPrice(contentId);
+        if (price > maxPrice) revert InsufficientPayment(maxPrice, price);
         if (amount < price) revert InsufficientPayment(amount, price);
 
         hasPurchased[contentId][msg.sender] = true;
@@ -395,7 +401,7 @@ contract Marketplace is Initializable, UUPSUpgradeable, ReentrancyGuard {
     ///         Seller must call contentToken.setApprovalForAll(marketplace, true) first.
     function listForResale(bytes32 contentId, uint256 price) external {
         if (contentToken.balanceOf(msg.sender, uint256(contentId)) == 0) revert NotTokenOwner();
-        if (price == 0) revert InsufficientPayment(0, 1);
+        if (price < MIN_RESALE_PRICE) revert PriceTooLow();
         listings[contentId][msg.sender] = Listing({price: price, active: true});
         emit ContentListed(contentId, msg.sender, price);
     }
@@ -432,7 +438,8 @@ contract Marketplace is Initializable, UUPSUpgradeable, ReentrancyGuard {
         // 3. Seeder reward (4% of resale)
         uint256 seederReward = (price * resaleRewardBps) / BPS_DENOMINATOR;
 
-        // 4. Seller gets the rest
+        // 4. Seller gets the rest (explicit guard for clarity, also caught by Solidity 0.8 checked math)
+        if (royaltyAmount + stakerReward + seederReward > price) revert ExcessiveFees();
         uint256 sellerProceeds = price - royaltyAmount - stakerReward - seederReward;
 
         // Transfer token from seller to buyer
@@ -658,6 +665,7 @@ contract Marketplace is Initializable, UUPSUpgradeable, ReentrancyGuard {
 
     /// @dev Recover the signer of an EIP-712 hash from a 65-byte signature.
     ///      Returns address(0) on invalid input.
+    ///      Rejects malleable signatures per EIP-2 (s must be in lower half of secp256k1 order).
     function _ecrecover(bytes32 hash, bytes calldata sig) internal pure returns (address) {
         if (sig.length != 65) return address(0);
         bytes32 r;
@@ -668,6 +676,8 @@ contract Marketplace is Initializable, UUPSUpgradeable, ReentrancyGuard {
             s := calldataload(add(sig.offset, 32))
             v := byte(0, calldataload(add(sig.offset, 64)))
         }
+        // Reject malleable signatures: s must be in the lower half of secp256k1 order
+        if (uint256(s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) return address(0);
         // Some wallets return v as 0/1; normalize to 27/28
         if (v < 27) v += 27;
         if (v != 27 && v != 28) return address(0);

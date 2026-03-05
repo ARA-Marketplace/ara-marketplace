@@ -296,11 +296,13 @@ contract AraStaking is Initializable, UUPSUpgradeable, ReentrancyGuard {
                 rewardTokens.push(token);
                 isRewardToken[token] = true;
             }
-            // Transfer tokens from marketplace to this contract (SafeERC20 for non-standard tokens)
+            // Transfer tokens — use balance-before/after to handle fee-on-transfer tokens
+            uint256 balBefore = IERC20(token).balanceOf(address(this));
             IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-            tokenRewardPerTokenStored[token] += (amount * 1e18) / totalStaked;
+            uint256 received = IERC20(token).balanceOf(address(this)) - balBefore;
+            tokenRewardPerTokenStored[token] += (received * 1e18) / totalStaked;
+            emit TokenRewardDeposited(token, received);
         }
-        emit TokenRewardDeposited(token, amount);
     }
 
     /// @notice View: how much of a specific token a user has earned but not yet claimed

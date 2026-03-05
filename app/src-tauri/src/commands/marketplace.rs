@@ -148,6 +148,7 @@ pub async fn purchase_content(
                 content_id_bytes,
                 token_addr,
                 price_wei,
+                price_wei, // maxPrice = price (slippage protection)
             );
 
             vec![
@@ -268,11 +269,16 @@ pub async fn confirm_purchase(
     std::fs::create_dir_all(downloads_dir)
         .map_err(|e| format!("Failed to create downloads dir: {e}"))?;
 
-    // Use stored filename if available; otherwise use a temp name and detect type after export
-    let known_filename = filename_opt.filter(|f| {
-        // Only trust stored filename if it has a meaningful extension
-        Path::new(f).extension().map_or(false, |e| e != "bin")
-    });
+    // Use stored filename if available; otherwise use a temp name and detect type after export.
+    // SECURITY: strip path components to prevent directory traversal (e.g. "../../evil.exe")
+    let known_filename = filename_opt
+        .as_deref()
+        .and_then(|f| Path::new(f).file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|f| {
+            // Only trust stored filename if it has a meaningful extension
+            Path::new(f).extension().map_or(false, |e| e != "bin")
+        });
     let hash_prefix = alloy::hex::encode(&content_hash_bytes[..8]);
     let temp_filename = format!("{}.bin", hash_prefix);
     let output_path = downloads_dir.join(known_filename.as_deref().unwrap_or(&temp_filename));

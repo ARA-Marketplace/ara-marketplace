@@ -174,26 +174,24 @@ impl GossipActor {
                             content_id_hex, seeder_eth_address_hex,
                             buyer_eth_address_hex, signature_hex, timestamp, bytes_served,
                         }) => {
-                            let db = self.db.lock().await;
-                            if let Err(e) = db.insert_delivery_receipt(
-                                &content_id_hex,
-                                &seeder_eth_address_hex,
-                                &buyer_eth_address_hex,
-                                &signature_hex,
-                                timestamp,
-                                bytes_served,
-                            ) {
-                                warn!("Failed to store delivery receipt: {e}");
-                            }
-                            // Credit bytes_served to our seeding entry (if we're seeding this content).
-                            // This is a fallback for cases where the iroh blob event handler missed
-                            // the transfer (e.g. timing race or internal blob metadata transfer).
-                            if bytes_served > 0 {
-                                let _ = db.conn().execute(
-                                    "UPDATE seeding SET bytes_served = MAX(bytes_served, ?1)
-                                     WHERE content_id = ?2",
-                                    rusqlite::params![bytes_served as i64, &content_id_hex],
-                                );
+                            // Validate bytes_served > 0 before storing
+                            if bytes_served == 0 {
+                                warn!("Ignoring delivery receipt with bytes_served=0");
+                            } else {
+                                let db = self.db.lock().await;
+                                if let Err(e) = db.insert_delivery_receipt(
+                                    &content_id_hex,
+                                    &seeder_eth_address_hex,
+                                    &buyer_eth_address_hex,
+                                    &signature_hex,
+                                    timestamp,
+                                    bytes_served,
+                                ) {
+                                    warn!("Failed to store delivery receipt: {e}");
+                                }
+                                // NOTE: bytes_served from gossip is NOT used to update local seeding stats.
+                                // Local stats are only updated from iroh blob transfer events (blob_events.rs)
+                                // to prevent malicious peers from corrupting our byte counters.
                             }
                         }
                         Some(RecvEvent::SeederIdentityReceived { content_hash, node_id, eth_address_hex }) => {
@@ -208,24 +206,21 @@ impl GossipActor {
                             }
                         }
                         Some(RecvEvent::ContentFlagged { content_id_hex, reason, is_emergency }) => {
-                            info!("Processing content flag for {} (reason={}, emergency={})", content_id_hex, reason, is_emergency);
-                            let status = if is_emergency { "emergency_flagged" } else { "flagged" };
-                            let db = self.db.lock().await;
-                            let _ = db.conn().execute(
-                                "UPDATE content SET moderation_status = ?1 WHERE content_id = ?2",
-                                rusqlite::params![status, &content_id_hex],
+                            // SECURITY: Gossip messages are unauthenticated. We log the flag
+                            // but do NOT modify local DB state. Moderation state should only
+                            // be applied from on-chain events via the sync mechanism.
+                            warn!(
+                                "Received unverified content flag via gossip for {} (reason={}, emergency={}) — ignoring, use chain sync",
+                                content_id_hex, reason, is_emergency
                             );
                         }
                         Some(RecvEvent::ContentPurged { content_id_hex, content_hash: _ }) => {
-                            info!("Processing content purge for {}", content_id_hex);
-                            let db = self.db.lock().await;
-                            let _ = db.conn().execute(
-                                "UPDATE content SET moderation_status = 'purged', active = 0 WHERE content_id = ?1",
-                                rusqlite::params![&content_id_hex],
-                            );
-                            let _ = db.conn().execute(
-                                "UPDATE seeding SET active = 0 WHERE content_id = ?1",
-                                rusqlite::params![&content_id_hex],
+                            // SECURITY: Gossip messages are unauthenticated. A malicious peer
+                            // could send a ContentPurge to deactivate arbitrary content locally.
+                            // We log it but do NOT modify local DB state.
+                            warn!(
+                                "Received unverified content purge via gossip for {} — ignoring, use chain sync",
+                                content_id_hex
                             );
                         }
                         None => {} // all recv_loop senders dropped — fine
@@ -396,10 +391,28 @@ impl GossipActor {
         event_tx: mpsc::UnboundedSender<RecvEvent>,
     ) {
         use futures_lite::StreamExt;
+        use std::time::Instant;
         let hash_hex = alloy::hex::encode(content_hash);
+        // Rate limiting: max 10 messages per second per topic
+        let mut msg_count: u32 = 0;
+        let mut window_start = Instant::now();
+        const MAX_MSGS_PER_SEC: u32 = 10;
+
         while let Some(event) = receiver.next().await {
             match event {
                 Ok(Event::Gossip(GossipEvent::Received(msg))) => {
+                    // Rate limit check
+                    let now = Instant::now();
+                    if now.duration_since(window_start).as_secs() >= 1 {
+                        msg_count = 0;
+                        window_start = now;
+                    }
+                    msg_count += 1;
+                    if msg_count > MAX_MSGS_PER_SEC {
+                        warn!("Rate limit exceeded on topic {} — dropping message", hash_hex);
+                        continue;
+                    }
+
                     match serde_json::from_slice::<GossipMessage>(&msg.content) {
                         Ok(GossipMessage::SeederAnnounce {
                             content_hash,
@@ -468,15 +481,36 @@ impl GossipActor {
                                 bytes_served,
                             });
                         }
-                        Ok(GossipMessage::SeederIdentity { node_id, eth_address, .. }) => {
+                        Ok(GossipMessage::SeederIdentity { node_id, eth_address, signature }) => {
+                            // SECURITY: Verify the Ed25519 signature before trusting the
+                            // NodeId → ETH address mapping. Without verification, any peer
+                            // could claim any ETH address for any NodeId.
                             let peer_id = NodeId::from_bytes(&node_id);
                             if let Ok(peer_id) = peer_id {
-                                let eth_hex = alloy::primitives::Address::from(eth_address).to_checksum(None);
-                                let _ = event_tx.send(RecvEvent::SeederIdentityReceived {
-                                    content_hash,
-                                    node_id: peer_id,
-                                    eth_address_hex: eth_hex,
-                                });
+                                // Construct the message that should have been signed:
+                                // keccak256("AraSeeder:" || node_id || eth_address)
+                                let mut msg_bytes = b"AraSeeder:".to_vec();
+                                msg_bytes.extend_from_slice(&node_id);
+                                msg_bytes.extend_from_slice(&eth_address);
+                                let msg_hash = alloy::primitives::keccak256(&msg_bytes);
+
+                                // Verify Ed25519 signature using the NodeId (public key)
+                                if signature.len() == 64 {
+                                    let sig_bytes: [u8; 64] = signature.try_into().unwrap();
+                                    let sig = peer_id.verify(msg_hash.as_slice(), &sig_bytes.into());
+                                    if sig.is_ok() {
+                                        let eth_hex = alloy::primitives::Address::from(eth_address).to_checksum(None);
+                                        let _ = event_tx.send(RecvEvent::SeederIdentityReceived {
+                                            content_hash,
+                                            node_id: peer_id,
+                                            eth_address_hex: eth_hex,
+                                        });
+                                    } else {
+                                        warn!("SeederIdentity signature verification failed for {}", peer_id);
+                                    }
+                                } else {
+                                    warn!("SeederIdentity has invalid signature length: {} (expected 64)", signature.len());
+                                }
                             }
                         }
                         Ok(GossipMessage::ContentFlagged {

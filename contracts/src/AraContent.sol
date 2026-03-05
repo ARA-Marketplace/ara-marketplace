@@ -85,7 +85,7 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
     error ContentAlreadyExists(bytes32 contentId);
     error NotContentCreator();
     error ContentNotActive();
-    error ZeroPrice();
+    error PriceTooLow();
     error ZeroFileSize();
     error EditionSoldOut();
     error OnlyMinter();
@@ -98,6 +98,8 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
     error PublisherNotInCollaborators();
     error ZeroAddress();
     error RoyaltyTooHigh();
+
+    uint256 public constant MIN_PRICE = 1000;
 
     // === V5: Security hardening ===
     address public pendingOwner;
@@ -142,7 +144,7 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
         uint96 royaltyBps
     ) external returns (bytes32 contentId) {
         if (!staking.isEligiblePublisher(msg.sender)) revert InsufficientStake();
-        if (priceWei == 0) revert ZeroPrice();
+        if (priceWei < MIN_PRICE) revert PriceTooLow();
         if (fileSize == 0) revert ZeroFileSize();
         if (royaltyBps > 5000) revert RoyaltyTooHigh(); // 50% max
 
@@ -187,7 +189,7 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
         address _paymentToken
     ) external returns (bytes32 contentId) {
         if (!staking.isEligiblePublisher(msg.sender)) revert InsufficientStake();
-        if (price == 0) revert ZeroPrice();
+        if (price < MIN_PRICE) revert PriceTooLow();
         if (fileSize == 0) revert ZeroFileSize();
         if (royaltyBps > 5000) revert RoyaltyTooHigh();
 
@@ -233,7 +235,7 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
         Collaborator[] calldata collaborators
     ) external returns (bytes32 contentId) {
         if (!staking.isEligiblePublisher(msg.sender)) revert InsufficientStake();
-        if (priceWei == 0) revert ZeroPrice();
+        if (priceWei < MIN_PRICE) revert PriceTooLow();
         if (fileSize == 0) revert ZeroFileSize();
         if (royaltyBps > 5000) revert RoyaltyTooHigh();
         if (collaborators.length == 0 || collaborators.length > MAX_COLLABORATORS) revert TooManyCollaborators();
@@ -308,7 +310,7 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
         ContentMeta storage c = contents[contentId];
         if (c.creator != msg.sender) revert NotContentCreator();
         if (!c.active) revert ContentNotActive();
-        if (newPriceWei == 0) revert ZeroPrice();
+        if (newPriceWei < MIN_PRICE) revert PriceTooLow();
 
         c.priceWei = newPriceWei;
         c.metadataURI = newMetadataURI;
@@ -326,15 +328,8 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
         emit ContentFileUpdated(contentId, oldHash, newContentHash, msg.sender);
     }
 
-    /// @notice Update file size (e.g. after file update)
-    function updateFileSize(bytes32 contentId, uint256 newFileSize) external {
-        ContentMeta storage c = contents[contentId];
-        if (c.creator != msg.sender) revert NotContentCreator();
-        if (!c.active) revert ContentNotActive();
-        if (newFileSize == 0) revert ZeroFileSize();
-        c.fileSize = newFileSize;
-        fileSizes[contentId] = newFileSize;
-    }
+    // updateFileSize removed — fileSize is immutable after publish to prevent
+    // creator manipulation of seeder reward proportions after purchases exist.
 
     /// @notice Delist content from the marketplace
     function delistContent(bytes32 contentId) external {

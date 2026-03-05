@@ -125,17 +125,19 @@ impl<P> MarketplaceClient<P> {
         .abi_encode()
     }
 
-    /// Encode calldata for `purchaseWithToken(contentId, token, amount)`.
+    /// Encode calldata for `purchaseWithToken(contentId, token, amount, maxPrice)`.
     /// Buyer must have already approved the marketplace to spend `amount` of `token`.
     pub fn purchase_with_token_calldata(
         content_id: FixedBytes<32>,
         token: Address,
         amount: U256,
+        max_price: U256,
     ) -> Vec<u8> {
         IMarketplace::purchaseWithTokenCall {
             contentId: content_id,
             token,
             amount,
+            maxPrice: max_price,
         }
         .abi_encode()
     }

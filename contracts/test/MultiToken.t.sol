@@ -123,7 +123,7 @@ contract MultiTokenTest is DeployHelper {
 
         vm.startPrank(buyer);
         usdc.approve(address(marketplace), contentPrice);
-        marketplace.purchaseWithToken(contentId, address(usdc), contentPrice);
+        marketplace.purchaseWithToken(contentId, address(usdc), contentPrice, type(uint256).max);
         vm.stopPrank();
 
         // Buyer should own the NFT
@@ -151,7 +151,7 @@ contract MultiTokenTest is DeployHelper {
         fakeToken.mint(buyer, 1000e6);
         fakeToken.approve(address(marketplace), contentPrice);
         vm.expectRevert();
-        marketplace.purchaseWithToken(contentId, address(fakeToken), contentPrice);
+        marketplace.purchaseWithToken(contentId, address(fakeToken), contentPrice, type(uint256).max);
         vm.stopPrank();
     }
 
@@ -166,7 +166,7 @@ contract MultiTokenTest is DeployHelper {
         vm.startPrank(buyer);
         dai.approve(address(marketplace), contentPrice);
         vm.expectRevert();
-        marketplace.purchaseWithToken(contentId, address(dai), contentPrice);
+        marketplace.purchaseWithToken(contentId, address(dai), contentPrice, type(uint256).max);
         vm.stopPrank();
     }
 
@@ -176,7 +176,7 @@ contract MultiTokenTest is DeployHelper {
         // Purchase with USDC
         vm.startPrank(buyer);
         usdc.approve(address(marketplace), contentPrice);
-        marketplace.purchaseWithToken(contentId, address(usdc), contentPrice);
+        marketplace.purchaseWithToken(contentId, address(usdc), contentPrice, type(uint256).max);
         vm.stopPrank();
 
         // Staker should have earned USDC rewards
@@ -204,7 +204,7 @@ contract MultiTokenTest is DeployHelper {
         // Purchase with USDC
         vm.startPrank(buyer);
         usdc.approve(address(marketplace), contentPrice);
-        marketplace.purchaseWithToken(contentId, address(usdc), contentPrice);
+        marketplace.purchaseWithToken(contentId, address(usdc), contentPrice, type(uint256).max);
         vm.stopPrank();
 
         // Seeder claims delivery reward — should be paid in USDC
@@ -238,7 +238,7 @@ contract MultiTokenTest is DeployHelper {
         // Purchase USDC content
         vm.startPrank(buyer);
         usdc.approve(address(marketplace), contentPrice);
-        marketplace.purchaseWithToken(contentId, address(usdc), contentPrice);
+        marketplace.purchaseWithToken(contentId, address(usdc), contentPrice, type(uint256).max);
         vm.stopPrank();
 
         // Purchase ETH content
@@ -278,7 +278,7 @@ contract MultiTokenTest is DeployHelper {
         // Purchase with USDC to generate token rewards
         vm.startPrank(buyer);
         usdc.approve(address(marketplace), contentPrice);
-        marketplace.purchaseWithToken(contentId, address(usdc), contentPrice);
+        marketplace.purchaseWithToken(contentId, address(usdc), contentPrice, type(uint256).max);
         vm.stopPrank();
 
         // Check staker earned something

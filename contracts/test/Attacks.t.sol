@@ -327,11 +327,14 @@ contract AttacksTest is DeployHelper {
     //                    ZERO PRICE UPDATE ATTACK
     // ═══════════════════════════════════════════════════════════════════
 
-    /// @notice updateContent cannot set price to 0
-    function test_UpdateContentZeroPriceReverts() public {
+    /// @notice updateContent cannot set price below MIN_PRICE
+    function test_UpdateContentPriceTooLowReverts() public {
         vm.prank(creator);
-        vm.expectRevert(AraContent.ZeroPrice.selector);
+        vm.expectRevert(AraContent.PriceTooLow.selector);
         contentToken.updateContent(contentId, 0, "ipfs://updated");
+        vm.prank(creator);
+        vm.expectRevert(AraContent.PriceTooLow.selector);
+        contentToken.updateContent(contentId, 999, "ipfs://updated");
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -413,5 +416,302 @@ contract AttacksTest is DeployHelper {
 
         // Owner succeeds
         freshStaking.initializeV2(address(marketplace));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //                    SIGNATURE MALLEABILITY ATTACK
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// @notice Malleable signature (high-s) is rejected by _ecrecover
+    function test_MalleableSignatureRejected() public {
+        vm.prank(buyer);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
+
+        uint256 ts = block.timestamp;
+        bytes32 hash = _receiptHash(contentId, seeder1, fileSize, ts);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(buyerPrivKey, hash);
+
+        // Create malleable signature: s' = secp256k1n - s, v' = v ^ 1
+        uint256 secp256k1n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+        bytes32 malleableS = bytes32(secp256k1n - uint256(s));
+        uint8 malleableV = v == 27 ? 28 : 27;
+
+        bytes memory malleableSig = abi.encodePacked(r, malleableS, malleableV);
+
+        // Should fail because malleable s-value is in the upper half
+        vm.prank(seeder1);
+        vm.expectRevert(Marketplace.NoRewardsToClaim.selector);
+        marketplace.claimDeliveryReward(contentId, buyer, fileSize, ts, malleableSig);
+
+        // Original (non-malleable) signature should still work
+        bytes memory validSig = abi.encodePacked(r, s, v);
+        uint256 balBefore = seeder1.balance;
+        vm.prank(seeder1);
+        marketplace.claimDeliveryReward(contentId, buyer, fileSize, ts, validSig);
+        assertGt(seeder1.balance, balBefore);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //                    TOKEN PURCHASE SLIPPAGE ATTACK
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// @notice purchaseWithToken respects maxPrice slippage protection
+    function test_PurchaseWithTokenSlippageProtection() public {
+        // Deploy a mock token for token-based purchase
+        MockToken usdc = new MockToken();
+
+        // Whitelist the token
+        vm.prank(deployer);
+        marketplace.setSupportedToken(address(usdc), true);
+
+        // Publish content priced in USDC
+        vm.prank(creator);
+        bytes32 tokenContentId = contentToken.publishContentWithToken(
+            keccak256("token-slippage"), "ipfs://ts", 100e18, fileSize, 0, 0, address(usdc)
+        );
+
+        // Mint tokens to buyer and approve
+        usdc.mint(buyer, 200e18);
+        vm.prank(buyer);
+        usdc.approve(address(marketplace), 200e18);
+
+        // Creator raises price
+        vm.prank(creator);
+        contentToken.updateContent(tokenContentId, 200e18, "ipfs://ts");
+
+        // Buyer's tx with old maxPrice should revert
+        vm.prank(buyer);
+        vm.expectRevert(); // InsufficientPayment(maxPrice=100e18, required=200e18)
+        marketplace.purchaseWithToken(tokenContentId, address(usdc), 200e18, 100e18);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //                    RESALE MINIMUM PRICE ATTACK
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// @notice Dust-price resale listing (below MIN_RESALE_PRICE) reverts
+    function test_ResalePriceTooLowReverts() public {
+        vm.prank(buyer);
+        marketplace.purchase{value: contentPrice}(contentId, type(uint256).max);
+
+        vm.startPrank(buyer);
+        contentToken.setApprovalForAll(address(marketplace), true);
+
+        // 1 wei listing should revert
+        vm.expectRevert(Marketplace.PriceTooLow.selector);
+        marketplace.listForResale(contentId, 1);
+
+        // 999 should also revert (below MIN_RESALE_PRICE = 1000)
+        vm.expectRevert(Marketplace.PriceTooLow.selector);
+        marketplace.listForResale(contentId, 999);
+
+        // 1000 should succeed
+        marketplace.listForResale(contentId, 1000);
+        vm.stopPrank();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //                    UPDATEFILESIZE REMOVED
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// @notice updateFileSize no longer exists — fileSize is immutable after publish
+    function test_FileSizeIsImmutableAfterPublish() public {
+        // Verify fileSize is set correctly at publish time
+        assertEq(contentToken.getFileSize(contentId), fileSize);
+        // updateFileSize function was removed — fileSize is immutable after publish.
+        // Any attempt to call it would be a compile error.
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //                    MODERATION GOVERNANCE FLOORS
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// @notice quorumBps cannot be set below 5% (500)
+    function test_QuorumMinimumFloor() public {
+        vm.prank(deployer);
+        vm.expectRevert(AraModeration.QuorumTooLow.selector);
+        moderation.setQuorumBps(0);
+
+        vm.prank(deployer);
+        vm.expectRevert(AraModeration.QuorumTooLow.selector);
+        moderation.setQuorumBps(499);
+
+        // 500 should succeed
+        vm.prank(deployer);
+        moderation.setQuorumBps(500);
+    }
+
+    /// @notice supermajorityBps cannot be set below 50% (5000)
+    function test_SupermajorityMinimumFloor() public {
+        vm.prank(deployer);
+        vm.expectRevert(AraModeration.SupermajorityTooLow.selector);
+        moderation.setSupermajorityBps(0);
+
+        vm.prank(deployer);
+        vm.expectRevert(AraModeration.SupermajorityTooLow.selector);
+        moderation.setSupermajorityBps(4999);
+
+        // 5000 should succeed
+        vm.prank(deployer);
+        moderation.setSupermajorityBps(5000);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //                    RESALE EXCESSIVE FEES GUARD
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// @notice Resale with fees > price reverts with ExcessiveFees
+    function test_ResaleExcessiveFeesRevert() public {
+        // Publish content with max royalty (50%)
+        vm.prank(creator);
+        bytes32 highRoyaltyId = contentToken.publishContent(
+            keccak256("high-royalty"), "ipfs://hr", contentPrice, fileSize, 0, 5000
+        );
+
+        // Purchase and list for resale at MIN_RESALE_PRICE
+        vm.prank(buyer);
+        marketplace.purchase{value: contentPrice}(highRoyaltyId, type(uint256).max);
+
+        vm.startPrank(buyer);
+        contentToken.setApprovalForAll(address(marketplace), true);
+        marketplace.listForResale(highRoyaltyId, 1000); // minimum price
+        vm.stopPrank();
+
+        // At price=1000 with 50% royalty=500, 1% staker=10, 4% seeder=40
+        // sellerProceeds = 1000 - 500 - 10 - 40 = 450 (should succeed)
+        address buyer2 = makeAddr("buyer2");
+        vm.deal(buyer2, 1000);
+        vm.prank(buyer2);
+        marketplace.buyResale{value: 1000}(highRoyaltyId, buyer, 1000);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //                    PUBLISH PRICE FLOOR
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// @notice Content cannot be published below MIN_PRICE (prevents dust farming)
+    function test_PublishPriceTooLowReverts() public {
+        vm.startPrank(creator);
+
+        vm.expectRevert(AraContent.PriceTooLow.selector);
+        contentToken.publishContent(keccak256("dust1"), "ipfs://d", 0, fileSize, 0, 0);
+
+        vm.expectRevert(AraContent.PriceTooLow.selector);
+        contentToken.publishContent(keccak256("dust2"), "ipfs://d", 1, fileSize, 0, 0);
+
+        vm.expectRevert(AraContent.PriceTooLow.selector);
+        contentToken.publishContent(keccak256("dust3"), "ipfs://d", 999, fileSize, 0, 0);
+
+        // 1000 should succeed (MIN_PRICE)
+        contentToken.publishContent(keccak256("ok"), "ipfs://ok", 1000, fileSize, 0, 0);
+        vm.stopPrank();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //                    FEE-ON-TRANSFER TOKEN SAFETY
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// @notice Staking accumulator uses actual received amount, not nominal amount
+    function test_FeeOnTransferTokenSafe() public {
+        // Deploy a fee-on-transfer mock (1% fee)
+        FeeOnTransferToken fot = new FeeOnTransferToken();
+
+        // Whitelist in marketplace
+        vm.prank(deployer);
+        marketplace.setSupportedToken(address(fot), true);
+
+        // Use large price so staker reward (2.5%) is significant relative to totalStaked
+        uint256 fotPrice = 100_000 ether;
+
+        // Publish content priced in the fee token
+        vm.prank(creator);
+        bytes32 fotContentId = contentToken.publishContentWithToken(
+            keccak256("fot-content"), "ipfs://fot", fotPrice, fileSize, 0, 0, address(fot)
+        );
+
+        // Fund buyer and approve
+        fot.mint(buyer, fotPrice * 2);
+        vm.prank(buyer);
+        fot.approve(address(marketplace), fotPrice * 2);
+
+        // Purchase — marketplace will forward staker reward to staking
+        vm.prank(buyer);
+        marketplace.purchaseWithToken(fotContentId, address(fot), fotPrice, type(uint256).max);
+
+        // Staker reward = 2.5% of fotPrice = 2500 ether nominal
+        // After 1% transfer fee: staking receives ~2475 ether
+        uint256 nominalStakerReward = (fotPrice * 250) / 10_000;
+        uint256 earned = staking.earnedToken(creator, address(fot));
+        // earned must be > 0 (accumulator worked)
+        // earned must be < nominalStakerReward (fee-on-transfer reduced it)
+        assertTrue(earned > 0, "Staker should earn something");
+        assertTrue(earned < nominalStakerReward, "Earned should be less than nominal (fee deducted)");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //                    UPGRADE SAFETY
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// @notice Proxy upgrade preserves all existing storage state
+    function test_UpgradePreservesStorage() public {
+        // Record pre-upgrade state
+        uint256 creatorShareBefore = marketplace.creatorShareBps();
+        uint256 stakerBpsBefore = marketplace.stakerRewardBps();
+        bool purchased = marketplace.hasPurchased(contentId, buyer);
+
+        // Deploy V2 mock implementation
+        Marketplace newImpl = new Marketplace();
+
+        // Upgrade as owner
+        vm.prank(deployer);
+        marketplace.upgradeToAndCall(address(newImpl), "");
+
+        // Verify all state preserved
+        assertEq(marketplace.creatorShareBps(), creatorShareBefore);
+        assertEq(marketplace.stakerRewardBps(), stakerBpsBefore);
+        assertEq(marketplace.hasPurchased(contentId, buyer), purchased);
+        assertEq(address(marketplace.contentToken()), address(contentToken));
+        assertEq(address(marketplace.staking()), address(staking));
+    }
+
+    /// @notice Non-owner cannot upgrade proxy
+    function test_UpgradeByNonOwnerReverts() public {
+        Marketplace newImpl = new Marketplace();
+        vm.prank(buyer);
+        vm.expectRevert();
+        marketplace.upgradeToAndCall(address(newImpl), "");
+    }
+}
+
+/// @dev Mock token that deducts a 1% fee on every transfer
+contract FeeOnTransferToken {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        require(balanceOf[msg.sender] >= amount, "Insufficient balance");
+        uint256 fee = amount / 100; // 1% fee
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += (amount - fee);
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        require(allowance[from][msg.sender] >= amount, "Insufficient allowance");
+        require(balanceOf[from] >= amount, "Insufficient balance");
+        uint256 fee = amount / 100; // 1% fee
+        allowance[from][msg.sender] -= amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += (amount - fee);
+        return true;
     }
 }

@@ -184,7 +184,8 @@ function Publish() {
     collaborators.every((c) => /^0x[a-fA-F0-9]{40}$/.test(c.wallet)) &&
     Math.abs(collaborators.reduce((s, c) => s + (parseFloat(c.percent) || 0), 0) - 100) < 0.01
   );
-  const canPublish = filePath && title.trim() && priceEth.trim() && isForm && splitsValid;
+  const priceValid = priceEth.trim() !== "" && !isNaN(parseFloat(priceEth)) && parseFloat(priceEth) > 0;
+  const canPublish = filePath && title.trim() && priceValid && isForm && splitsValid;
 
   const handlePublish = async () => {
     if (!filePath || !title.trim() || !priceEth.trim()) return;
