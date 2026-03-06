@@ -14,12 +14,12 @@
 |----------|-------|-------|---------------|
 | Critical | 3     | 3     | 0             |
 | High     | 7     | 7     | 0             |
-| Medium   | 12    | 11    | 1             |
-| Low      | 8     | 8     | 0             |
+| Medium   | 15    | 14    | 1             |
+| Low      | 11    | 10    | 1             |
 | Info     | 6     | 0     | 6             |
 
 **All 202+ tests pass. Zero failures across 100,000 fuzz runs per economic invariant.**
-**Phase 4 scope:** Tauri desktop security, OS-level attacks, gossip protocol hardening, governance sybil mitigation.
+**Phase 5 scope:** HTTP client hardening, SQLite defense, preview upload limits, Arweave download safety, content theft analysis.
 
 ---
 
@@ -373,6 +373,10 @@ The `receive()` function allows anyone to send ETH to the marketplace. This ETH 
 - [x] ffmpeg download script: SHA256 checksum verification framework
 - [x] Moderation vote quorum uses `totalStakedAtCreation` snapshot (sybil mitigation)
 - [x] `setModerator()` emits `ModeratorUpdated` event (audit trail)
+- [x] All `reqwest::Client` instances use timeouts (30s default, 5min for large transfers)
+- [x] SQLite PRAGMAs: WAL mode, foreign keys enabled, 5s busy timeout
+- [x] Preview upload file size limits: 50 MB images, 500 MB videos
+- [x] Arweave download size-limited to 5 GB (Content-Length + body check)
 
 ---
 
@@ -432,6 +436,43 @@ Receipts stored without signature length validation, content_id existence check,
 `SEPOLIA_RPC_URL` accepted `http://` endpoints, enabling MITM on RPC traffic.
 **Fix:** Release builds require `https://` prefix. Debug builds unrestricted for local nodes.
 
+### Phase 5 Findings (HTTP Hardening + SQLite Defense)
+
+#### MEDIUM-13: No reqwest timeouts on HTTP clients
+**Files:** `app/src-tauri/src/commands/marketplace.rs`, `content.rs`, `arweave.rs`
+**Status:** FIXED
+All `reqwest::Client::new()` calls lacked connect/response timeouts. A hung Arweave/Irys endpoint could block Tauri commands indefinitely, freezing the UI.
+**Fix:** Added `http_client()` (30s timeout) and `http_client_large_transfer()` (5min) helpers in `arweave.rs`. Replaced all 4 `Client::new()` call sites.
+
+#### MEDIUM-14: Missing SQLite security PRAGMAs
+**File:** `crates/ara-core/src/storage.rs`
+**Status:** FIXED
+Default SQLite config: rollback journal (crash-corruption risk), foreign keys disabled, no busy timeout (SQLITE_BUSY on contention).
+**Fix:** Added `PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON`, `PRAGMA busy_timeout=5000` at start of `migrate()`.
+
+#### MEDIUM-15: Preview upload has no file size limit
+**File:** `app/src-tauri/src/commands/content.rs`
+**Status:** FIXED
+`import_preview_assets` accepted arbitrary file sizes. A 10GB "preview image" would exhaust disk and memory.
+**Fix:** Added size validation: 50 MB max for images, 500 MB max for video previews. Rejects oversized files before import.
+
+#### LOW-09: Arweave download response not size-limited
+**File:** `app/src-tauri/src/arweave.rs`
+**Status:** FIXED
+`download_from_arweave` read full response body into memory with no cap. A malicious Arweave tx_id could trigger OOM.
+**Fix:** Check `Content-Length` header and final body size against 5 GB limit.
+
+#### LOW-10: Content hash publicly visible on-chain
+**Scope:** Architecture (on-chain events)
+**Status:** ACCEPTED (known limitation)
+`ContentPublished` events emit the BLAKE3 `content_hash`. Blockchain observers can extract hashes and download content via iroh P2P without paying. Similar to BitTorrent info hashes.
+**Mitigation:** Information asymmetry (hash discovery requires blockchain indexing) + economic incentives (payments for legitimate use). Future: content encryption with purchase-gated key disclosure.
+
+#### LOW-11: Error messages may leak internal paths
+**Scope:** Various Tauri command handlers
+**Status:** ACCEPTED (known limitation)
+Error messages like `"Failed to create iroh data dir: {e}"` may expose filesystem paths to the frontend. Not exploitable directly (local desktop app), but aids reconnaissance.
+
 ---
 
 ## Known Limitations
@@ -452,6 +493,9 @@ Receipts stored without signature length validation, content_id existence check,
 14. **Moderation vote sybil (partial)**: `totalStakedAtCreation` snapshot prevents quorum inflation but doesn't prevent individual vote-weight multiplication via stake transfer. Full snapshot voting (ERC-20Votes pattern) deferred to V2 governance.
 15. **iroh node binds to all interfaces**: `Endpoint::builder().bind()` defaults to `0.0.0.0`. Acceptable for P2P application; documented as expected behavior.
 16. **MEV front-running on resale**: Resale purchases can be front-run by MEV bots observing the mempool. Mitigated by `maxPrice` slippage protection. Commit-reveal or private mempool deferred to future release.
+17. **Content hash on-chain exposure**: `ContentPublished` events include the BLAKE3 content hash. Blockchain observers can extract hashes and download content from P2P without paying. Inherent to the architecture (hash needed for P2P coordination). Mitigated by information asymmetry. Future: encrypt content blobs with a key revealed only to purchasers.
+18. **No content encryption/DRM**: Content files are stored unencrypted in iroh. Any peer who knows the BLAKE3 hash can download. This is architecturally similar to BitTorrent. Content encryption with purchase-gated key disclosure is deferred to a future release.
+19. **Error message path leakage**: Some Tauri command error messages may include filesystem paths (e.g., iroh data directory). Not exploitable in a local desktop app context, but could aid reconnaissance if error messages were ever exposed remotely.
 
 ---
 

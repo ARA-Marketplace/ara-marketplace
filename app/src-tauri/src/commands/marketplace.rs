@@ -370,7 +370,7 @@ pub async fn confirm_purchase(
                     node_url: state.config.arweave.node_url.clone(),
                     gateway_url: state.config.arweave.gateway_url.clone(),
                 };
-                let client = reqwest::Client::new();
+                let client = crate::arweave::http_client_large_transfer();
                 let bytes = crate::arweave::download_from_arweave(&client, &arweave_config, tx_id)
                     .await
                     .map_err(|e| format!("Arweave fallback download also failed: {e}"))?;

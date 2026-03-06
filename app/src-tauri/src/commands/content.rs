@@ -305,6 +305,22 @@ async fn import_preview_files(
             return Err(format!("Preview file not found: {}", path_str));
         }
 
+        // SECURITY: Reject oversized preview files to prevent disk/memory exhaustion.
+        let file_meta = std::fs::metadata(p)
+            .map_err(|e| format!("Cannot read preview file metadata: {e}"))?;
+        let max_preview_size: u64 = if preview_asset_type(path_str) == "video" {
+            500 * 1024 * 1024 // 500 MB for video previews
+        } else {
+            50 * 1024 * 1024 // 50 MB for image previews
+        };
+        if file_meta.len() > max_preview_size {
+            return Err(format!(
+                "Preview file too large: {} bytes (max {} MB)",
+                file_meta.len(),
+                max_preview_size / (1024 * 1024)
+            ));
+        }
+
         // Transcode video previews if ffmpeg is available
         let import_path = if preview_asset_type(path_str) == "video" {
             if let (Some(ref ff), Some(ref fp)) = (&ffmpeg, &ffprobe) {
@@ -1826,7 +1842,7 @@ pub async fn estimate_arweave_cost(
         gateway_url: state.config.arweave.gateway_url.clone(),
     };
 
-    let client = reqwest::Client::new();
+    let client = crate::arweave::http_client();
     let cost_wei = crate::arweave::estimate_upload_cost(&client, &irys_config, file_size)
         .await
         .map_err(|e| format!("Failed to estimate Arweave cost: {e}"))?;
@@ -1868,7 +1884,7 @@ pub async fn prepare_arweave_upload(
     };
 
     // Estimate Irys cost
-    let client = reqwest::Client::new();
+    let client = crate::arweave::http_client();
     let cost_wei = crate::arweave::estimate_upload_cost(&client, &irys_config, file_size)
         .await
         .map_err(|e| format!("Failed to estimate Arweave cost: {e}"))?;
@@ -1935,7 +1951,7 @@ pub async fn execute_arweave_upload(
             .map_err(|e| format!("Failed to load Irys key: {e}"))?
     };
 
-    let client = reqwest::Client::new();
+    let client = crate::arweave::http_client_large_transfer();
 
     // Step 1: Wait for the user's funding TX to confirm on Ethereum
     emit_progress("funding-confirm", "Waiting for funding transaction to confirm...");

@@ -79,6 +79,29 @@ struct IrysInfo {
     addresses: std::collections::HashMap<String, String>,
 }
 
+// ─── HTTP Client ─────────────────────────────────────────────────────────────
+
+/// Build a reqwest HTTP client with sensible timeouts.
+///
+/// SECURITY: Without timeouts, a hung or malicious endpoint could block
+/// a Tauri command indefinitely, freezing the UI.
+pub fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("Failed to build HTTP client")
+}
+
+/// Build an HTTP client with a longer timeout for large file uploads/downloads.
+pub fn http_client_large_transfer() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300)) // 5 minutes
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("Failed to build HTTP client")
+}
+
 // ─── Cost Estimation ──────────────────────────────────────────────────────────
 
 /// Estimate the cost (in wei) to permanently store `file_size_bytes` on Arweave via Irys.
@@ -148,10 +171,30 @@ pub async fn download_from_arweave(
         anyhow::bail!("Arweave gateway returned {}: {}", status, body);
     }
 
+    // SECURITY: Reject excessively large downloads to prevent OOM.
+    const MAX_DOWNLOAD_BYTES: u64 = 5 * 1024 * 1024 * 1024; // 5 GB
+    if let Some(content_length) = resp.content_length() {
+        if content_length > MAX_DOWNLOAD_BYTES {
+            anyhow::bail!(
+                "Arweave file too large: {} bytes (max {} GB)",
+                content_length,
+                MAX_DOWNLOAD_BYTES / (1024 * 1024 * 1024)
+            );
+        }
+    }
+
     let bytes = resp
         .bytes()
         .await
         .context("Failed to read Arweave response body")?;
+
+    if bytes.len() as u64 > MAX_DOWNLOAD_BYTES {
+        anyhow::bail!(
+            "Arweave download exceeded size limit: {} bytes",
+            bytes.len()
+        );
+    }
+
     info!("Downloaded {} bytes from Arweave tx {}", bytes.len(), tx_id);
     Ok(bytes.to_vec())
 }

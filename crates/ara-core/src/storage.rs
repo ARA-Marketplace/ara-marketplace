@@ -48,6 +48,17 @@ impl Database {
     }
 
     fn migrate(&self) -> Result<()> {
+        // SECURITY: Set PRAGMAs before creating tables.
+        // - WAL mode: crash-safe writes, better concurrent read performance
+        // - foreign_keys: enforce referential integrity (SQLite disables by default)
+        // - busy_timeout: wait up to 5s on lock contention instead of failing immediately
+        self.conn.execute_batch(
+            "
+            PRAGMA journal_mode=WAL;
+            PRAGMA foreign_keys=ON;
+            PRAGMA busy_timeout=5000;
+            "
+        )?;
         self.conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS content (
