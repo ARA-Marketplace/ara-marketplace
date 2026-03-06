@@ -40,6 +40,7 @@ tracing-appender = { workspace = true }
 reqwest = { version = "0.12", features = ["json"] }
 sha2 = "0.10"
 k256 = { version = "0.13", features = ["ecdsa"] }
+socket2 = { workspace = true }
 
 [features]
 devtools = ["tauri/devtools"]

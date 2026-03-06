@@ -42,6 +42,9 @@ alloy = { version = "1", features = ["full"] }
 # Storage
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# Networking (socket2 "all" feature needed for netwatch macOS build — Type::RAW)
+socket2 = { version = "0.5", features = ["all"] }
+
 # Internal crates
 ara-core = { path = "crates/ara-core" }
 ara-p2p = { path = "crates/ara-p2p" }
