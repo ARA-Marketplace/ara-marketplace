@@ -46,3 +46,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 ara-core = { path = "crates/ara-core" }
 ara-p2p = { path = "crates/ara-p2p" }
 ara-chain = { path = "crates/ara-chain" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

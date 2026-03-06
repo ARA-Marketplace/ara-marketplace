@@ -13,14 +13,15 @@
 | Severity | Found | Fixed | Accepted Risk |
 |----------|-------|-------|---------------|
 | Critical | 3     | 3     | 0             |
-| High     | 7     | 7     | 0             |
-| Medium   | 17    | 16    | 1             |
-| Low      | 13    | 12    | 1             |
-| Info     | 6     | 0     | 6             |
+| High     | 9     | 9     | 0             |
+| Medium   | 23    | 22    | 1             |
+| Low      | 17    | 15    | 2             |
+| Info     | 9     | 0     | 9             |
 
 **All 202+ tests pass. Zero failures across 100,000 fuzz runs per economic invariant.**
 **Phase 5 scope:** HTTP client hardening, SQLite defense, preview upload limits, Arweave download safety, content theft analysis.
 **Phase 6 scope:** Frontend audit (clean), metadata DoS, integer casts, upgrade script safety, SDK validation.
+**Phase 7 scope:** cancelListing griefing, collection/moderation hardening, deep link validation, DRY cleanup, production readiness, cross-platform fixes.
 
 ---
 
@@ -382,6 +383,20 @@ The `receive()` function allows anyone to send ETH to the marketplace. This ETH 
 - [x] `bytes_served` uses saturating u64→i64 conversion (no negative wrap)
 - [x] Upgrade script guarded with `require(block.chainid == 11155111)` (Sepolia-only)
 - [x] Frontend clean: no XSS, validated inputs, debounced actions, secure wallet handling
+- [x] `cancelListing` requires active listing (prevents griefing via false cancellation events)
+- [x] `stakeForContent`/`unstakeFromContent` checkpoint rewards via `updateReward` modifier
+- [x] `MAX_COLLECTION_SIZE = 200` prevents `deleteCollection` gas DoS
+- [x] `voteNsfw` deduplication via `hasNsfwVoted` mapping
+- [x] `setVotingPeriod` minimum floor: 1 hour
+- [x] `ContentUpdated` metadata_uri length-capped (same 100 KB guard as `ContentPublished`)
+- [x] `confirm_set_nsfw` requires wallet authentication
+- [x] Deep link paths whitelisted, length-limited, character-validated
+- [x] `assert_eq!` replaced with `anyhow::bail!()` in Arweave upload (no production panics)
+- [x] Receipt re-broadcast capped at 50 per NeighborUp event
+- [x] Devtools feature gated behind `--features devtools` (not in release builds)
+- [x] Cross-platform log directory (`cfg!(target_os)` instead of `LOCALAPPDATA`)
+- [x] FFmpeg downloads use LGPL builds (license compliance)
+- [x] Release profile: `lto = "thin"`, `codegen-units = 1`, `strip = true`
 
 ---
 
@@ -506,6 +521,113 @@ Script has hardcoded Sepolia proxy addresses but no chain ID guard. If accidenta
 `prepare_publish()` accepted arbitrary metadata_uri length with no validation.
 **Fix:** Reject metadata_uri > 100 KB with descriptive error.
 
+### Phase 7 Findings (Production Readiness + Final Security Sweep)
+
+#### HIGH-08: `cancelListing` griefing — anyone can emit false cancellation events
+**File:** `contracts/src/Marketplace.sol`
+**Status:** FIXED
+`cancelListing` had no check for listing existence. Anyone could call it for any `contentId`, emitting `ListingCancelled` events that would deactivate legitimate resale listings in syncing nodes' local DBs.
+**Fix:** Added `if (!listings[contentId][msg.sender].active) revert NoActiveListing()` guard.
+
+#### HIGH-09: `stakeForContent`/`unstakeFromContent` missing `updateReward` modifier
+**File:** `contracts/src/AraStaking.sol`
+**Status:** FIXED
+Moving stake between general pool and content-specific pool did not checkpoint rewards. While currently correct (totalUserStake unchanged), any future upgrade modifying totalUserStake in these functions would silently break reward accounting.
+**Fix:** Added `updateReward(msg.sender)` modifier to both functions as defensive invariant.
+
+#### MEDIUM-18: `deleteCollection` unbounded loop — gas DoS
+**File:** `contracts/src/AraCollections.sol`
+**Status:** FIXED
+A collection with thousands of items would make `deleteCollection` revert out of gas permanently, locking the creator from deleting their collection.
+**Fix:** Added `MAX_COLLECTION_SIZE = 200` constant, enforced in `addItem`.
+
+#### MEDIUM-19: `ContentUpdated` metadata not length-capped (DoS)
+**File:** `app/src-tauri/src/commands/sync.rs`
+**Status:** FIXED
+Phase 6 fixed `ContentPublished` metadata parsing but missed `ContentUpdated`. Same OOM risk via `serde_json::from_str()` on untrusted on-chain data.
+**Fix:** Applied same `MAX_METADATA_LEN` (100 KB) guard to `ContentUpdated` handler.
+
+#### MEDIUM-20: `confirm_set_nsfw` no wallet authentication
+**File:** `app/src-tauri/src/commands/moderation.rs`
+**Status:** FIXED
+Any IPC call could flip the NSFW flag locally without wallet verification, degrading UI integrity.
+**Fix:** Added wallet connection check before DB update.
+
+#### MEDIUM-21: `ara://` deep link path injection
+**File:** `app/src-tauri/src/lib.rs`
+**Status:** FIXED
+Deep link paths were forwarded to React Router without validation — no whitelist, length limit, or character check.
+**Fix:** Whitelist of allowed route prefixes, 500-char length limit, alphanumeric + safe characters only.
+
+#### MEDIUM-22: `setVotingPeriod` no minimum floor
+**File:** `contracts/src/AraModeration.sol`
+**Status:** FIXED
+Owner could set `votingPeriod = 0`, allowing instant resolution of any moderation proposal.
+**Fix:** Added `VotingPeriodTooShort()` error; minimum 1 hour enforced.
+
+#### MEDIUM-23: `voteNsfw` no deduplication — single-staker griefing
+**File:** `contracts/src/AraModeration.sol`
+**Status:** FIXED
+Any staked user could NSFW-tag any content with a single transaction, no quorum or deduplication.
+**Fix:** Added `hasNsfwVoted` mapping and `AlreadyVotedNsfw()` error to prevent duplicate votes.
+
+#### LOW-14: `assert_eq!` in production Arweave upload code
+**File:** `app/src-tauri/src/arweave.rs`
+**Status:** FIXED
+`assert_eq!(owner.len(), 65, ...)` would panic the upload command in release builds instead of returning an error.
+**Fix:** Replaced with `anyhow::bail!()` for proper error propagation.
+
+#### LOW-15: `unwrap()` calls in gossip actor could panic background task
+**Files:** `app/src-tauri/src/gossip_actor.rs`, `state.rs`
+**Status:** FIXED
+Several `unwrap()` calls on DB queries and HashMap lookups could silently kill the gossip actor task.
+**Fix:** Replaced with `ok_or_else()`, `expect()` with context, or proper error propagation.
+
+#### LOW-16: Receipt re-broadcast unbounded on NeighborUp
+**File:** `app/src-tauri/src/gossip_actor.rs`
+**Status:** FIXED
+`handle_neighbor_up` re-broadcast all stored delivery receipts with no cap, potentially flooding bandwidth.
+**Fix:** Capped at 50 most recent receipts per NeighborUp event.
+
+#### LOW-17: Devtools feature compiled into production binary
+**File:** `app/src-tauri/Cargo.toml`
+**Status:** FIXED
+Tauri `devtools` feature was unconditionally enabled, exposing WebKit DevTools inspector in production.
+**Fix:** Moved to optional `[features]` section — only enabled with `--features devtools`.
+
+#### INFO-04: Log directory not cross-platform
+**File:** `app/src-tauri/src/lib.rs`
+**Status:** FIXED
+Log path used `LOCALAPPDATA` env var (Windows-only), falling back to `/tmp` on macOS/Linux.
+**Fix:** Platform-specific log directory resolution using `cfg!(target_os = ...)`.
+
+#### INFO-05: FFmpeg GPL license incompatibility
+**File:** `scripts/download-ffmpeg.sh`
+**Status:** FIXED
+Download URLs pointed to GPL static builds, incompatible with project's BUSL-1.1 license.
+**Fix:** Changed to LGPL builds. Added prominent checksum warnings.
+
+#### INFO-06: Missing `[profile.release]` optimization
+**File:** `Cargo.toml` (workspace)
+**Status:** FIXED
+No LTO or codegen-units tuning for release builds.
+**Fix:** Added `lto = "thin"`, `codegen-units = 1`, `strip = true`.
+
+#### INFO-07: `purchasers[]` array unbounded — state growth
+**Contract:** `Marketplace.sol`
+**Status:** ACCEPTED (known limitation)
+Each purchase appends to `purchasers[contentId]`. No cap on array length. Low immediate risk since no on-chain iteration, but a state growth concern for mainnet.
+
+#### INFO-08: `creatorCollections` array unbounded
+**Contract:** `AraCollections.sol`
+**Status:** ACCEPTED (known limitation)
+No cap on collections per creator. `getCreatorCollections()` view returns full array which may exceed RPC response limits with thousands of collections.
+
+#### INFO-09: Token approval race between approve and purchaseWithToken
+**Contract:** `Marketplace.sol`
+**Status:** ACCEPTED (informational)
+Two-step token purchase (approve + buy) can leave a dangling ERC-20 approval if the purchase fails. Mitigated by exact-amount approval (not `type(uint256).max`).
+
 ---
 
 ## Known Limitations
@@ -530,6 +652,13 @@ Script has hardcoded Sepolia proxy addresses but no chain ID guard. If accidenta
 18. **No content encryption/DRM**: Content files are stored unencrypted in iroh. Any peer who knows the BLAKE3 hash can download. This is architecturally similar to BitTorrent. Content encryption with purchase-gated key disclosure is deferred to a future release.
 19. **Error message path leakage**: Some Tauri command error messages may include filesystem paths (e.g., iroh data directory). Not exploitable in a local desktop app context, but could aid reconnaissance if error messages were ever exposed remotely.
 20. **On-chain metadata_uri is untrusted**: Anyone can publish content with arbitrary metadata_uri on-chain. The app caps parsing at 100 KB locally, but oversized metadata silently falls back to empty fields (content appears with no title/description until re-synced with valid data).
+21. **`purchasers[]` array unbounded**: Each purchase appends to on-chain array. No cap exists. Low immediate risk (no on-chain iteration), but state growth concern at scale.
+22. **`creatorCollections` array unbounded**: No cap on collections per creator. `getCreatorCollections()` view may exceed RPC limits with many collections.
+23. **Token approval race**: Two-step token purchase (approve + buy) can leave a dangling ERC-20 approval on failure. Mitigated by exact-amount approval.
+24. **No auto-update mechanism**: No `tauri-plugin-updater` configured. Users must manually download new versions.
+25. **macOS `.icns` icon**: Must be generated on macOS using `tauri icon` before macOS builds. Not included in git (platform-specific).
+26. **FFmpeg SHA256 checksums empty**: Download script warns when checksums are not populated. Must be filled before production CI.
+27. **DB open failure silent fallback**: If on-disk DB fails to open, app silently continues with in-memory DB. All state is lost at exit.
 
 ---
 

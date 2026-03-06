@@ -81,6 +81,12 @@ impl AppState {
         Ok(guard)
     }
 
+    /// Get the connected wallet address, or error if none connected.
+    pub async fn require_wallet(&self) -> Result<String, String> {
+        let guard = self.wallet_address.lock().await;
+        Ok(guard.as_ref().ok_or("No wallet connected")?.clone())
+    }
+
     /// Send a command to the gossip actor. No-op if iroh hasn't started yet.
     pub async fn send_gossip(&self, cmd: GossipCmd) -> Result<(), String> {
         let guard = self.gossip_tx.lock().await;
@@ -181,16 +187,24 @@ async fn resume_active_seeding(
                         // These survive restarts, enabling reconnection even when the
                         // publisher's NodeId is our own or is unreachable.
                         let stored_seeders: Vec<iroh::NodeId> = {
-                            let mut seeder_stmt = conn
+                            let seeder_result = conn
                                 .prepare("SELECT node_id FROM content_seeders WHERE content_hash = ?1")
-                                .unwrap();
-                            let seeder_rows = seeder_stmt
-                                .query_map(rusqlite::params![format!("0x{}", alloy::hex::encode(hash))], |r| {
-                                    r.get::<_, String>(0)
-                                })
-                                .unwrap();
+                                .and_then(|mut stmt| {
+                                    let rows: Vec<_> = stmt.query_map(
+                                        rusqlite::params![format!("0x{}", alloy::hex::encode(hash))],
+                                        |r| r.get::<_, String>(0),
+                                    )?.flatten().collect();
+                                    Ok(rows)
+                                });
+                            let seeder_rows = match seeder_result {
+                                Ok(rows) => rows,
+                                Err(e) => {
+                                    warn!("Failed to query content_seeders: {e}");
+                                    vec![]
+                                }
+                            };
                             seeder_rows
-                                .flatten()
+                                .into_iter()
                                 .filter_map(|s| s.parse::<iroh::NodeId>().ok())
                                 .filter(|&id| id != our_node_id)
                                 .collect()

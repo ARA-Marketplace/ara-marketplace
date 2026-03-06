@@ -32,27 +32,73 @@ fn percent_decode(s: &str) -> String {
 
 /// Parse an `ara://` deep link URL into a frontend route path.
 /// e.g. `ara://content/0xabc123` → `/content/0xabc123`
+///
+/// SECURITY: Only allow known route prefixes to prevent deep link injection.
 fn parse_ara_deep_link(url: &str) -> Option<String> {
     let stripped = url.strip_prefix("ara://")?;
-    if stripped.is_empty() {
+    if stripped.is_empty() || stripped.len() > 500 {
         return None;
     }
-    Some(format!("/{}", stripped.trim_end_matches('/')))
+    let path = format!("/{}", stripped.trim_end_matches('/'));
+
+    // Whitelist allowed route prefixes
+    const ALLOWED_PREFIXES: &[&str] = &[
+        "/content/",
+        "/collection/",
+        "/marketplace",
+        "/library",
+        "/publish",
+        "/wallet",
+        "/dashboard",
+    ];
+    if !ALLOWED_PREFIXES.iter().any(|p| path.starts_with(p) || path == p.trim_end_matches('/')) {
+        tracing::warn!("Deep link path rejected (not whitelisted): {}", path);
+        return None;
+    }
+
+    // Only allow safe characters (alphanumeric, slashes, hyphens, dots, underscores)
+    if !path.chars().all(|c| c.is_ascii_alphanumeric() || "/-_.".contains(c)) {
+        tracing::warn!("Deep link path rejected (invalid characters): {}", path);
+        return None;
+    }
+
+    Some(path)
 }
 
 pub fn run() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,iroh=warn,iroh_net=warn"));
 
-    // Write logs to %LOCALAPPDATA%\one.ara.marketplace\logs\ara-marketplace.log
+    // Write logs to platform-appropriate app data directory.
     // In release builds, this is the only way to see logs (no console window).
-    let log_dir = std::env::var("LOCALAPPDATA")
-        .map(|p| {
-            std::path::PathBuf::from(p)
-                .join("one.ara.marketplace")
-                .join("logs")
-        })
-        .unwrap_or_else(|_| std::env::temp_dir().join("ara-marketplace-logs"));
+    let log_dir = {
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var("LOCALAPPDATA")
+                .map(|p| std::path::PathBuf::from(p).join("one.ara.marketplace").join("logs"))
+                .unwrap_or_else(|_| std::env::temp_dir().join("ara-marketplace-logs"))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            std::path::PathBuf::from(home)
+                .join("Library/Application Support/one.ara.marketplace/logs")
+        }
+        #[cfg(target_os = "linux")]
+        {
+            std::env::var("XDG_DATA_HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| {
+                    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                    std::path::PathBuf::from(home).join(".local/share")
+                })
+                .join("one.ara.marketplace/logs")
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        {
+            std::env::temp_dir().join("ara-marketplace-logs")
+        }
+    };
     let _ = std::fs::create_dir_all(&log_dir);
 
     let file_appender = tracing_appender::rolling::daily(&log_dir, "ara-marketplace.log");

@@ -399,7 +399,9 @@ pub async fn create_signed_data_item(
     let verifying_key = signer.credential().verifying_key();
     let point = verifying_key.to_encoded_point(false);
     let owner = point.as_bytes().to_vec();
-    assert_eq!(owner.len(), 65, "Uncompressed public key must be 65 bytes");
+    if owner.len() != 65 {
+        anyhow::bail!("Uncompressed public key must be 65 bytes, got {}", owner.len());
+    }
 
     // AVro-encode tags
     let avro_tags = avro_encode_tags(&tags);

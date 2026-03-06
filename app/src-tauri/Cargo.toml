@@ -24,7 +24,7 @@ bytes = "1"
 futures-lite = "2"
 opener = "0.7"
 infer = "0.16"
-tauri = { version = "2", features = ["devtools"] }
+tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
@@ -40,3 +40,6 @@ tracing-appender = { workspace = true }
 reqwest = { version = "0.12", features = ["json"] }
 sha2 = "0.10"
 k256 = { version = "0.13", features = ["ecdsa"] }
+
+[features]
+devtools = ["tauri/devtools"]

@@ -328,10 +328,14 @@ impl GossipActor {
             }
         };
 
-        if !receipts.is_empty() {
-            info!("Re-broadcasting {} delivery receipt(s) on NeighborUp for {}", receipts.len(), hash_hex);
+        // SECURITY: Limit re-broadcasts to prevent bandwidth DoS on NeighborUp
+        const MAX_REBROADCAST_RECEIPTS: usize = 50;
+        let receipt_count = receipts.len();
+        if receipt_count > 0 {
+            info!("Re-broadcasting {} delivery receipt(s) on NeighborUp for {} (capped at {})",
+                receipt_count.min(MAX_REBROADCAST_RECEIPTS), hash_hex, MAX_REBROADCAST_RECEIPTS);
         }
-        for (content_id_hex, seeder_hex, buyer_hex, sig_hex, ts, bytes_served) in receipts {
+        for (content_id_hex, seeder_hex, buyer_hex, sig_hex, ts, bytes_served) in receipts.into_iter().take(MAX_REBROADCAST_RECEIPTS) {
             // Parse hex strings back to byte arrays for the gossip message
             let content_id = parse_hex_32(content_id_hex.strip_prefix("0x").unwrap_or(&content_id_hex));
             let seeder = parse_hex_20(seeder_hex.strip_prefix("0x").unwrap_or(&seeder_hex));
@@ -522,7 +526,7 @@ impl GossipActor {
 
                                 // Verify Ed25519 signature using the NodeId (public key)
                                 if signature.len() == 64 {
-                                    let sig_bytes: [u8; 64] = signature.try_into().unwrap();
+                                    let sig_bytes: [u8; 64] = signature.try_into().expect("len checked == 64");
                                     let sig = peer_id.verify(msg_hash.as_slice(), &sig_bytes.into());
                                     if sig.is_ok() {
                                         let eth_hex = alloy::primitives::Address::from(eth_address).to_checksum(None);
@@ -652,7 +656,7 @@ impl GossipActor {
                 let hash_hex_prefixed = format!("0x{}", hash_hex);
                 let mut stmt = db.conn().prepare(
                     "SELECT node_id FROM content_seeders WHERE content_hash = ?1"
-                ).unwrap_or_else(|_| db.conn().prepare("SELECT '' WHERE 0").unwrap());
+                ).unwrap_or_else(|_| db.conn().prepare("SELECT '' WHERE 0").expect("static SQL"));
                 stmt.query_map(rusqlite::params![&hash_hex_prefixed], |row| {
                     row.get::<_, String>(0)
                 })
@@ -686,7 +690,8 @@ impl GossipActor {
             timestamp,
             bytes_served,
         };
-        let sender = self.active_topics.get(&content_hash).unwrap();
+        let sender = self.active_topics.get(&content_hash)
+            .ok_or_else(|| anyhow::anyhow!("No active topic for content hash {}", hash_hex))?;
         let encoded = self.encode_msg(&msg)?;
         sender.broadcast(encoded).await?;
         info!("Broadcast delivery receipt for content {}", hash_hex);

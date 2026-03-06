@@ -160,9 +160,16 @@ contract AraModeration is Initializable, UUPSUpgradeable {
         emit NsfwTagSet(contentId, msg.sender, _isNsfw);
     }
 
+    error AlreadyVotedNsfw();
+
+    /// @notice hasNsfwVoted[contentId][voter] — prevent duplicate NSFW votes
+    mapping(bytes32 => mapping(address => bool)) public hasNsfwVoted;
+
     /// @notice Community vote to tag content NSFW (requires flag stake)
     function voteNsfw(bytes32 contentId) external {
         if (staking.totalUserStake(msg.sender) < flagMinStake) revert InsufficientStake();
+        if (hasNsfwVoted[contentId][msg.sender]) revert AlreadyVotedNsfw();
+        hasNsfwVoted[contentId][msg.sender] = true;
         isNsfw[contentId] = true;
         emit NsfwTagSet(contentId, msg.sender, true);
     }
@@ -368,7 +375,10 @@ contract AraModeration is Initializable, UUPSUpgradeable {
         emit ConfigUpdated("flagThreshold", _val);
     }
 
+    error VotingPeriodTooShort();
+
     function setVotingPeriod(uint256 _val) external onlyOwner {
+        if (_val < 1 hours) revert VotingPeriodTooShort();
         votingPeriod = _val;
         emit ConfigUpdated("votingPeriod", _val);
     }

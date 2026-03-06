@@ -24,6 +24,23 @@ pub struct CollaboratorInput {
     pub share_bps: u32,
 }
 
+/// Get the current Unix timestamp in seconds as i64.
+/// Uses `unwrap_or_default()` to handle clock errors gracefully.
+pub fn now_unix_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+/// Parse a 0x-prefixed hex string into a 32-byte FixedBytes.
+pub fn parse_content_id(s: &str) -> Result<alloy::primitives::FixedBytes<32>, String> {
+    s.strip_prefix("0x")
+        .unwrap_or(s)
+        .parse()
+        .map_err(|e| format!("Invalid content ID: {e}"))
+}
+
 /// Format a U256 wei value as a decimal ETH/token string (18 decimals).
 /// Very small values (< 0.000001) are shown as "<0.000001" to avoid
 /// extremely long decimal strings in the UI.

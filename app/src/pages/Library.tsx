@@ -15,23 +15,10 @@ import {
 } from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
 import { useWeb3Modal, useWeb3ModalAccount, useWeb3ModalProvider } from "@web3modal/ethers/react";
+import { fmtBytes, fmtDate, TYPE_ICONS } from "../lib/format";
 
 type Tab = "purchased" | "published" | "collections";
 
-function fmtBytes(bytes: number) {
-  if (bytes <= 0) return "—";
-  const u = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${u[i]}`;
-}
-
-function fmtDate(ts: number) {
-  return new Date(ts * 1000).toLocaleDateString();
-}
-
-const TYPE_ICONS: Record<string, string> = {
-  game: "🎮", music: "🎵", video: "🎬", document: "📄", software: "💾",
-};
 const typeIcon = (t: string) => TYPE_ICONS[t] ?? "📦";
 
 function Library() {

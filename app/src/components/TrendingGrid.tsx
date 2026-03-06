@@ -2,11 +2,7 @@ import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import type { TrendingItem } from "../lib/tauri";
 import { getTrendingContent } from "../lib/tauri";
-
-const TYPE_ICONS: Record<string, string> = {
-  game: "🎮", music: "🎵", video: "🎬",
-  document: "📄", software: "💾", other: "📦",
-};
+import { TYPE_ICONS } from "../lib/format";
 
 export default function TrendingGrid() {
   const [items, setItems] = useState<TrendingItem[]>([]);

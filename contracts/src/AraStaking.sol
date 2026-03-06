@@ -169,7 +169,7 @@ contract AraStaking is Initializable, UUPSUpgradeable, ReentrancyGuard {
     ///         This signals intent to seed that content and earn rewards.
     /// @param contentId The content identifier
     /// @param amount Amount to allocate from general stake to this content
-    function stakeForContent(bytes32 contentId, uint256 amount) external {
+    function stakeForContent(bytes32 contentId, uint256 amount) external updateReward(msg.sender) {
         if (amount == 0) revert ZeroAmount();
         if (stakedBalance[msg.sender] < amount) {
             revert InsufficientStakedBalance(amount, stakedBalance[msg.sender]);
@@ -182,7 +182,7 @@ contract AraStaking is Initializable, UUPSUpgradeable, ReentrancyGuard {
     /// @notice Remove content-specific stake back to the general pool.
     /// @param contentId The content identifier
     /// @param amount Amount to move back to general stake
-    function unstakeFromContent(bytes32 contentId, uint256 amount) external {
+    function unstakeFromContent(bytes32 contentId, uint256 amount) external updateReward(msg.sender) {
         if (amount == 0) revert ZeroAmount();
         if (contentStake[msg.sender][contentId] < amount) {
             revert InsufficientContentStake(amount, contentStake[msg.sender][contentId]);

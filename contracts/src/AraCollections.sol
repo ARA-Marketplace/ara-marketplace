@@ -123,6 +123,8 @@ contract AraCollections is Initializable, UUPSUpgradeable {
         emit CollectionDeleted(collectionId);
     }
 
+    uint256 public constant MAX_COLLECTION_SIZE = 200;
+
     /// @notice Add a content item to a collection (creator only, must be content creator)
     function addItem(uint256 collectionId, bytes32 contentId)
         external
@@ -131,6 +133,7 @@ contract AraCollections is Initializable, UUPSUpgradeable {
         // Verify caller is the content creator
         require(contentToken.getCreator(contentId) == msg.sender, "Not content creator");
         require(contentCollection[contentId] == 0, "Already in a collection");
+        require(collectionItems[collectionId].length < MAX_COLLECTION_SIZE, "Collection full");
 
         collectionItems[collectionId].push(contentId);
         contentCollection[contentId] = collectionId;

@@ -74,6 +74,11 @@ pub async fn confirm_set_nsfw(
     content_id: String,
     is_nsfw: bool,
 ) -> Result<(), String> {
+    // SECURITY: Require wallet connection to prevent unauthorized local state changes
+    let wallet = state.wallet_address.lock().await;
+    wallet.as_ref().ok_or("No wallet connected")?;
+    drop(wallet);
+
     let db = state.db.lock().await;
     db.conn()
         .execute(

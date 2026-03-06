@@ -13,6 +13,7 @@ import CollectionLeaderboard from "../components/CollectionLeaderboard";
 import TopCollectors from "../components/TopCollectors";
 import TrendingGrid from "../components/TrendingGrid";
 import type { ContentType } from "../lib/types";
+import { TYPE_ICONS } from "../lib/format";
 
 const TYPE_GRADIENTS: Record<string, string> = {
   game:     "from-violet-700 via-purple-700 to-indigo-800",
@@ -21,11 +22,6 @@ const TYPE_GRADIENTS: Record<string, string> = {
   document: "from-teal-700 via-cyan-700 to-sky-800",
   software: "from-emerald-700 via-teal-700 to-cyan-800",
   other:    "from-slate-600 via-slate-700 to-gray-800",
-};
-
-const TYPE_ICONS: Record<string, string> = {
-  game: "🎮", music: "🎵", video: "🎬",
-  document: "📄", software: "💾", other: "📦",
 };
 
 type SortBy = "recent" | "price_asc" | "price_desc";

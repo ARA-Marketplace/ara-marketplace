@@ -408,6 +408,7 @@ contract Marketplace is Initializable, UUPSUpgradeable, ReentrancyGuard {
 
     /// @notice Cancel a resale listing
     function cancelListing(bytes32 contentId) external {
+        if (!listings[contentId][msg.sender].active) revert NoActiveListing();
         listings[contentId][msg.sender].active = false;
         emit ListingCancelled(contentId, msg.sender);
     }

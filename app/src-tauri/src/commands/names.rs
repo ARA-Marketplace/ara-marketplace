@@ -107,40 +107,8 @@ pub async fn get_display_name(
             let _ = db.upsert_name(&addr_lower, &name, now);
             Ok(Some(name))
         }
-        _ => {
-            // ENS fallback: try reverse resolution if no Ara name
-            match ens_reverse_resolve(&state, &parsed).await {
-                Some(ens_name) => {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64;
-                    let db = state.db.lock().await;
-                    let _ = db.upsert_name(&addr_lower, &ens_name, now);
-                    Ok(Some(ens_name))
-                }
-                None => Ok(None),
-            }
-        }
+        _ => Ok(None),
     }
-}
-
-/// Attempt ENS reverse resolution for an address.
-/// ENS lives on Ethereum mainnet — on Sepolia/testnets this will always return None.
-/// On mainnet deployment, this queries the ENS reverse registrar via a separate
-/// mainnet RPC endpoint configured in the app config.
-async fn ens_reverse_resolve(
-    state: &AppState,
-    _address: &alloy::primitives::Address,
-) -> Option<String> {
-    // ENS reverse resolution requires a mainnet provider (ENS registry is on L1).
-    // For the Sepolia deployment, this is a no-op. When moving to mainnet,
-    // we'll add a mainnet_rpc_url config field and resolve ENS names via:
-    //   1. Build reverse node: namehash(addr.reverse)
-    //   2. Call ENS registry.resolver(node)
-    //   3. Call resolver.name(node)
-    let _ = state; // suppress unused warning
-    None
 }
 
 #[tauri::command]

@@ -6,8 +6,14 @@
 # Usage: bash scripts/download-ffmpeg.sh
 #
 # Sources:
-#   Windows/Linux: https://github.com/BtbN/FFmpeg-Builds (GPL static, n7.1 release)
+#   Windows/Linux: https://github.com/BtbN/FFmpeg-Builds (LGPL static, n7.1 release)
 #   macOS:         https://ffmpeg.martin-riedl.de (latest release)
+#
+# NOTE: SHA256 checksums in verify_checksum calls below are intentionally empty and
+# MUST be populated before use in a production or CI environment. To obtain them:
+#   1. Download the archive manually from the URL shown
+#   2. Run: sha256sum <archive_file>   (Linux/Windows) or: shasum -a 256 <archive_file>  (macOS)
+#   3. Paste the resulting hash into the corresponding verify_checksum call in this script
 
 set -euo pipefail
 
@@ -96,8 +102,11 @@ verify_checksum() {
     local file="$1"
     local expected="$2"
     if [[ -z "$expected" ]]; then
-        echo "  WARNING: No checksum configured for this platform. Skipping verification."
-        echo "  To fix: download the archive, run 'sha256sum <file>', and add the hash to download-ffmpeg.sh"
+        echo ""
+        echo "  *** WARNING: SHA256 checksum is empty — integrity of '$file' has NOT been verified. ***"
+        echo "  *** Populate the checksum in download-ffmpeg.sh before using this script in production. ***"
+        echo "  *** See the instructions at the top of this script for how to obtain the correct hash. ***"
+        echo ""
         return 0
     fi
     local actual
@@ -123,11 +132,11 @@ echo "Downloading ffmpeg for $TARGET_TRIPLE..."
 
 case "$PLATFORM" in
     windows)
-        # BtbN static GPL build (n7.1 release branch)
+        # BtbN static LGPL build (n7.1 release branch)
         if [[ "$ARCH" == "aarch64" || "$ARCH" == "ARM64" ]]; then
-            URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-winarm64-gpl-7.1.zip"
+            URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-winarm64-lgpl-7.1.zip"
         else
-            URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-7.1.zip"
+            URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-lgpl-7.1.zip"
         fi
         echo "  Source: $URL"
         curl -L --progress-bar -o "$TMP_DIR/ffmpeg.zip" "$URL"
@@ -162,11 +171,11 @@ case "$PLATFORM" in
         ;;
 
     linux)
-        # BtbN static GPL build (n7.1 release branch)
+        # BtbN static LGPL build (n7.1 release branch)
         if [[ "$ARCH" == "aarch64" ]]; then
-            URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linuxarm64-gpl-7.1.tar.xz"
+            URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linuxarm64-lgpl-7.1.tar.xz"
         else
-            URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linux64-gpl-7.1.tar.xz"
+            URL="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-linux64-lgpl-7.1.tar.xz"
         fi
         echo "  Source: $URL"
         curl -L --progress-bar -o "$TMP_DIR/ffmpeg.tar.xz" "$URL"

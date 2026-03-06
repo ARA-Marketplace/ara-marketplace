@@ -138,6 +138,9 @@ async fn fetch_events_chunked(
 
 /// Core sync logic — usable from both the Tauri command and app startup.
 pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
+    // SECURITY: Max metadata_uri size to prevent OOM from malicious on-chain data.
+    const MAX_METADATA_LEN: usize = 100_000; // 100 KB
+
     let chain = state
         .chain_client()
         .map_err(|e| format!("Chain client error: {e}"))?;
@@ -192,9 +195,7 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                 let chash = format!("0x{}", alloy::hex::encode(content_hash.as_slice()));
                 let creator_str = format!("{creator:#x}");
 
-                // SECURITY: Cap metadata_uri length before parsing to prevent DoS from
-                // malicious on-chain data (anyone can publish content with arbitrary metadata).
-                const MAX_METADATA_LEN: usize = 100_000; // 100 KB
+                // SECURITY: Cap metadata_uri length before parsing (MAX_METADATA_LEN defined at fn scope)
                 let meta: MetadataV1 = if metadata_uri.len() > MAX_METADATA_LEN {
                     warn!(
                         "metadata_uri for content {} exceeds {} bytes ({} bytes), skipping parse",
@@ -281,20 +282,32 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
             } => {
                 let cid = format!("0x{}", alloy::hex::encode(content_id.as_slice()));
 
-                // Parse updated metadata JSON to extract title, description, etc.
-                let meta: MetadataV1 = match serde_json::from_str(new_metadata_uri) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        warn!(
-                            "Failed to parse updated metadata_uri for {}: {} (raw: {:?})",
-                            cid, e, new_metadata_uri
-                        );
-                        // Still update price and raw metadata_uri even if parsing fails
-                        let _ = db.conn().execute(
-                            "UPDATE content SET price_wei = ?1, metadata_uri = ?2 WHERE content_id = ?3",
-                            rusqlite::params![&new_price_wei.to_string(), new_metadata_uri, &cid],
-                        );
-                        continue;
+                // SECURITY: Cap metadata_uri length (same as ContentPublished handler)
+                let meta: MetadataV1 = if new_metadata_uri.len() > MAX_METADATA_LEN {
+                    warn!(
+                        "metadata_uri in ContentUpdated for {} exceeds {} bytes ({} bytes), skipping parse",
+                        cid, MAX_METADATA_LEN, new_metadata_uri.len()
+                    );
+                    let _ = db.conn().execute(
+                        "UPDATE content SET price_wei = ?1 WHERE content_id = ?2",
+                        rusqlite::params![&new_price_wei.to_string(), &cid],
+                    );
+                    continue;
+                } else {
+                    match serde_json::from_str(new_metadata_uri) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            warn!(
+                                "Failed to parse updated metadata_uri for {}: {} (raw: {:?})",
+                                cid, e, new_metadata_uri
+                            );
+                            // Still update price and raw metadata_uri even if parsing fails
+                            let _ = db.conn().execute(
+                                "UPDATE content SET price_wei = ?1, metadata_uri = ?2 WHERE content_id = ?3",
+                                rusqlite::params![&new_price_wei.to_string(), new_metadata_uri, &cid],
+                            );
+                            continue;
+                        }
                     }
                 };
 
