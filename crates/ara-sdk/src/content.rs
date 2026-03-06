@@ -28,6 +28,12 @@ impl ContentOps<'_> {
         royalty_bps: u32,
         payment_token: Option<Address>,
     ) -> Result<PublishPrepareResult> {
+        // SECURITY: Reject oversized metadata_uri to prevent on-chain DoS
+        const MAX_METADATA_LEN: usize = 100_000; // 100 KB
+        if metadata_uri.len() > MAX_METADATA_LEN {
+            anyhow::bail!("metadata_uri too large ({} bytes, max {} bytes)", metadata_uri.len(), MAX_METADATA_LEN);
+        }
+
         let eth = &self.client.config.ethereum;
         let registry_addr: Address = eth.registry_address.parse()?;
 

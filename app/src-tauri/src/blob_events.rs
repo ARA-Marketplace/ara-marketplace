@@ -87,7 +87,7 @@ impl CustomEventSender for BlobTransferSender {
                             db.conn().execute(
                                 "UPDATE seeding SET bytes_served = bytes_served + ?1
                                  WHERE content_id IN (SELECT content_id FROM content WHERE content_hash = ?2)",
-                                rusqlite::params![bytes_sent as i64, &hash_hex],
+                                rusqlite::params![i64::try_from(bytes_sent).unwrap_or(i64::MAX), &hash_hex],
                             )
                         };
 
@@ -124,7 +124,7 @@ impl CustomEventSender for BlobTransferSender {
                                         let _ = conn.execute(
                                             "UPDATE seeding SET bytes_served = bytes_served + ?1
                                              WHERE content_id = ?2",
-                                            rusqlite::params![bytes_sent as i64, &content_id],
+                                            rusqlite::params![i64::try_from(bytes_sent).unwrap_or(i64::MAX), &content_id],
                                         );
                                         info!(
                                             "Auto-created seeding entry for {} (content_id={})",

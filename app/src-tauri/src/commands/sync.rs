@@ -192,23 +192,42 @@ pub async fn sync_content_impl(state: &AppState) -> Result<SyncResult, String> {
                 let chash = format!("0x{}", alloy::hex::encode(content_hash.as_slice()));
                 let creator_str = format!("{creator:#x}");
 
-                // Parse metadata JSON; fall back to empty fields for legacy ara://local/ URIs
-                let meta: MetadataV1 = match serde_json::from_str(metadata_uri) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        warn!(
-                            "Failed to parse metadata_uri for content {}: {} (raw: {:?})",
-                            cid, e, metadata_uri
-                        );
-                        MetadataV1 {
-                            title: String::new(),
-                            description: String::new(),
-                            content_type: String::new(),
-                            filename: String::new(),
-                            file_size: 0,
-                            node_id: String::new(),
-                            relay_url: String::new(),
-                            categories: Vec::new(),
+                // SECURITY: Cap metadata_uri length before parsing to prevent DoS from
+                // malicious on-chain data (anyone can publish content with arbitrary metadata).
+                const MAX_METADATA_LEN: usize = 100_000; // 100 KB
+                let meta: MetadataV1 = if metadata_uri.len() > MAX_METADATA_LEN {
+                    warn!(
+                        "metadata_uri for content {} exceeds {} bytes ({} bytes), skipping parse",
+                        cid, MAX_METADATA_LEN, metadata_uri.len()
+                    );
+                    MetadataV1 {
+                        title: String::new(),
+                        description: String::new(),
+                        content_type: String::new(),
+                        filename: String::new(),
+                        file_size: 0,
+                        node_id: String::new(),
+                        relay_url: String::new(),
+                        categories: Vec::new(),
+                    }
+                } else {
+                    match serde_json::from_str(metadata_uri) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            warn!(
+                                "Failed to parse metadata_uri for content {}: {} (raw: {:?})",
+                                cid, e, metadata_uri
+                            );
+                            MetadataV1 {
+                                title: String::new(),
+                                description: String::new(),
+                                content_type: String::new(),
+                                filename: String::new(),
+                                file_size: 0,
+                                node_id: String::new(),
+                                relay_url: String::new(),
+                                categories: Vec::new(),
+                            }
                         }
                     }
                 };

@@ -28,6 +28,7 @@ contract UpgradeScript is Script {
     address constant SEPOLIA_USDC = 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
 
     function run() external {
+        require(block.chainid == 11155111, "Upgrade script is Sepolia-only");
         uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         vm.startBroadcast(deployerPrivateKey);
 

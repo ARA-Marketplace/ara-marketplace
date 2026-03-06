@@ -14,12 +14,13 @@
 |----------|-------|-------|---------------|
 | Critical | 3     | 3     | 0             |
 | High     | 7     | 7     | 0             |
-| Medium   | 15    | 14    | 1             |
-| Low      | 11    | 10    | 1             |
+| Medium   | 17    | 16    | 1             |
+| Low      | 13    | 12    | 1             |
 | Info     | 6     | 0     | 6             |
 
 **All 202+ tests pass. Zero failures across 100,000 fuzz runs per economic invariant.**
 **Phase 5 scope:** HTTP client hardening, SQLite defense, preview upload limits, Arweave download safety, content theft analysis.
+**Phase 6 scope:** Frontend audit (clean), metadata DoS, integer casts, upgrade script safety, SDK validation.
 
 ---
 
@@ -377,6 +378,10 @@ The `receive()` function allows anyone to send ETH to the marketplace. This ETH 
 - [x] SQLite PRAGMAs: WAL mode, foreign keys enabled, 5s busy timeout
 - [x] Preview upload file size limits: 50 MB images, 500 MB videos
 - [x] Arweave download size-limited to 5 GB (Content-Length + body check)
+- [x] On-chain metadata_uri capped at 100 KB before JSON parsing (DoS prevention)
+- [x] `bytes_served` uses saturating u64→i64 conversion (no negative wrap)
+- [x] Upgrade script guarded with `require(block.chainid == 11155111)` (Sepolia-only)
+- [x] Frontend clean: no XSS, validated inputs, debounced actions, secure wallet handling
 
 ---
 
@@ -473,6 +478,34 @@ Default SQLite config: rollback journal (crash-corruption risk), foreign keys di
 **Status:** ACCEPTED (known limitation)
 Error messages like `"Failed to create iroh data dir: {e}"` may expose filesystem paths to the frontend. Not exploitable directly (local desktop app), but aids reconnaissance.
 
+### Phase 6 Findings (Frontend Audit + Metadata DoS + Edge Cases)
+
+**Frontend audit result:** React frontend passed all security checks — no XSS vectors (no `dangerouslySetInnerHTML`, `eval`, `innerHTML`), all inputs validated before IPC, wallet security clean (no key storage, MetaMask-only signing), purchase/publish buttons debounced with state machines, all external links use `rel="noopener noreferrer"`, deep links validated by Tauri backend.
+
+#### MEDIUM-16: Unbounded metadata_uri JSON parsing in sync (DoS)
+**File:** `app/src-tauri/src/commands/sync.rs`
+**Status:** FIXED
+On-chain `metadata_uri` is parsed with `serde_json::from_str()` without length validation. A malicious creator could publish content with an oversized metadata_uri string, causing OOM when the app syncs.
+**Fix:** Cap metadata_uri at 100 KB before parsing. Oversized values fall back to empty `MetadataV1`.
+
+#### MEDIUM-17: `bytes_served` cast from u64 to i64 without saturation
+**File:** `app/src-tauri/src/blob_events.rs`
+**Status:** FIXED
+`bytes_sent as i64` wraps to negative if `bytes_sent > i64::MAX`. While practically impossible with real files, the fix is trivial and correct.
+**Fix:** `i64::try_from(bytes_sent).unwrap_or(i64::MAX)` at both occurrence sites.
+
+#### LOW-12: Upgrade script missing chain ID check
+**File:** `contracts/script/Upgrade.s.sol`
+**Status:** FIXED
+Script has hardcoded Sepolia proxy addresses but no chain ID guard. If accidentally run against mainnet, it would attempt to upgrade mainnet contracts.
+**Fix:** Added `require(block.chainid == 11155111, "Upgrade script is Sepolia-only")` at start of `run()`.
+
+#### LOW-13: SDK metadata_uri input validation
+**File:** `crates/ara-sdk/src/content.rs`
+**Status:** FIXED
+`prepare_publish()` accepted arbitrary metadata_uri length with no validation.
+**Fix:** Reject metadata_uri > 100 KB with descriptive error.
+
 ---
 
 ## Known Limitations
@@ -496,6 +529,7 @@ Error messages like `"Failed to create iroh data dir: {e}"` may expose filesyste
 17. **Content hash on-chain exposure**: `ContentPublished` events include the BLAKE3 content hash. Blockchain observers can extract hashes and download content from P2P without paying. Inherent to the architecture (hash needed for P2P coordination). Mitigated by information asymmetry. Future: encrypt content blobs with a key revealed only to purchasers.
 18. **No content encryption/DRM**: Content files are stored unencrypted in iroh. Any peer who knows the BLAKE3 hash can download. This is architecturally similar to BitTorrent. Content encryption with purchase-gated key disclosure is deferred to a future release.
 19. **Error message path leakage**: Some Tauri command error messages may include filesystem paths (e.g., iroh data directory). Not exploitable in a local desktop app context, but could aid reconnaissance if error messages were ever exposed remotely.
+20. **On-chain metadata_uri is untrusted**: Anyone can publish content with arbitrary metadata_uri on-chain. The app caps parsing at 100 KB locally, but oversized metadata silently falls back to empty fields (content appears with no title/description until re-synced with valid data).
 
 ---
 
