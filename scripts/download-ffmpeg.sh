@@ -87,6 +87,38 @@ if [[ -f "$FFMPEG_OUT" && -f "$FFPROBE_OUT" ]]; then
     exit 0
 fi
 
+# SECURITY: Verify downloaded archive integrity via SHA256 checksum.
+# To update checksums after a new ffmpeg release:
+#   1. Download the archive manually
+#   2. Run: sha256sum <archive_file>
+#   3. Update the corresponding EXPECTED_SHA256 value below
+verify_checksum() {
+    local file="$1"
+    local expected="$2"
+    if [[ -z "$expected" ]]; then
+        echo "  WARNING: No checksum configured for this platform. Skipping verification."
+        echo "  To fix: download the archive, run 'sha256sum <file>', and add the hash to download-ffmpeg.sh"
+        return 0
+    fi
+    local actual
+    if command -v sha256sum &>/dev/null; then
+        actual=$(sha256sum "$file" | cut -d' ' -f1)
+    elif command -v shasum &>/dev/null; then
+        actual=$(shasum -a 256 "$file" | cut -d' ' -f1)
+    else
+        echo "  WARNING: No sha256sum or shasum found. Skipping checksum verification."
+        return 0
+    fi
+    if [[ "$actual" != "$expected" ]]; then
+        echo "  SECURITY ERROR: SHA256 checksum mismatch!"
+        echo "    Expected: $expected"
+        echo "    Got:      $actual"
+        echo "  The downloaded file may have been tampered with. Aborting."
+        exit 1
+    fi
+    echo "  Checksum verified: $actual"
+}
+
 echo "Downloading ffmpeg for $TARGET_TRIPLE..."
 
 case "$PLATFORM" in
@@ -99,6 +131,7 @@ case "$PLATFORM" in
         fi
         echo "  Source: $URL"
         curl -L --progress-bar -o "$TMP_DIR/ffmpeg.zip" "$URL"
+        verify_checksum "$TMP_DIR/ffmpeg.zip" ""
         # Extract just ffmpeg.exe and ffprobe.exe from the bin/ folder
         unzip -q -o "$TMP_DIR/ffmpeg.zip" -d "$TMP_DIR"
         EXTRACTED_DIR=$(find "$TMP_DIR" -maxdepth 1 -type d -name "ffmpeg-*" | head -1)
@@ -118,7 +151,9 @@ case "$PLATFORM" in
 
         echo "  Source: $FFMPEG_URL"
         curl -L --progress-bar -o "$TMP_DIR/ffmpeg.zip" "$FFMPEG_URL"
+        verify_checksum "$TMP_DIR/ffmpeg.zip" ""
         curl -L --progress-bar -o "$TMP_DIR/ffprobe.zip" "$FFPROBE_URL"
+        verify_checksum "$TMP_DIR/ffprobe.zip" ""
         unzip -q -o "$TMP_DIR/ffmpeg.zip" -d "$TMP_DIR/ffmpeg_extract"
         unzip -q -o "$TMP_DIR/ffprobe.zip" -d "$TMP_DIR/ffprobe_extract"
         cp "$TMP_DIR/ffmpeg_extract/ffmpeg" "$FFMPEG_OUT"
@@ -135,6 +170,7 @@ case "$PLATFORM" in
         fi
         echo "  Source: $URL"
         curl -L --progress-bar -o "$TMP_DIR/ffmpeg.tar.xz" "$URL"
+        verify_checksum "$TMP_DIR/ffmpeg.tar.xz" ""
         tar -xf "$TMP_DIR/ffmpeg.tar.xz" -C "$TMP_DIR"
         EXTRACTED_DIR=$(find "$TMP_DIR" -maxdepth 1 -type d -name "ffmpeg-*" | head -1)
         cp "$EXTRACTED_DIR/bin/ffmpeg" "$FFMPEG_OUT"

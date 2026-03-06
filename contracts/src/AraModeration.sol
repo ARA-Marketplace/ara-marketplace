@@ -65,6 +65,7 @@ contract AraModeration is Initializable, UUPSUpgradeable {
         uint256 dismissWeight;      // sum of staked ARA voting dismiss
         ProposalStatus status;
         bool appealed;
+        uint256 totalStakedAtCreation; // snapshot of totalStaked when voting activated
     }
 
     // ─── Storage ────────────────────────────────────────────────────────
@@ -208,6 +209,7 @@ contract AraModeration is Initializable, UUPSUpgradeable {
             if (isEmergency) {
                 p.status = ProposalStatus.Active;
                 p.votingDeadline = block.timestamp + emergencyVotingPeriod;
+                p.totalStakedAtCreation = staking.totalStaked();
             }
         } else {
             // Additional flag on pending or active proposal
@@ -226,6 +228,7 @@ contract AraModeration is Initializable, UUPSUpgradeable {
         if (p.status == ProposalStatus.None && p.flagCount >= flagThreshold) {
             p.status = ProposalStatus.Active;
             p.votingDeadline = block.timestamp + votingPeriod;
+            p.totalStakedAtCreation = staking.totalStaked();
         }
 
         emit ContentFlagged(contentId, msg.sender, uint8(reason), isEmergency);
@@ -268,11 +271,14 @@ contract AraModeration is Initializable, UUPSUpgradeable {
         if (block.timestamp < p.votingDeadline) revert VotingNotEnded();
 
         uint256 totalVoteWeight = p.upholdWeight + p.dismissWeight;
-        uint256 totalStaked = staking.totalStaked();
+        // Use the staking snapshot from when voting was activated to prevent
+        // sybil manipulation via stake-transfer-restake during voting period.
+        uint256 snapshotStaked = p.totalStakedAtCreation;
 
-        // Check quorum
-        bool quorumMet = totalStaked > 0 &&
-            (totalVoteWeight * BPS_DENOMINATOR) / totalStaked >= quorumBps;
+        // Check quorum against snapshot (fall back to live totalStaked for pre-upgrade proposals)
+        if (snapshotStaked == 0) snapshotStaked = staking.totalStaked();
+        bool quorumMet = snapshotStaked > 0 &&
+            (totalVoteWeight * BPS_DENOMINATOR) / snapshotStaked >= quorumBps;
 
         // Check supermajority
         bool upheld = quorumMet &&
@@ -332,12 +338,14 @@ contract AraModeration is Initializable, UUPSUpgradeable {
         uint256 upholdWeight,
         uint256 dismissWeight,
         ProposalStatus status,
-        bool appealed
+        bool appealed,
+        uint256 totalStakedAtCreation
     ) {
         FlagProposal storage p = proposals[contentId];
         return (
             p.flagger, uint8(p.reason), p.isEmergency, p.flagCount,
-            p.votingDeadline, p.upholdWeight, p.dismissWeight, p.status, p.appealed
+            p.votingDeadline, p.upholdWeight, p.dismissWeight, p.status, p.appealed,
+            p.totalStakedAtCreation
         );
     }
 

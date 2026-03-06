@@ -179,7 +179,18 @@ impl GossipActor {
                                 warn!("Ignoring delivery receipt with bytes_served=0");
                             } else {
                                 let db = self.db.lock().await;
-                                if let Err(e) = db.insert_delivery_receipt(
+                                // SECURITY: Only store receipts for content we know about to prevent
+                                // DB bloat attacks from malicious peers sending fake content IDs
+                                let content_exists: bool = db.conn()
+                                    .query_row(
+                                        "SELECT EXISTS(SELECT 1 FROM content WHERE content_id = ?1)",
+                                        rusqlite::params![&content_id_hex],
+                                        |row| row.get(0),
+                                    )
+                                    .unwrap_or(false);
+                                if !content_exists {
+                                    warn!("Ignoring delivery receipt for unknown content: {}", content_id_hex);
+                                } else if let Err(e) = db.insert_delivery_receipt(
                                     &content_id_hex,
                                     &seeder_eth_address_hex,
                                     &buyer_eth_address_hex,
@@ -467,11 +478,26 @@ impl GossipActor {
                             timestamp,
                             bytes_served,
                         }) => {
+                            // SECURITY: Validate signature length (ECDSA = 65 bytes)
+                            if signature.len() != 65 {
+                                warn!("Dropping delivery receipt with invalid signature length: {} bytes", signature.len());
+                                continue;
+                            }
+                            // SECURITY: Reject receipts with timestamps > 7 days old or in the future
+                            let now_secs = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            let seven_days = 7 * 24 * 60 * 60;
+                            if timestamp > now_secs + 300 || now_secs.saturating_sub(timestamp) > seven_days {
+                                warn!("Dropping delivery receipt with stale/future timestamp: {}", timestamp);
+                                continue;
+                            }
                             // Store receipt — signature is verified on-chain when seeder claims rewards
                             let content_id_hex = format!("0x{}", alloy::hex::encode(content_id));
                             let seeder_hex = alloy::primitives::Address::from(seeder_eth_address).to_checksum(None);
                             let buyer_hex = alloy::primitives::Address::from(buyer_eth_address).to_checksum(None);
-                            let sig_hex = format!("0x{}", alloy::hex::encode(signature));
+                            let sig_hex = format!("0x{}", alloy::hex::encode(&signature));
                             let _ = event_tx.send(RecvEvent::DeliveryReceiptReceived {
                                 content_id_hex,
                                 seeder_eth_address_hex: seeder_hex,

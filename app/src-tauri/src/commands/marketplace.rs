@@ -552,7 +552,18 @@ pub async fn open_downloaded_content(
     drop(db);
 
     let path = downloaded_path.ok_or("Content not yet downloaded")?;
-    opener::open(&path).map_err(|e| format!("Failed to open file: {e}"))?;
+
+    // SECURITY: Verify the file is inside the downloads directory to prevent
+    // opening arbitrary/malicious paths (e.g. injected .exe paths).
+    let canonical = std::fs::canonicalize(&path)
+        .map_err(|e| format!("Invalid file path: {e}"))?;
+    let downloads_base = std::fs::canonicalize(&state.config.storage.downloads_dir)
+        .map_err(|e| format!("Downloads dir error: {e}"))?;
+    if !canonical.starts_with(&downloads_base) {
+        return Err("Security: file is not in downloads directory".into());
+    }
+
+    opener::open(&canonical).map_err(|e| format!("Failed to open file: {e}"))?;
     Ok(path)
 }
 
@@ -579,7 +590,17 @@ pub async fn open_content_folder(
     drop(db);
 
     let path = downloaded_path.ok_or("Content not yet downloaded")?;
-    let folder = Path::new(&path)
+
+    // SECURITY: Verify the file is inside the downloads directory
+    let canonical = std::fs::canonicalize(&path)
+        .map_err(|e| format!("Invalid file path: {e}"))?;
+    let downloads_base = std::fs::canonicalize(&state.config.storage.downloads_dir)
+        .map_err(|e| format!("Downloads dir error: {e}"))?;
+    if !canonical.starts_with(&downloads_base) {
+        return Err("Security: file is not in downloads directory".into());
+    }
+
+    let folder = canonical
         .parent()
         .ok_or("Could not determine parent folder")?;
     opener::open(folder).map_err(|e| format!("Failed to open folder: {e}"))?;

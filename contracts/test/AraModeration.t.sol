@@ -274,12 +274,12 @@ contract AraModerationTest is DeployHelper {
     function test_CreatorAppeal() public {
         _activateProposal();
 
-        (, , , , uint256 deadlineBefore, , , , ) = moderation.getProposalDetail(contentId);
+        (, , , , uint256 deadlineBefore, , , , , ) = moderation.getProposalDetail(contentId);
 
         vm.prank(creator);
         moderation.appeal(contentId);
 
-        (, , , , uint256 deadlineAfter, , , , bool appealed) = moderation.getProposalDetail(contentId);
+        (, , , , uint256 deadlineAfter, , , , bool appealed, ) = moderation.getProposalDetail(contentId);
 
         assertTrue(appealed);
         assertEq(deadlineAfter, deadlineBefore + 3 days);

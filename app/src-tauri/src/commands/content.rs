@@ -130,25 +130,31 @@ fn find_ffmpeg_binary(name: &str) -> Option<PathBuf> {
         }
     }
 
-    // 2. System PATH fallback (development environments)
-    let check = if cfg!(windows) {
-        Command::new("where").arg(&exe_name).output()
-    } else {
-        Command::new("which").arg(&exe_name).output()
-    };
+    // 2. System PATH fallback — only in debug/development builds.
+    // SECURITY: In release builds, never fall back to system PATH to prevent
+    // trojan ffmpeg binaries from executing with user privileges.
+    #[cfg(debug_assertions)]
+    {
+        let check = if cfg!(windows) {
+            Command::new("where").arg(&exe_name).output()
+        } else {
+            Command::new("which").arg(&exe_name).output()
+        };
 
-    if let Ok(output) = check {
-        if output.status.success() {
-            let path_str = String::from_utf8_lossy(&output.stdout);
-            let first_line = path_str.lines().next().unwrap_or("").trim();
-            if !first_line.is_empty() {
-                info!("Found {} in PATH: {}", name, first_line);
-                return Some(PathBuf::from(first_line));
+        if let Ok(output) = check {
+            if output.status.success() {
+                let path_str = String::from_utf8_lossy(&output.stdout);
+                let first_line = path_str.lines().next().unwrap_or("").trim();
+                if !first_line.is_empty() {
+                    info!("Found {} in PATH: {} (debug build only)", name, first_line);
+                    return Some(PathBuf::from(first_line));
+                }
             }
         }
     }
 
-    warn!("{} not found (not bundled and not in PATH)", name);
+    warn!("{} not found (sidecar not bundled{})", name,
+        if cfg!(debug_assertions) { " and not in PATH" } else { "" });
     None
 }
 

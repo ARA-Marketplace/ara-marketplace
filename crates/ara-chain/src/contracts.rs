@@ -151,7 +151,7 @@ sol! {
         function getProposalDetail(bytes32 contentId) external view returns (
             address flagger, uint8 reason, bool isEmergency, uint256 flagCount,
             uint256 votingDeadline, uint256 upholdWeight, uint256 dismissWeight,
-            uint8 status, bool appealed
+            uint8 status, bool appealed, uint256 totalStakedAtCreation
         );
         function isNsfw(bytes32 contentId) external view returns (bool);
         function isPurged(bytes32 contentId) external view returns (bool);

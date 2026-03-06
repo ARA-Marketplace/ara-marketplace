@@ -22,7 +22,17 @@ pub fn init(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     // Allow RPC URL override via environment variable (for Alchemy/Infura API keys)
     if let Ok(rpc_url) = std::env::var("SEPOLIA_RPC_URL").or_else(|_| std::env::var("ETH_RPC_URL")) {
-        config.ethereum.rpc_url = rpc_url;
+        // SECURITY: In release builds, require HTTPS to prevent MITM attacks on RPC
+        #[cfg(not(debug_assertions))]
+        if !rpc_url.starts_with("https://") {
+            warn!("Ignoring insecure RPC URL from environment (must use HTTPS in production)");
+        } else {
+            config.ethereum.rpc_url = rpc_url;
+        }
+        #[cfg(debug_assertions)]
+        {
+            config.ethereum.rpc_url = rpc_url;
+        }
     }
 
     // Default supported ERC-20 payment tokens (Sepolia testnet)

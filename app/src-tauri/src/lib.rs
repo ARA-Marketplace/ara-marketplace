@@ -84,16 +84,55 @@ pub fn run() {
     }
 
     tauri::Builder::default()
-        // Serve preview-cache files via localasset:// (or https://localasset.localhost on Windows).
-        // This avoids Tauri's built-in asset-protocol scope restrictions.
-        .register_uri_scheme_protocol("localasset", |_app, request| {
+        // Serve preview-cache and download files via localasset:// (or https://localasset.localhost
+        // on Windows). SECURITY: paths are sandboxed to the app data directory to prevent
+        // arbitrary file reads via path traversal.
+        .register_uri_scheme_protocol("localasset", |app, request| {
+            use std::path::PathBuf;
             use tauri::http::Response;
+
+            let forbidden = || {
+                Response::builder()
+                    .status(403)
+                    .body(b"Forbidden: path outside app data directory".to_vec())
+                    .unwrap()
+            };
+
+            // Resolve the app data directory (e.g. %LOCALAPPDATA%\one.ara.marketplace)
+            let app_data_dir: PathBuf = match app.app_handle().path().app_local_data_dir() {
+                Ok(d) => d,
+                Err(_) => return forbidden(),
+            };
 
             // Strip leading '/' and percent-decode the path component.
             let path_encoded = request.uri().path().trim_start_matches('/');
             let path = percent_decode(path_encoded);
 
-            match std::fs::read(&path) {
+            // SECURITY: Canonicalize the requested path and verify it is inside
+            // the app data directory. This prevents path traversal attacks
+            // (e.g. localasset://../../Windows/System32/config/SAM).
+            let canonical = match std::fs::canonicalize(&path) {
+                Ok(p) => p,
+                Err(_) => {
+                    return Response::builder()
+                        .status(404)
+                        .body(vec![])
+                        .unwrap()
+                }
+            };
+            let allowed_base = match std::fs::canonicalize(&app_data_dir) {
+                Ok(p) => p,
+                Err(_) => return forbidden(),
+            };
+            if !canonical.starts_with(&allowed_base) {
+                tracing::warn!(
+                    "localasset:// blocked path traversal attempt: {}",
+                    path
+                );
+                return forbidden();
+            }
+
+            match std::fs::read(&canonical) {
                 Ok(bytes) => {
                     // Detect MIME type from bytes first, fall back to extension.
                     let mime = infer::get(&bytes)
@@ -118,7 +157,6 @@ pub fn run() {
                         });
                     Response::builder()
                         .header("Content-Type", mime)
-                        .header("Access-Control-Allow-Origin", "*")
                         .body(bytes)
                         .unwrap()
                 }

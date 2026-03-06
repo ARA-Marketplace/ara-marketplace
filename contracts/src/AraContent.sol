@@ -80,6 +80,7 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
     event ContentFileUpdated(bytes32 indexed contentId, bytes32 oldHash, bytes32 newHash, address indexed creator);
     event ContentDelisted(bytes32 indexed contentId);
     event MinterUpdated(address indexed oldMinter, address indexed newMinter);
+    event ModeratorUpdated(address indexed oldModerator, address indexed newModerator);
 
     error InsufficientStake();
     error ContentAlreadyExists(bytes32 contentId);
@@ -348,6 +349,7 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
 
     /// @notice Set the authorized moderator contract
     function setModerator(address _moderator) external onlyOwner {
+        emit ModeratorUpdated(moderator, _moderator);
         moderator = _moderator;
     }
 
