@@ -20,16 +20,19 @@ pub trait Signer: Send + Sync {
 /// A signer backed by a raw private key. Uses alloy for local signing and RPC submission.
 pub struct PrivateKeySigner {
     address: Address,
-    _private_key: String,
+    private_key: String,
+    rpc_url: String,
 }
 
 impl PrivateKeySigner {
-    pub fn new(private_key: &str) -> Self {
-        // Parse the private key to derive the address
-        let key_bytes = private_key.strip_prefix("0x").unwrap_or(private_key);
-        let key_bytes = alloy::hex::decode(key_bytes).unwrap_or_default();
+    /// Create a new signer from a hex-encoded private key and RPC URL.
+    ///
+    /// The private key can be with or without a `0x` prefix.
+    /// The RPC URL is used to broadcast signed transactions.
+    pub fn new(private_key: &str, rpc_url: &str) -> Self {
+        let key_hex = private_key.strip_prefix("0x").unwrap_or(private_key);
+        let key_bytes = alloy::hex::decode(key_hex).unwrap_or_default();
 
-        // Use alloy's signing key to derive address
         let address = if key_bytes.len() == 32 {
             use alloy::signers::local::PrivateKeySigner as AlloySigner;
             let signer: AlloySigner = AlloySigner::from_slice(&key_bytes)
@@ -41,23 +44,62 @@ impl PrivateKeySigner {
 
         Self {
             address,
-            _private_key: private_key.to_string(),
+            private_key: private_key.to_string(),
+            rpc_url: rpc_url.to_string(),
         }
+    }
+
+    fn make_provider(&self) -> Result<impl alloy::providers::Provider + Clone> {
+        use alloy::network::EthereumWallet;
+        use alloy::providers::ProviderBuilder;
+        use alloy::signers::local::PrivateKeySigner as AlloySigner;
+
+        let key_hex = self.private_key.strip_prefix("0x").unwrap_or(&self.private_key);
+        let key_bytes = alloy::hex::decode(key_hex)?;
+        let signer = AlloySigner::from_slice(&key_bytes)?;
+        let wallet = EthereumWallet::from(signer);
+
+        let provider = ProviderBuilder::new()
+            .wallet(wallet)
+            .connect_http(self.rpc_url.parse()?);
+
+        Ok(provider)
     }
 }
 
 #[async_trait::async_trait]
 impl Signer for PrivateKeySigner {
-    async fn sign_and_send(&self, _tx: &TransactionRequest) -> Result<String> {
-        // In a full implementation, this would:
-        // 1. Parse the tx fields into an alloy TransactionRequest
-        // 2. Sign with the private key
-        // 3. Send via the configured RPC endpoint
-        // 4. Return the tx hash
-        //
-        // For now, return the calldata — callers use prepare-only mode
-        // and submit via their own infrastructure.
-        anyhow::bail!("PrivateKeySigner.sign_and_send not yet implemented — use prepare-only mode and submit transactions via your own RPC endpoint")
+    async fn sign_and_send(&self, tx: &TransactionRequest) -> Result<String> {
+        use alloy::providers::Provider;
+        use alloy::rpc::types::TransactionRequest as AlloyTxRequest;
+
+        let provider = self.make_provider()?;
+
+        let to_addr: Address = tx.to.parse()?;
+        let data_hex = tx.data.strip_prefix("0x").unwrap_or(&tx.data);
+        let data_bytes = alloy::hex::decode(data_hex)?;
+
+        let value = if tx.value == "0x0" || tx.value.is_empty() {
+            alloy::primitives::U256::ZERO
+        } else {
+            let v_hex = tx.value.strip_prefix("0x").unwrap_or(&tx.value);
+            alloy::primitives::U256::from_str_radix(v_hex, 16)?
+        };
+
+        let alloy_tx = AlloyTxRequest::default()
+            .to(to_addr)
+            .input(data_bytes.into())
+            .value(value);
+
+        let pending = provider.send_transaction(alloy_tx).await?;
+        let tx_hash = *pending.tx_hash();
+        let receipt = pending.get_receipt().await?;
+
+        if !receipt.status() {
+            anyhow::bail!("Transaction {tx_hash:#x} reverted");
+        }
+
+        Ok(format!("{tx_hash:#x}"))
     }
 
     async fn sign_typed_data(&self, _domain: &str, _types: &str, _value: &str) -> Result<Vec<u8>> {

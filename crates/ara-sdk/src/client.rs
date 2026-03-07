@@ -1,3 +1,4 @@
+use alloy::primitives::Address;
 use alloy::providers::Provider;
 use anyhow::Result;
 use std::sync::Arc;
@@ -8,6 +9,7 @@ use ara_core::config::AppConfig;
 use ara_core::storage::Database;
 
 use crate::signer::Signer;
+use crate::types::{format_wei, BalanceInfo, TransactionRequest};
 
 /// Main entry point for the Ara SDK. Provides access to all marketplace operations.
 ///
@@ -30,7 +32,7 @@ impl AraClient {
     }
 
     /// Get the signer's address, if a signer is configured.
-    pub fn wallet_address(&self) -> Option<alloy::primitives::Address> {
+    pub fn wallet_address(&self) -> Option<Address> {
         self.signer.as_ref().map(|s| s.address())
     }
 
@@ -48,6 +50,71 @@ impl AraClient {
         };
         let chain = connect_http(&eth.rpc_url, addresses)?;
         Ok(chain)
+    }
+
+    /// Get ETH, ARA token, and staked ARA balances for an address.
+    pub async fn get_balances(&self, address: Address) -> Result<BalanceInfo> {
+        let chain = self.chain_client()?;
+        let eth_bal = chain.get_eth_balance(address).await?;
+        let ara_bal = chain.token.balance_of(address).await?;
+        let staked = chain.staking.staked_balance(address).await?;
+
+        Ok(BalanceInfo {
+            eth_wei: eth_bal.to_string(),
+            eth_display: format_wei(eth_bal),
+            ara_wei: ara_bal.to_string(),
+            ara_display: format_wei(ara_bal),
+            staked_wei: staked.to_string(),
+            staked_display: format_wei(staked),
+        })
+    }
+
+    /// Wait for a transaction to be confirmed. Polls every 3 seconds, times out after 5 minutes.
+    pub async fn wait_for_transaction(&self, tx_hash: &str) -> Result<()> {
+        let chain = self.chain_client()?;
+        let hash_hex = tx_hash.strip_prefix("0x").unwrap_or(tx_hash);
+        let hash_bytes = alloy::hex::decode(hash_hex)?;
+        let hash = alloy::primitives::TxHash::from_slice(&hash_bytes);
+
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(300);
+
+        loop {
+            if start.elapsed() > timeout {
+                anyhow::bail!("Transaction {} not confirmed after 5 minutes", tx_hash);
+            }
+
+            match chain.provider().get_transaction_receipt(hash).await? {
+                Some(receipt) => {
+                    if !receipt.status() {
+                        anyhow::bail!("Transaction {} reverted", tx_hash);
+                    }
+                    return Ok(());
+                }
+                None => {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+            }
+        }
+    }
+
+    /// Sign, send, and wait for a single transaction. Requires a signer.
+    pub async fn execute_transaction(&self, tx: &TransactionRequest) -> Result<String> {
+        let signer = self.signer.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No signer configured — cannot execute transactions"))?;
+        let tx_hash = signer.sign_and_send(tx).await?;
+        Ok(tx_hash)
+    }
+
+    /// Execute multiple transactions sequentially (e.g., approve + main tx).
+    /// Returns all transaction hashes.
+    pub async fn execute_transactions(&self, txs: &[TransactionRequest]) -> Result<Vec<String>> {
+        let mut hashes = Vec::with_capacity(txs.len());
+        for tx in txs {
+            let hash = self.execute_transaction(tx).await?;
+            hashes.push(hash);
+        }
+        Ok(hashes)
     }
 
     /// Access content operations (publish, update, delist, query).
@@ -124,7 +191,6 @@ impl AraClientBuilder {
         let config = self.config.unwrap_or_default();
         let db_path = self.db_path.unwrap_or_else(|| config.storage.db_path.clone());
 
-        // Ensure parent directory exists
         if let Some(parent) = std::path::Path::new(&db_path).parent() {
             let _ = std::fs::create_dir_all(parent);
         }

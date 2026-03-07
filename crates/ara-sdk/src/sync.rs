@@ -154,6 +154,132 @@ impl SyncOps<'_> {
             to_block: current_block,
         })
     }
+
+    /// Sync marketplace reward events from chain to local DB.
+    /// Processes: ContentPurchased, ResalePurchased, ContentListed, ListingCancelled.
+    pub async fn sync_rewards(&self) -> Result<crate::types::RewardSyncResult> {
+        let chain = self.client.chain_client()?;
+        let current_block = chain.get_block_number().await?;
+
+        let db = self.client.db.lock().await;
+        let last_synced: u64 = db
+            .get_config("rewards_sync_block")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(self.client.config.ethereum.deployment_block);
+        drop(db);
+
+        if last_synced >= current_block {
+            return Ok(crate::types::RewardSyncResult {
+                purchases_found: 0,
+                claims_found: 0,
+                listings_found: 0,
+                synced_to_block: current_block,
+            });
+        }
+
+        let from = last_synced + 1;
+        info!("Syncing reward events from block {} to {}", from, current_block);
+
+        let events = fetch_events_chunked(&chain, from, current_block).await?;
+
+        let mut purchases_found = 0u32;
+        let mut claims_found = 0u32;
+        let mut listings_found = 0u32;
+
+        let db = self.client.db.lock().await;
+
+        for indexed in &events {
+            match &indexed.event {
+                AraEvent::ContentPurchased {
+                    content_id,
+                    buyer,
+                    price_paid,
+                    ..
+                } => {
+                    let cid = format!("{content_id:#x}");
+                    let buyer_str = format!("{buyer:#x}");
+                    let _ = db.record_global_purchase(
+                        &cid,
+                        &buyer_str,
+                        None,
+                        &price_paid.to_string(),
+                        "",
+                        indexed.block_number as i64,
+                        None,
+                        false,
+                    );
+                    let _ = db.increment_total_minted(&cid);
+                    purchases_found += 1;
+                }
+                AraEvent::ResalePurchased {
+                    content_id,
+                    buyer,
+                    seller,
+                    price,
+                    ..
+                } => {
+                    let cid = format!("{content_id:#x}");
+                    let buyer_str = format!("{buyer:#x}");
+                    let seller_str = format!("{seller:#x}");
+                    let _ = db.record_global_purchase(
+                        &cid,
+                        &buyer_str,
+                        Some(&seller_str),
+                        &price.to_string(),
+                        "",
+                        indexed.block_number as i64,
+                        None,
+                        true,
+                    );
+                    let _ = db.deactivate_resale_listing(&cid, &seller_str);
+                    purchases_found += 1;
+                }
+                AraEvent::ContentListed {
+                    content_id,
+                    seller,
+                    price,
+                } => {
+                    let cid = format!("{content_id:#x}");
+                    let seller_str = format!("{seller:#x}");
+                    let _ = db.upsert_resale_listing(
+                        &cid,
+                        &seller_str,
+                        &price.to_string(),
+                        indexed.block_number as i64,
+                    );
+                    listings_found += 1;
+                }
+                AraEvent::ListingCancelled {
+                    content_id,
+                    seller,
+                } => {
+                    let cid = format!("{content_id:#x}");
+                    let seller_str = format!("{seller:#x}");
+                    let _ = db.deactivate_resale_listing(&cid, &seller_str);
+                    listings_found += 1;
+                }
+                AraEvent::DeliveryRewardClaimed { .. } | AraEvent::RewardsClaimed { .. } => {
+                    claims_found += 1;
+                }
+                _ => {}
+            }
+        }
+
+        db.set_config("rewards_sync_block", &current_block.to_string())?;
+        drop(db);
+
+        info!(
+            "Reward sync complete: {} purchases, {} claims, {} listings",
+            purchases_found, claims_found, listings_found
+        );
+
+        Ok(crate::types::RewardSyncResult {
+            purchases_found,
+            claims_found,
+            listings_found,
+            synced_to_block: current_block,
+        })
+    }
 }
 
 /// Fetch events in chunks, halving chunk size on range errors.

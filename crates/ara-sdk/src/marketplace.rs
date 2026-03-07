@@ -177,4 +177,73 @@ impl MarketplaceOps<'_> {
         let chain = self.client.chain_client()?;
         chain.marketplace.get_buyer_reward(content_id, buyer).await
     }
+
+    /// Confirm a purchase: insert into local DB.
+    pub async fn confirm_purchase(
+        &self,
+        content_id: &str,
+        buyer: &str,
+        price_paid_wei: &str,
+        tx_hash: &str,
+    ) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let db = self.client.db.lock().await;
+        db.upsert_purchase(content_id, buyer, price_paid_wei, tx_hash, now)?;
+        let _ = db.increment_total_minted(content_id);
+        Ok(())
+    }
+
+    /// Confirm listing for resale: insert into local DB.
+    pub async fn confirm_list_for_resale(
+        &self,
+        content_id: &str,
+        seller: &str,
+        price_wei: &str,
+    ) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let db = self.client.db.lock().await;
+        db.upsert_resale_listing(content_id, seller, price_wei, now)?;
+        Ok(())
+    }
+
+    /// Confirm cancel listing: deactivate in local DB.
+    pub async fn confirm_cancel_listing(
+        &self,
+        content_id: &str,
+        seller: &str,
+    ) -> Result<()> {
+        let db = self.client.db.lock().await;
+        db.deactivate_resale_listing(content_id, seller)?;
+        Ok(())
+    }
+
+    /// Get active resale listings for a content item from local DB.
+    pub async fn get_resale_listings(
+        &self,
+        content_id: &str,
+    ) -> Result<Vec<crate::types::ResaleListing>> {
+        let db = self.client.db.lock().await;
+        let rows = db.get_active_resale_listings(content_id)?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(cid, seller, price_wei, _listed_at)| {
+                let wei: U256 = price_wei.parse().unwrap_or(U256::ZERO);
+                crate::types::ResaleListing {
+                    content_id: cid,
+                    seller,
+                    price_wei: price_wei.clone(),
+                    price_display: format_wei(wei),
+                }
+            })
+            .collect())
+    }
 }

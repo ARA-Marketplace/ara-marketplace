@@ -279,4 +279,93 @@ impl ContentOps<'_> {
         let active = chain.registry.is_active(content_id).await?;
         Ok((creator, price, active))
     }
+
+    /// Confirm a publish transaction: insert content into local DB.
+    /// Call after execute_transaction succeeds.
+    pub async fn confirm_publish(
+        &self,
+        content_id: &str,
+        content_hash: &str,
+        creator: &str,
+        metadata_uri: &str,
+        price_wei: &str,
+    ) -> Result<crate::types::ConfirmPublishResult> {
+        let meta: serde_json::Value = serde_json::from_str(metadata_uri).unwrap_or_default();
+        let title = meta.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let description = meta.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        let content_type = meta.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
+        let filename = meta.get("filename").and_then(|v| v.as_str()).unwrap_or("");
+        let file_size = meta.get("file_size").and_then(|v| v.as_i64()).unwrap_or(0);
+        let node_id = meta.get("node_id").and_then(|v| v.as_str()).unwrap_or("");
+        let relay_url = meta.get("relay_url").and_then(|v| v.as_str()).unwrap_or("");
+        let categories = meta.get("categories")
+            .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".to_string()))
+            .unwrap_or_else(|| "[]".to_string());
+
+        let db = self.client.db.lock().await;
+        db.upsert_synced_content(
+            content_id,
+            content_hash,
+            creator,
+            metadata_uri,
+            price_wei,
+            title,
+            description,
+            content_type,
+            filename,
+            file_size,
+            node_id,
+            relay_url,
+            0,
+            &categories,
+            0,
+            0,
+            "",
+        )?;
+
+        Ok(crate::types::ConfirmPublishResult {
+            content_id: content_id.to_string(),
+        })
+    }
+
+    /// Confirm a content update: update the DB row.
+    pub async fn confirm_update(
+        &self,
+        content_id: &str,
+        new_price_wei: &str,
+        new_metadata_uri: &str,
+    ) -> Result<()> {
+        let db = self.client.db.lock().await;
+        db.conn().execute(
+            "UPDATE content SET price_wei = ?1, metadata_uri = ?2 WHERE content_id = ?3",
+            rusqlite::params![new_price_wei, new_metadata_uri, content_id],
+        )?;
+        Ok(())
+    }
+
+    /// Confirm a delist: set active=0 in DB.
+    pub async fn confirm_delist(&self, content_id: &str) -> Result<()> {
+        let db = self.client.db.lock().await;
+        db.conn().execute(
+            "UPDATE content SET active = 0 WHERE content_id = ?1",
+            rusqlite::params![content_id],
+        )?;
+        Ok(())
+    }
+
+    /// Get edition info for content from on-chain.
+    pub async fn get_edition_info(
+        &self,
+        content_id: FixedBytes<32>,
+    ) -> Result<crate::types::EditionInfo> {
+        let chain = self.client.chain_client()?;
+        let max_supply: U256 = chain.registry.get_max_supply(content_id).await?;
+        let total_minted: U256 = chain.registry.get_total_minted(content_id).await?;
+
+        Ok(crate::types::EditionInfo {
+            max_supply: max_supply.try_into().unwrap_or(u64::MAX),
+            total_minted: total_minted.try_into().unwrap_or(u64::MAX),
+            royalty_bps: 0, // not queryable on-chain without a dedicated getter
+        })
+    }
 }

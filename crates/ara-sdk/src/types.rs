@@ -84,6 +84,49 @@ pub struct SyncResult {
     pub to_block: u64,
 }
 
+/// Balance information for a wallet address.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BalanceInfo {
+    pub eth_wei: String,
+    pub eth_display: String,
+    pub ara_wei: String,
+    pub ara_display: String,
+    pub staked_wei: String,
+    pub staked_display: String,
+}
+
+/// Edition info for a content item (on-chain).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditionInfo {
+    pub max_supply: u64,
+    pub total_minted: u64,
+    pub royalty_bps: u32,
+}
+
+/// A resale listing from the local database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResaleListing {
+    pub content_id: String,
+    pub seller: String,
+    pub price_wei: String,
+    pub price_display: String,
+}
+
+/// Result of confirming a publish transaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfirmPublishResult {
+    pub content_id: String,
+}
+
+/// Result of syncing reward-related events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RewardSyncResult {
+    pub purchases_found: u32,
+    pub claims_found: u32,
+    pub listings_found: u32,
+    pub synced_to_block: u64,
+}
+
 // ─── Formatting helpers ─────────────────────────────────────────────────────
 
 /// Format a U256 wei value as a decimal ETH/token string (18 decimals).

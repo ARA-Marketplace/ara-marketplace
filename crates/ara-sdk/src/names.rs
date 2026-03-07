@@ -59,4 +59,29 @@ impl NameOps<'_> {
         let chain = self.client.chain_client()?;
         chain.name_registry.get_address(name).await
     }
+
+    /// Check if a name is available (not registered by anyone).
+    pub async fn check_available(&self, name: &str) -> Result<bool> {
+        let addr = self.get_address(name).await?;
+        Ok(addr == Address::ZERO)
+    }
+
+    /// Confirm a name registration in local DB cache.
+    pub async fn confirm_register(&self, address: &str, name: &str) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let db = self.client.db.lock().await;
+        db.upsert_name(address, name, now)?;
+        Ok(())
+    }
+
+    /// Confirm a name removal in local DB cache.
+    pub async fn confirm_remove(&self, address: &str) -> Result<()> {
+        let db = self.client.db.lock().await;
+        db.remove_name(address)?;
+        Ok(())
+    }
 }

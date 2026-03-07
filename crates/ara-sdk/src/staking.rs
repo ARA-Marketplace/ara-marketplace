@@ -160,6 +160,31 @@ impl StakingOps<'_> {
         })
     }
 
+    /// Get reward pipeline summary from local DB (total claimed, unclaimed, history count).
+    pub async fn get_reward_pipeline(&self) -> Result<(String, String, u32)> {
+        let db = self.client.db.lock().await;
+        let claimed = db.get_total_claimed_wei()?;
+        let unclaimed = db.get_total_unclaimed_wei()?;
+        let history = db.get_reward_history(1, 0)?;
+        let total: u32 = db.conn().query_row(
+            "SELECT COUNT(*) FROM rewards",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+        drop(history);
+        Ok((claimed, unclaimed, total))
+    }
+
+    /// Get reward history from local DB with pagination.
+    pub async fn get_reward_history(
+        &self,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<ara_core::storage::RewardRow>> {
+        let db = self.client.db.lock().await;
+        db.get_reward_history(limit, offset)
+    }
+
     /// Get token reward info for a user for a specific token.
     pub async fn get_token_reward(
         &self,

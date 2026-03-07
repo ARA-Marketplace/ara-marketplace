@@ -31,6 +31,7 @@ async fn test_builder_with_signer() {
     // Known test private key (DO NOT use in production)
     let signer = PrivateKeySigner::new(
         "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        "https://localhost:8545",
     );
     let expected_addr = signer.address();
 
@@ -460,6 +461,7 @@ fn test_private_key_signer_address() {
     // Hardhat account #0
     let signer = PrivateKeySigner::new(
         "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        "https://localhost:8545",
     );
     // Known address for this key
     assert_eq!(
@@ -470,6 +472,6 @@ fn test_private_key_signer_address() {
 
 #[test]
 fn test_private_key_signer_invalid_key() {
-    let signer = PrivateKeySigner::new("0xDEAD");
+    let signer = PrivateKeySigner::new("0xDEAD", "https://localhost:8545");
     assert_eq!(signer.address(), Address::ZERO);
 }
