@@ -6,6 +6,23 @@ Ara is a decentralized content marketplace where creators publish anything — m
 
 ---
 
+## Download
+
+Desktop apps for Windows, macOS, and Linux are available from the [Releases](https://github.com/AraBlocks/ara-marketplace/releases) page.
+
+| Platform | Format |
+|----------|--------|
+| Windows | `.exe` installer (NSIS) |
+| macOS (Apple Silicon) | `.dmg` |
+| macOS (Intel) | `.dmg` |
+| Linux | `.AppImage`, `.deb`, `.rpm` |
+
+> **Note:** The apps are not code-signed. On Windows, click "More info" → "Run anyway" in SmartScreen. On macOS, right-click → Open, then confirm in System Settings → Privacy & Security.
+
+For programmatic access without the desktop app, see the [Ara SDK](#ara-sdk).
+
+---
+
 ## Why Ara Exists
 
 Digital marketplaces extract enormous value from creators and buyers while contributing almost nothing to the actual work of creation or distribution. Platforms take 30–50% cuts, arbitrarily delist content, freeze accounts without recourse, and can disappear overnight taking years of creator revenue with them.
@@ -18,21 +35,23 @@ Ara flips this. Every rule is enforced by open-source smart contracts on Ethereu
 
 ### For Creators
 1. **Stake 10 ARA tokens** — a small deposit that signals serious participation
-2. **Publish any file** — it gets hashed, stored in your iroh node, and registered on Ethereum
-3. **Set your price in ETH** — you receive 85% of every purchase instantly, on-chain
-4. **Distribute seeder rewards** — use the Library tab to allocate the 12.5% reward pool to the people who helped distribute your content
+2. **Publish any file** — it gets hashed, stored in your iroh node, and registered on Ethereum as an ERC-1155 token with edition support
+3. **Set your price in ETH or ERC-20 tokens** — you receive 85% of every purchase instantly, on-chain
+4. **Set royalties** — earn a creator royalty on every resale, enforced on-chain
+5. **Organize into collections** — group related content into on-chain collections with names and banners
 
 ### For Buyers
-1. **Browse the marketplace** — search by title, type, or creator
+1. **Browse the marketplace** — search by title, type, or creator; view trending content and analytics
 2. **Purchase with MetaMask** — ETH goes directly to the creator (no intermediary holds funds)
-3. **Download via P2P** — content transfers encrypted, directly from seeders using iroh
-4. **Seed and earn** — toggle seeding on any purchased content to share it and collect rewards
+3. **Download via P2P** — content transfers directly from seeders using iroh
+4. **Seed and earn** — toggle seeding on any purchased content to share it and collect delivery rewards
+5. **Resell** — list purchased content for resale; the creator still gets their royalty
 
 ### For Stakers
 1. **Stake any amount of ARA** — the more you stake, the larger your share of staking rewards
 2. **Earn passively** — 2.5% of every primary purchase and 1% of every resale is distributed proportionally to all ARA stakers
 3. **Claim anytime** — staking rewards accrue automatically on-chain; claim your ETH from the Wallet page whenever you want
-4. **Secure the network** — staking provides economic security (sybil resistance), ensures serious participation, and lays the foundation for future governance
+4. **Secure the network** — staking provides economic security (sybil resistance) and ensures serious participation
 
 ### For Seeders
 1. **Stake 1 ARA for the content you seed** — signals commitment, makes you eligible for rewards
@@ -86,8 +105,6 @@ A creator cannot fake receipts to pocket the reward pool (they don't hold any bu
 
 What if a creator goes dark and never distributes rewards? After **30 days** from the last purchase, any eligible seeder can call `publicDistributeWithProofs()` directly — submitting the buyer-signed receipts they've collected. The smart contract verifies every signature on-chain and distributes the pool proportionally. No trust required, no creator cooperation needed.
 
-Millions of ETH in reward pools cannot be locked forever.
-
 ---
 
 ## Tech Stack
@@ -95,12 +112,13 @@ Millions of ETH in reward pools cannot be locked forever.
 | Layer | Technology | Why |
 |-------|-----------|-----|
 | Desktop App | Tauri v2 (Rust + React/TypeScript) | Native performance, no Electron overhead |
-| Smart Contracts | Solidity 0.8.24 on Ethereum (Sepolia) | Trustless payments and registry |
+| Smart Contracts | Solidity 0.8.24 on Ethereum (Sepolia) | Trustless payments, registry, and governance |
 | P2P Transfer | iroh (Rust) | Encrypted, content-addressed, NAT-traversing |
 | P2P Discovery | iroh-gossip | Permissionless seeder discovery per content |
 | Wallet | MetaMask via WalletConnect / Web3Modal | Industry-standard wallet support |
 | Local Storage | SQLite (rusqlite) | Fast, reliable, zero-config local state |
 | Ethereum SDK | alloy 1.x (Rust) + ethers v6 (TypeScript) | Modern, strongly typed chain interaction |
+| SDK | ara-sdk (Rust crate) | Programmatic access to all marketplace operations |
 
 ---
 
@@ -152,11 +170,49 @@ The app opens as a native desktop window. Connect MetaMask on Sepolia testnet, g
 ```bash
 cd contracts
 forge build          # Compile
-forge test -vvv      # Run tests (73+ tests)
+forge test -vvv      # Run all 202 tests (includes fuzz + invariant)
 
 # Deploy to Sepolia (requires DEPLOYER_PRIVATE_KEY + SEPOLIA_RPC_URL)
 forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast --verify
 ```
+
+---
+
+## Ara SDK
+
+The **ara-sdk** crate provides full programmatic access to the marketplace — everything the desktop app can do, available as a Rust library for bots, scripts, backends, and integrations.
+
+```rust
+use ara_sdk::{AraClient, PrivateKeySigner};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let client = AraClient::builder()
+        .signer(PrivateKeySigner::new("0xKEY", "https://eth-sepolia.g.alchemy.com/v2/KEY"))
+        .build_in_memory()
+        .await?;
+
+    // Stake ARA
+    let txs = client.staking().prepare_stake("100")?;
+    client.execute_transactions(&txs).await?;
+
+    // Sync and search content
+    client.sync().sync_content().await?;
+    let items = client.content().search("music", 10).await?;
+
+    // Purchase
+    if let Some(item) = items.first() {
+        let prep = client.marketplace().prepare_purchase(&item.content_id).await?;
+        client.execute_transactions(&prep.transactions).await?;
+    }
+
+    Ok(())
+}
+```
+
+**SDK capabilities:** publish, purchase, stake/unstake, claim rewards, resale listings, collections, display names, moderation, analytics, content sync, reward sync.
+
+Full documentation: [crates/ara-sdk/README.md](crates/ara-sdk/README.md) | API reference: `cargo doc -p ara-sdk --open`
 
 ---
 
@@ -165,23 +221,81 @@ forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast --verify
 ```
 ara-marketplace/
 ├── contracts/              # Solidity smart contracts (Foundry project)
-│   ├── src/                # AraStaking, AraContent, Marketplace, MockARAToken
-│   ├── test/               # Forge tests (73+ tests)
+│   ├── src/                # AraStaking, AraContent, Marketplace, MockARAToken,
+│   │                       # AraCollections, AraNameRegistry, AraModeration
+│   ├── test/               # Forge tests (202 tests, including fuzz + invariant)
 │   └── script/             # Deploy.s.sol
 ├── crates/
 │   ├── ara-core/           # Config, SQLite storage, shared types
 │   ├── ara-p2p/            # iroh node, blob management, gossip discovery, seeding
-│   └── ara-chain/          # Typed Ethereum clients (alloy-based)
+│   ├── ara-chain/          # Typed Ethereum clients (alloy-based)
+│   └── ara-sdk/            # Programmatic SDK for all marketplace operations
 ├── app/
 │   ├── src-tauri/src/      # Rust backend (Tauri commands, gossip actor, state)
-│   │   └── commands/       # content, marketplace, seeding, staking, tx, wallet, sync
+│   │   └── commands/       # content, marketplace, seeding, staking, tx, wallet,
+│   │                       # sync, collections, names, analytics
 │   └── src/                # React frontend
-│       ├── pages/          # Marketplace, Publish, ContentDetail, Library, Dashboard, Wallet
+│       ├── pages/          # Marketplace, Publish, ContentDetail, Library,
+│       │                   # Dashboard, Wallet, Collections, CollectionDetail
 │       ├── lib/            # tauri.ts (IPC bindings), transactions.ts, web3modal.ts
 │       └── store/          # walletStore.ts (Zustand)
+├── .github/workflows/      # CI: contract tests + cross-platform desktop builds
 └── docs/
     └── ARCHITECTURE.md     # Full technical documentation
 ```
+
+---
+
+## App Features
+
+### Marketplace
+- Browse and search all published content
+- View content details, pricing, edition info, and creator
+- Purchase with ETH or supported ERC-20 tokens via MetaMask
+- P2P download from seeders via iroh
+
+### Publishing
+- Publish any file type with metadata, pricing, and royalty settings
+- ERC-1155 edition support (set max supply per content)
+- Support for ETH and ERC-20 token pricing
+- Update price and metadata after publishing
+- Delist content (remains on-chain but marked inactive)
+
+### Library & Seeding
+- View all purchased content
+- Open downloaded files or content folders
+- Toggle seeding on/off per content
+- View seeder stats (bytes served, peer count)
+
+### Dashboard & Analytics
+- Marketplace overview (total sales, volume, items, collections)
+- Trending content and top collectors
+- Price history per item
+- Per-item analytics (sales count, volume, unique buyers)
+
+### Wallet & Staking
+- Connect MetaMask via WalletConnect
+- View ETH, ARA, and staked ARA balances
+- Stake and unstake ARA tokens
+- Claim ETH staking rewards
+- View reward pipeline and history
+
+### Collections
+- Create on-chain collections with name, description, and banner
+- Add/remove content items to collections
+- Browse all collections or filter by creator
+
+### Display Names
+- Register a human-readable display name on-chain
+- Names appear throughout the app instead of raw addresses
+- One name per address, removable anytime
+
+### Moderation
+- Flag content (copyright, spam, malware, fraud, other)
+- Emergency flags for urgent issues
+- Community voting on moderation proposals
+- Creator self-tagging and community NSFW voting
+- Appeal process for creators
 
 ---
 
@@ -200,31 +314,25 @@ All contracts are verified on [Sepolia Etherscan](https://sepolia.etherscan.io).
 
 ---
 
-## Current Status
+## Security
 
-Ara is in active development on Sepolia testnet. Core flows are fully functional:
+Ara has undergone a comprehensive 7-phase security audit covering smart contracts, Rust backend, P2P layer, desktop app, and frontend. Key measures include:
 
-- [x] Content publishing (stake → hash → register on-chain → announce via gossip)
-- [x] Content purchasing (ETH payment → P2P download → auto-seeding)
-- [x] Seeder discovery and transfer via iroh
-- [x] Staking and eligibility checks
-- [x] Delivery receipt signing and gossip broadcast
-- [x] Creator reward distribution (fast path)
-- [x] Trustless fallback distribution (after 30-day window)
-- [x] Reward claiming
-- [x] Passive staking rewards (2.5% of purchases, proportional to stake)
-- [x] Resale marketplace with royalties and staker/seeder reward split
+- **Smart contracts**: Reentrancy guards, integer overflow protection, access control, upgrade guards, 202 tests (including fuzz and invariant testing)
+- **Backend**: HTTP timeouts, SQLite hardening, upload size limits, metadata DoS caps, input validation at all system boundaries
+- **P2P**: Content hash verification, gossip message validation
+- **Desktop app**: Deep link whitelist, devtools gated behind feature flag, cross-platform logging
 
-In progress:
-- [x] ERC-1155 content tokens with edition support (maxSupply, minting on purchase)
-- [ ] Seeder identity broadcast on startup (NodeId → ETH address linking)
-- [ ] Global content discovery feed
+See [AUDIT.md](AUDIT.md) for the full audit report (52+ findings across 3 critical, 9 high, 23 medium, 17 low severity).
 
 ---
 
 ## Documentation
 
 - [Architecture & Technical Reference](docs/ARCHITECTURE.md) — complete system design, all flows, all components
+- [SDK Documentation](crates/ara-sdk/README.md) — programmatic SDK usage, examples, API overview
+- [Security Audit](AUDIT.md) — 7-phase security audit findings and fixes
+- API reference: `cargo doc -p ara-sdk --open`
 
 ---
 
