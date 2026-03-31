@@ -6,6 +6,7 @@
     "core:default",
     "dialog:default",
     "opener:default",
-    "deep-link:default"
+    "deep-link:default",
+    "updater:default"
   ]
 }

@@ -25,6 +25,12 @@
     }
   },
   "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJBRjFDMEI5OUYzNzNGQjQKUldTMFB6ZWZ1Y0R4dWorSC9mbGpBM1JpbTYxWjdEK29zUXNkTVZRWlJnVVZTNG1sZHdJVWVXVUYK",
+      "endpoints": [
+        "https://github.com/ARA-Marketplace/ara-marketplace/releases/latest/download/latest.json"
+      ]
+    },
     "deep-link": {
       "desktop": {
         "schemes": ["ara"]

@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import { Routes, Route, useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
+import { check } from "@tauri-apps/plugin-updater";
+import { ask } from "@tauri-apps/plugin-dialog";
 import Layout from "./components/Layout";
 import Marketplace from "./pages/Marketplace";
 import ContentDetail from "./pages/ContentDetail";
@@ -21,6 +23,28 @@ if (savedTheme === "dark") {
 
 function App() {
   const navigate = useNavigate();
+
+  // Check for app updates on startup (release builds only)
+  useEffect(() => {
+    const checkForUpdates = async () => {
+      try {
+        const update = await check();
+        if (!update?.available) return;
+        const yes = await ask(
+          `Version ${update.version} is available.\n\n${update.body ?? ""}\n\nInstall now?`,
+          { title: "Update Available", kind: "info" }
+        );
+        if (yes) {
+          await update.downloadAndInstall();
+        }
+      } catch {
+        // Silently ignore — update check is best-effort
+      }
+    };
+    // Small delay so the window is fully rendered before showing a dialog
+    const t = setTimeout(checkForUpdates, 3000);
+    return () => clearTimeout(t);
+  }, []);
 
   // Listen for deep link navigation events (ara:// protocol)
   useEffect(() => {
