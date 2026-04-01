@@ -18,7 +18,7 @@ const sepolia = {
   name: "Sepolia",
   currency: "ETH",
   explorerUrl: "https://sepolia.etherscan.io",
-  rpcUrl: "https://rpc.sepolia.org",
+  rpcUrl: "https://ethereum-sepolia.publicnode.com",
 };
 
 const metadata = {
@@ -30,7 +30,8 @@ const metadata = {
 
 createWeb3Modal({
   ethersConfig: defaultConfig({ metadata }),
-  chains: [mainnet, sepolia],
+  chains: [sepolia, mainnet],
   projectId,
+  defaultChain: sepolia,
   enableAnalytics: false,
 });
