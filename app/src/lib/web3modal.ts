@@ -1,25 +1,32 @@
 import { createWeb3Modal, defaultConfig } from "@web3modal/ethers/react";
 
 // WalletConnect project ID — get yours from https://cloud.walletconnect.com
-// Set via VITE_WALLETCONNECT_PROJECT_ID env var, or use placeholder for dev
 const projectId =
   import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || "PLACEHOLDER_PROJECT_ID";
 
-const mainnet = {
-  chainId: 1,
-  name: "Ethereum",
-  currency: "ETH",
-  explorerUrl: "https://etherscan.io",
-  rpcUrl: "https://eth.llamarpc.com",
-};
+// Chain ID where contracts are deployed — matches Rust backend config.
+// Set via VITE_CHAIN_ID env var. Default: 11155111 (Sepolia testnet).
+// Change to 1 when deploying to mainnet.
+const activeChainId = Number(import.meta.env.VITE_CHAIN_ID) || 11155111;
 
-const sepolia = {
-  chainId: 11155111,
-  name: "Sepolia",
-  currency: "ETH",
-  explorerUrl: "https://sepolia.etherscan.io",
-  rpcUrl: "https://ethereum-sepolia.publicnode.com",
-};
+const chains = [
+  {
+    chainId: 1,
+    name: "Ethereum",
+    currency: "ETH",
+    explorerUrl: "https://etherscan.io",
+    rpcUrl: "https://eth.llamarpc.com",
+  },
+  {
+    chainId: 11155111,
+    name: "Sepolia",
+    currency: "ETH",
+    explorerUrl: "https://sepolia.etherscan.io",
+    rpcUrl: "https://ethereum-sepolia.publicnode.com",
+  },
+];
+
+const defaultChain = chains.find((c) => c.chainId === activeChainId) ?? chains[0];
 
 const metadata = {
   name: "Ara Marketplace",
@@ -30,8 +37,8 @@ const metadata = {
 
 createWeb3Modal({
   ethersConfig: defaultConfig({ metadata }),
-  chains: [sepolia, mainnet],
+  chains,
   projectId,
-  defaultChain: sepolia,
+  defaultChain,
   enableAnalytics: false,
 });

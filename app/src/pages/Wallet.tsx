@@ -415,7 +415,7 @@ function Wallet() {
           {/* Balances */}
           <div className="grid grid-cols-2 gap-4">
             {[
-              { label: "ETH Balance (Sepolia)",  value: `${fmtEth(ethBalance)} ETH` },
+              { label: `ETH Balance${Number(import.meta.env.VITE_CHAIN_ID) !== 1 ? " (Testnet)" : ""}`,  value: `${fmtEth(ethBalance)} ETH` },
               { label: "ARA Balance",  value: `${araBalance} ARA` },
             ].map(({ label, value }) => (
               <div key={label} className="card p-5">
