@@ -105,12 +105,22 @@ mod tests {
             format_wei(U256::from(1_500_000_000_000_000_000u128)),
             "1.5"
         );
-        // 0.000000000000000001 ETH (1 wei)
-        assert_eq!(format_wei(U256::from(1u64)), "0.000000000000000001");
+        // 1 wei — too small to display, shown as threshold
+        assert_eq!(format_wei(U256::from(1u64)), "<0.0000001");
         // Large amount: 1000 ETH
         assert_eq!(
             format_wei(U256::from(1000u64) * U256::from(1_000_000_000_000_000_000u128)),
             "1000.0"
+        );
+        // 0.1648 ETH — fractional with many significant digits (was bug: returned "<0.0000001")
+        assert_eq!(
+            format_wei(U256::from(164_804_743_395_338_265u128)),
+            "0.164804"
+        );
+        // 0.01579 ETH
+        assert_eq!(
+            format_wei(U256::from(15_790_000_000_000_000u128)),
+            "0.01579"
         );
     }
 }

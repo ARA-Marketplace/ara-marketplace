@@ -124,18 +124,20 @@ fn format_token_amount_capped(value: U256, decimals: u8, max_frac_digits: usize)
         return format!("{whole}.{trimmed}");
     }
 
-    // If whole part is non-zero, just truncate the fraction
-    if whole != "0" {
-        let truncated = &frac_full[..max_frac_digits];
-        let truncated = truncated.trim_end_matches('0');
-        if truncated.is_empty() {
-            return format!("{whole}.0");
-        }
+    // Truncate the fraction to max_frac_digits
+    let truncated = &frac_full[..max_frac_digits];
+    let truncated = truncated.trim_end_matches('0');
+    if !truncated.is_empty() {
         return format!("{whole}.{truncated}");
     }
 
-    // whole == "0" and trimmed is longer than max_frac_digits:
-    // the value is very small, e.g. 0.000000000001
+    // whole part is non-zero but fraction rounds to zero at this precision
+    if whole != "0" {
+        return format!("{whole}.0");
+    }
+
+    // whole == "0" and first max_frac_digits are all zeros:
+    // the value is genuinely tiny, e.g. 0.000000000001
     // Show as "<0.000001" (with max_frac_digits zeros + 1)
     let threshold = format!("0.{:0>width$}1", "", width = max_frac_digits);
     format!("<{threshold}")
