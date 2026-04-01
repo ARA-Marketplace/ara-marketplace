@@ -118,6 +118,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
           VITE_WALLETCONNECT_PROJECT_ID: ${{ secrets.VITE_WALLETCONNECT_PROJECT_ID }}
+          VITE_CHAIN_ID: ${{ secrets.VITE_CHAIN_ID }}
         with:
           projectPath: ./app
           tauriScript: pnpm tauri
