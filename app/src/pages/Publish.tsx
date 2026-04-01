@@ -23,6 +23,7 @@ import {
 } from "@web3modal/ethers/react";
 import { CATEGORIES_BY_TYPE } from "../lib/categories";
 import type { ContentType } from "../lib/types";
+import { useWalletStore } from "../store/walletStore";
 
 type PublishStep = "form" | "importing" | "signing" | "confirming" | "adding-to-collection" | "done";
 
@@ -40,6 +41,8 @@ function Publish() {
   const { open: openModal } = useWeb3Modal();
   const { isConnected, address } = useWeb3ModalAccount();
   const { walletProvider } = useWeb3ModalProvider();
+  const { araStaked } = useWalletStore();
+  const needsStaking = isConnected && parseFloat(araStaked) < 10;
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -115,7 +118,13 @@ function Publish() {
 
   const selectFile = async () => {
     const selected = await open({ multiple: false, directory: false, title: "Select content file" });
-    if (selected) setFilePath(selected);
+    if (selected) {
+      setFilePath(selected);
+      if (!title.trim()) {
+        const name = selected.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "";
+        if (name) setTitle(name);
+      }
+    }
   };
 
   const selectMainPreviewImage = async () => {
@@ -173,9 +182,15 @@ function Publish() {
     const files = e.dataTransfer.files;
     if (files.length > 0) {
       const path = (files[0] as unknown as { path?: string }).path;
-      if (path) setFilePath(path);
+      if (path) {
+        setFilePath(path);
+        if (!title.trim()) {
+          const name = path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "";
+          if (name) setTitle(name);
+        }
+      }
     }
-  }, []);
+  }, [title]);
 
   const fileName = filePath ? filePath.split(/[\\/]/).pop() ?? filePath : null;
   const splitsValid = splitMode === "solo" || (
@@ -332,7 +347,44 @@ function Publish() {
         </p>
       </div>
 
+      {needsStaking && (
+        <div className="alert-warning mb-6">
+          You need to stake at least 10 ARA before publishing. The more you stake, the more you earn.{" "}
+          <button onClick={() => navigate("/wallet")} className="underline font-medium hover:text-amber-300">
+            Go to Wallet to stake
+          </button>
+        </div>
+      )}
+
       <div className="space-y-5">
+        {/* Content file drop zone */}
+        <div>
+          <label className="label">Content File</label>
+          <button
+            onClick={selectFile}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            disabled={!isForm}
+            className={`w-full px-4 py-8 border-2 border-dashed rounded-xl transition-colors disabled:opacity-50 text-sm ${
+              isDragging
+                ? "border-ara-500 bg-ara-50 dark:bg-ara-950/20 text-ara-600"
+                : filePath
+                  ? "border-ara-500 dark:border-ara-700 text-ara-700 dark:text-ara-400 bg-ara-50 dark:bg-ara-950/20"
+                  : "border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-600 hover:border-ara-400 dark:hover:border-ara-700 hover:text-ara-600 dark:hover:text-ara-500"
+            }`}
+          >
+            {filePath ? (
+              <span className="flex flex-col items-center gap-1">
+                <span className="font-medium text-base">{fileName}</span>
+                <span className="text-xs opacity-70">Click to change file</span>
+              </span>
+            ) : (
+              "Click to select file or drag and drop"
+            )}
+          </button>
+        </div>
+
         {/* Title */}
         <div>
           <label className="label">Title</label>
@@ -568,34 +620,6 @@ function Publish() {
               })()}
             </div>
           )}
-        </div>
-
-        {/* Content file drop zone */}
-        <div>
-          <label className="label">Content File</label>
-          <button
-            onClick={selectFile}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            disabled={!isForm}
-            className={`w-full px-4 py-8 border-2 border-dashed rounded-xl transition-colors disabled:opacity-50 text-sm ${
-              isDragging
-                ? "border-ara-500 bg-ara-50 dark:bg-ara-950/20 text-ara-600"
-                : filePath
-                  ? "border-ara-500 dark:border-ara-700 text-ara-700 dark:text-ara-400 bg-ara-50 dark:bg-ara-950/20"
-                  : "border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-600 hover:border-ara-400 dark:hover:border-ara-700 hover:text-ara-600 dark:hover:text-ara-500"
-            }`}
-          >
-            {filePath ? (
-              <span className="flex flex-col items-center gap-1">
-                <span className="font-medium text-base">{fileName}</span>
-                <span className="text-xs opacity-70">Click to change file</span>
-              </span>
-            ) : (
-              "Click to select file or drag and drop"
-            )}
-          </button>
         </div>
 
         {/* Preview assets */}

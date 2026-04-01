@@ -662,7 +662,7 @@ pub async fn publish_content(
             match chain.staking.is_eligible_publisher(creator_addr).await {
                 Ok(false) => {
                     return Err(
-                        "Insufficient ARA stake to publish. Stake more ARA in the Dashboard first."
+                        "Insufficient ARA stake to publish. Stake at least 10 ARA on the Wallet page first."
                             .to_string(),
                     );
                 }

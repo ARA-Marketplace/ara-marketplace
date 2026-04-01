@@ -42,6 +42,7 @@ function fmtDate(ts: number) {
 }
 
 function fmtEth(val: string): string {
+  if (val.startsWith("<")) return "~0.000";
   const n = parseFloat(val);
   return isNaN(n) ? val : n.toFixed(3);
 }
@@ -414,7 +415,7 @@ function Wallet() {
           {/* Balances */}
           <div className="grid grid-cols-2 gap-4">
             {[
-              { label: "ETH Balance",  value: `${fmtEth(ethBalance)} ETH` },
+              { label: "ETH Balance (Sepolia)",  value: `${fmtEth(ethBalance)} ETH` },
               { label: "ARA Balance",  value: `${araBalance} ARA` },
             ].map(({ label, value }) => (
               <div key={label} className="card p-5">
