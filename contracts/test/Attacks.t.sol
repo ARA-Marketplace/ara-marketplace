@@ -327,14 +327,11 @@ contract AttacksTest is DeployHelper {
     //                    ZERO PRICE UPDATE ATTACK
     // ═══════════════════════════════════════════════════════════════════
 
-    /// @notice updateContent cannot set price below MIN_PRICE
-    function test_UpdateContentPriceTooLowReverts() public {
+    /// @notice updateContent allows setting price to 0 (free content)
+    function test_UpdateContentToFreePrice() public {
         vm.prank(creator);
-        vm.expectRevert(AraContent.PriceTooLow.selector);
         contentToken.updateContent(contentId, 0, "ipfs://updated");
-        vm.prank(creator);
-        vm.expectRevert(AraContent.PriceTooLow.selector);
-        contentToken.updateContent(contentId, 999, "ipfs://updated");
+        assertEq(contentToken.getPrice(contentId), 0);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -589,22 +586,71 @@ contract AttacksTest is DeployHelper {
     //                    PUBLISH PRICE FLOOR
     // ═══════════════════════════════════════════════════════════════════
 
-    /// @notice Content cannot be published below MIN_PRICE (prevents dust farming)
-    function test_PublishPriceTooLowReverts() public {
-        vm.startPrank(creator);
+    /// @notice Free content (price=0) can be published and purchased
+    function test_PublishAndPurchaseFreeContent() public {
+        vm.prank(creator);
+        bytes32 freeId = contentToken.publishContent(keccak256("free1"), "ipfs://free", 0, fileSize, 0, 0);
+        assertTrue(contentToken.isActive(freeId));
+        assertEq(contentToken.getPrice(freeId), 0);
 
-        vm.expectRevert(AraContent.PriceTooLow.selector);
-        contentToken.publishContent(keccak256("dust1"), "ipfs://d", 0, fileSize, 0, 0);
+        // Purchase free content (0 ETH, buyer only pays gas)
+        vm.prank(buyer);
+        marketplace.purchase{value: 0}(freeId, 0);
+        assertTrue(marketplace.hasPurchased(freeId, buyer));
+        // All reward amounts should be 0
+        assertEq(marketplace.buyerReward(freeId, buyer), 0);
+    }
 
-        vm.expectRevert(AraContent.PriceTooLow.selector);
-        contentToken.publishContent(keccak256("dust2"), "ipfs://d", 1, fileSize, 0, 0);
+    /// @notice Tipping on free content splits correctly (85/2.5/12.5)
+    function test_TipFreeContent() public {
+        vm.prank(creator);
+        bytes32 freeId = contentToken.publishContent(keccak256("free2"), "ipfs://free2", 0, fileSize, 0, 0);
 
-        vm.expectRevert(AraContent.PriceTooLow.selector);
-        contentToken.publishContent(keccak256("dust3"), "ipfs://d", 999, fileSize, 0, 0);
+        uint256 tipAmount = 1 ether;
+        uint256 expectedCreator = (tipAmount * 8500) / 10_000;  // 85%
+        uint256 expectedStaker = (tipAmount * 250) / 10_000;    // 2.5%
+        uint256 expectedSeeder = tipAmount - expectedCreator - expectedStaker; // 12.5%
 
-        // 1000 should succeed (MIN_PRICE)
-        contentToken.publishContent(keccak256("ok"), "ipfs://ok", 1000, fileSize, 0, 0);
-        vm.stopPrank();
+        uint256 creatorBefore = creator.balance;
+        vm.deal(buyer, tipAmount);
+        vm.prank(buyer);
+        marketplace.tipContent{value: tipAmount}(freeId);
+
+        assertEq(creator.balance - creatorBefore, expectedCreator);
+        assertEq(marketplace.buyerReward(freeId, buyer), expectedSeeder);
+    }
+
+    /// @notice Tipping with 0 ETH reverts
+    function test_TipZeroReverts() public {
+        vm.prank(buyer);
+        vm.expectRevert();
+        marketplace.tipContent{value: 0}(contentId);
+    }
+
+    /// @notice Tipping on inactive content reverts
+    function test_TipInactiveContentReverts() public {
+        vm.prank(creator);
+        contentToken.delistContent(contentId);
+        vm.prank(buyer);
+        vm.expectRevert(Marketplace.ContentNotActive.selector);
+        marketplace.tipContent{value: 1 ether}(contentId);
+    }
+
+    /// @notice Multiple tips accumulate in buyerReward
+    function test_MultipleTipsAccumulate() public {
+        uint256 tip1 = 0.5 ether;
+        uint256 tip2 = 0.3 ether;
+        vm.deal(buyer, tip1 + tip2);
+
+        vm.prank(buyer);
+        marketplace.tipContent{value: tip1}(contentId);
+        uint256 reward1 = marketplace.buyerReward(contentId, buyer);
+        assertTrue(reward1 > 0);
+
+        vm.prank(buyer);
+        marketplace.tipContent{value: tip2}(contentId);
+        uint256 reward2 = marketplace.buyerReward(contentId, buyer);
+        assertTrue(reward2 > reward1); // additive
     }
 
     // ═══════════════════════════════════════════════════════════════════

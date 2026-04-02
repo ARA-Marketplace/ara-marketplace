@@ -261,6 +261,8 @@ pub fn run() {
             commands::marketplace::open_content_folder,
             commands::marketplace::broadcast_delivery_receipt,
             commands::marketplace::get_marketplace_address,
+            commands::marketplace::tip_content,
+            commands::marketplace::confirm_tip,
             commands::marketplace::get_receipt_count,
             commands::marketplace::list_for_resale,
             commands::marketplace::confirm_list_for_resale,

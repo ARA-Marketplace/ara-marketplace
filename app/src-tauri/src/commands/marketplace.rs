@@ -708,6 +708,55 @@ pub async fn get_marketplace_address(
     Ok(state.config.ethereum.marketplace_address.clone())
 }
 
+/// Build a tip transaction for the frontend to sign.
+/// Tips use the same 85/2.5/12.5 split as purchases but don't mint editions.
+#[tauri::command]
+pub async fn tip_content(
+    state: State<'_, AppState>,
+    content_id: String,
+    tip_amount_eth: String,
+) -> Result<Vec<TransactionRequest>, String> {
+    info!("Preparing tip for content: {}, amount: {} ETH", content_id, tip_amount_eth);
+
+    let tip_wei = crate::commands::types::parse_token_amount(&tip_amount_eth)?;
+    if tip_wei.is_zero() {
+        return Err("Tip amount must be greater than 0".to_string());
+    }
+
+    let marketplace_addr: Address = state
+        .config
+        .ethereum
+        .marketplace_address
+        .parse()
+        .map_err(|e| format!("Invalid marketplace address: {e}"))?;
+
+    let content_id_bytes: FixedBytes<32> = content_id
+        .strip_prefix("0x")
+        .unwrap_or(&content_id)
+        .parse()
+        .map_err(|e| format!("Invalid content ID: {e}"))?;
+
+    let calldata = MarketplaceClient::<()>::tip_content_calldata(content_id_bytes);
+
+    Ok(vec![TransactionRequest {
+        to: format!("{marketplace_addr:#x}"),
+        data: hex_encode(&calldata),
+        value: format!("0x{:x}", tip_wei),
+        description: format!("Tip {} ETH to content creator", tip_amount_eth),
+    }])
+}
+
+/// Confirm a tip transaction. The frontend calls this after the tx is confirmed on-chain.
+#[tauri::command]
+pub async fn confirm_tip(
+    _state: State<'_, AppState>,
+    content_id: String,
+    tx_hash: String,
+) -> Result<(), String> {
+    info!("Tip confirmed: content={}, tx={}", content_id, tx_hash);
+    Ok(())
+}
+
 /// Get the count of delivery receipts for a content item.
 #[tauri::command]
 pub async fn get_receipt_count(

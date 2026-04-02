@@ -389,6 +389,20 @@ export async function getMarketplaceAddress(): Promise<string> {
   return invoke("get_marketplace_address");
 }
 
+export async function tipContent(params: {
+  contentId: string;
+  tipAmountEth: string;
+}): Promise<TransactionRequest[]> {
+  return invoke("tip_content", params);
+}
+
+export async function confirmTip(params: {
+  contentId: string;
+  txHash: string;
+}): Promise<void> {
+  return invoke("confirm_tip", params);
+}
+
 export async function broadcastDeliveryReceipt(params: {
   contentId: string;
   seederEthAddress: string;

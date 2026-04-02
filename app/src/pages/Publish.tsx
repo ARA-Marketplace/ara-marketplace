@@ -199,15 +199,25 @@ function Publish() {
     collaborators.every((c) => /^0x[a-fA-F0-9]{40}$/.test(c.wallet)) &&
     Math.abs(collaborators.reduce((s, c) => s + (parseFloat(c.percent) || 0), 0) - 100) < 0.01
   );
-  const priceValid = priceEth.trim() !== "" && !isNaN(parseFloat(priceEth)) && parseFloat(priceEth) > 0;
+  const effectivePrice = priceEth.trim() === "" ? "0" : priceEth.trim();
+  const priceValid = !isNaN(parseFloat(effectivePrice)) && parseFloat(effectivePrice) >= 0;
+  const isFreePublish = parseFloat(effectivePrice) === 0;
   const canPublish = filePath && title.trim() && priceValid && isForm && splitsValid;
 
+  const [showFreeConfirm, setShowFreeConfirm] = useState(false);
+
   const handlePublish = async () => {
-    if (!filePath || !title.trim() || !priceEth.trim()) return;
+    if (!filePath || !title.trim()) return;
     if (!isConnected) {
       openModal();
       return;
     }
+    // Confirm free content to protect against forgetting to set a price
+    if (isFreePublish && !showFreeConfirm) {
+      setShowFreeConfirm(true);
+      return;
+    }
+    setShowFreeConfirm(false);
     setError(null);
     setResultHash(null);
     try {
@@ -258,7 +268,7 @@ function Publish() {
         title: title.trim(),
         description: description.trim(),
         contentType,
-        priceEth: priceEth.trim(),
+        priceEth: effectivePrice,
         maxSupply: parsedMaxSupply,
         royaltyBps: parsedRoyaltyBps,
         categories: selectedCategories.length > 0 ? selectedCategories : undefined,
@@ -347,14 +357,22 @@ function Publish() {
         </p>
       </div>
 
-      {needsStaking && (
-        <div className="alert-warning mb-6">
-          You need to stake at least 10 ARA before publishing. The more you stake, the more you earn.{" "}
-          <button onClick={() => navigate("/wallet")} className="underline font-medium hover:text-amber-300">
-            Go to Wallet to stake
+      {!isConnected ? (
+        <div className="card p-8 text-center">
+          <p className="text-slate-400 dark:text-slate-500 mb-4">Connect your wallet to publish content.</p>
+          <button onClick={() => openModal()} className="btn-primary px-6">
+            Connect Wallet
           </button>
         </div>
-      )}
+      ) : needsStaking ? (
+        <div className="card p-8 text-center">
+          <p className="text-slate-400 dark:text-slate-500 mb-2">You need to stake at least 10 ARA before publishing.</p>
+          <p className="text-xs text-slate-500 dark:text-slate-600 mb-4">The more you stake, the more you earn from network rewards.</p>
+          <button onClick={() => navigate("/wallet")} className="btn-primary px-6">
+            Go to Wallet to Stake
+          </button>
+        </div>
+      ) : (
 
       <div className="space-y-5">
         {/* Content file drop zone */}
@@ -419,7 +437,7 @@ function Publish() {
             </label>
             <div className="flex gap-2">
               <input type="text" value={priceEth} onChange={(e) => setPriceEth(e.target.value)}
-                disabled={!isForm} placeholder="0.01" className="input-base flex-1" />
+                disabled={!isForm} placeholder="0 for free, or 0.01" className="input-base flex-1" />
               <select
                 value={paymentToken ?? ""}
                 onChange={(e) => setPaymentToken(e.target.value || null)}
@@ -799,6 +817,35 @@ function Publish() {
           )}
         </div>
 
+        {/* Free content confirmation modal */}
+        {showFreeConfirm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <div className="card p-6 max-w-sm mx-4 shadow-2xl">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 mb-2">Publish for free?</h3>
+              <p className="text-sm text-slate-500 dark:text-slate-400 mb-1">
+                Anyone will be able to download this content without paying.
+              </p>
+              <p className="text-xs text-slate-400 dark:text-slate-600 mb-5">
+                Supporters can still tip you after downloading.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowFreeConfirm(false)}
+                  className="btn-secondary flex-1"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handlePublish}
+                  className="btn-primary flex-1"
+                >
+                  Yes, Publish Free
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {error && <div className="alert-error">{error}</div>}
 
         {step === "done" && resultHash && (
@@ -836,10 +883,12 @@ function Publish() {
           </button>
         ) : (
           <button onClick={handlePublish} disabled={!canPublish} className="btn-primary-lg w-full">
-            {!isConnected && isForm ? "Connect Wallet to Publish" : STEP_LABELS[step]}
+            {STEP_LABELS[step]}
           </button>
         )}
       </div>
+
+      )}
     </div>
   );
 }

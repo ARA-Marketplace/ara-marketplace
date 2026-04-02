@@ -125,6 +125,13 @@ contract Marketplace is Initializable, UUPSUpgradeable, ReentrancyGuard {
         uint256 bytesServed
     );
     event RewardsClaimed(address indexed seeder, uint256 totalEthAmount, uint256 totalTokenAmount, uint256 receiptCount);
+    event ContentTipped(
+        bytes32 indexed contentId,
+        address indexed tipper,
+        uint256 tipAmount,
+        uint256 creatorPayment,
+        uint256 rewardAmount
+    );
     event CreatorShareUpdated(uint256 oldBps, uint256 newBps);
     event StakerRewardForwarded(bytes32 indexed contentId, uint256 amount);
     event ContentListed(bytes32 indexed contentId, address indexed seller, uint256 price);
@@ -308,6 +315,47 @@ contract Marketplace is Initializable, UUPSUpgradeable, ReentrancyGuard {
         contentToken.mint(msg.sender, contentId);
 
         emit ContentPurchased(contentId, msg.sender, price, creatorPayment, rewardAmount);
+    }
+
+    // ============================================================
+    //                     TIPPING
+    // ============================================================
+
+    /// @notice Tip a content creator. The tip is split using the same formula as purchases:
+    ///         creator gets creatorShareBps%, stakers get stakerRewardBps%, seeders get the rest.
+    ///         Works on both free and paid content. Does NOT mint an edition token.
+    /// @param contentId The content whose creator to tip
+    function tipContent(bytes32 contentId) external payable nonReentrant {
+        if (msg.value == 0) revert InsufficientPayment(0, 1);
+        if (!contentToken.isActive(contentId)) revert ContentNotActive();
+
+        uint256 tipAmount = msg.value;
+
+        // Same split as primary purchases
+        uint256 creatorPayment = (tipAmount * creatorShareBps) / BPS_DENOMINATOR;
+        uint256 stakerReward = (tipAmount * stakerRewardBps) / BPS_DENOMINATOR;
+        uint256 rewardAmount = tipAmount - creatorPayment - stakerReward;
+
+        // Pay creator (or split among collaborators)
+        _payCreatorETH(contentId, creatorPayment);
+        totalCreatorPayments += creatorPayment;
+
+        // Forward staker reward to staking contract (if stakers exist)
+        if (stakerReward > 0) {
+            if (staking.totalStaked() > 0) {
+                staking.addReward{value: stakerReward}();
+                totalStakerRewardsForwarded += stakerReward;
+                emit StakerRewardForwarded(contentId, stakerReward);
+            } else {
+                // No stakers — add to seeder pool instead
+                rewardAmount += stakerReward;
+            }
+        }
+
+        // Add to seeder reward pool (additive — supports multiple tips)
+        buyerReward[contentId][msg.sender] += rewardAmount;
+
+        emit ContentTipped(contentId, msg.sender, tipAmount, creatorPayment, rewardAmount);
     }
 
     // ============================================================

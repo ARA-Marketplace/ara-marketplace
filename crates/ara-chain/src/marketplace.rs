@@ -150,4 +150,13 @@ impl<P> MarketplaceClient<P> {
     ) -> Vec<u8> {
         IMarketplace::setSupportedTokenCall { token, supported }.abi_encode()
     }
+
+    /// Encode calldata for `tipContent(contentId)`.
+    /// The frontend sends this with the tip ETH value attached.
+    pub fn tip_content_calldata(content_id: FixedBytes<32>) -> Vec<u8> {
+        IMarketplace::tipContentCall {
+            contentId: content_id,
+        }
+        .abi_encode()
+    }
 }

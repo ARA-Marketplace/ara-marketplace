@@ -246,4 +246,24 @@ impl MarketplaceOps<'_> {
             })
             .collect())
     }
+
+    /// Prepare a tip transaction. Tips flow through the same 85/2.5/12.5 split as purchases.
+    pub fn prepare_tip(
+        &self,
+        content_id: FixedBytes<32>,
+        tip_wei: U256,
+    ) -> Result<Vec<TransactionRequest>> {
+        anyhow::ensure!(!tip_wei.is_zero(), "Tip amount must be greater than 0");
+
+        let eth = &self.client.config.ethereum;
+        let marketplace_addr: Address = eth.marketplace_address.parse()?;
+        let calldata = MarketplaceClient::<()>::tip_content_calldata(content_id);
+
+        Ok(vec![TransactionRequest {
+            to: format!("{marketplace_addr:#x}"),
+            data: format!("0x{}", alloy::hex::encode(&calldata)),
+            value: format!("0x{:x}", tip_wei),
+            description: format!("Tip {} ETH to content creator", format_wei(tip_wei)),
+        }])
+    }
 }

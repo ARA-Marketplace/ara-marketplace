@@ -109,8 +109,10 @@ sol! {
         function cancelListing(bytes32 contentId) external;
         function buyResale(bytes32 contentId, address seller, uint256 maxPrice) external payable;
         function setSupportedToken(address token, bool supported) external;
+        function tipContent(bytes32 contentId) external payable;
 
         event ContentPurchased(bytes32 indexed contentId, address indexed buyer, uint256 pricePaid, uint256 creatorPayment, uint256 rewardAmount);
+        event ContentTipped(bytes32 indexed contentId, address indexed tipper, uint256 tipAmount, uint256 creatorPayment, uint256 rewardAmount);
         event DeliveryRewardClaimed(bytes32 indexed contentId, address indexed seeder, address buyer, uint256 amount, uint256 bytesServed);
         event RewardsClaimed(address indexed seeder, uint256 totalEthAmount, uint256 totalTokenAmount, uint256 receiptCount);
         event ContentListed(bytes32 indexed contentId, address indexed seller, uint256 price);

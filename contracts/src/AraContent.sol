@@ -100,7 +100,7 @@ contract AraContent is ERC1155, ERC1155Supply, ERC2981, Initializable, UUPSUpgra
     error ZeroAddress();
     error RoyaltyTooHigh();
 
-    uint256 public constant MIN_PRICE = 1000;
+    uint256 public constant MIN_PRICE = 0;
 
     // === V5: Security hardening ===
     address public pendingOwner;

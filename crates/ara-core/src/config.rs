@@ -91,15 +91,15 @@ impl Default for AppConfig {
                 // Sepolia testnet — set SEPOLIA_RPC_URL env var to override with Alchemy/Infura key
                 rpc_url: "https://ethereum-sepolia.publicnode.com".to_string(),
                 chain_id: 11155111,
-                // Sepolia deployment (2026-02-27) — ERC-1155 + UUPS proxies + V2 staker rewards + collections + names
-                ara_token_address: "0x53720EcdDF71fE618c7A5aEc99ac2e958ad4dF99".to_string(),
-                staking_address: "0xfD41Ae37cD729b6a70e42641ea14187e213b29e6".to_string(),
-                registry_address: "0xd45ff950bBC1c823F66C4EbdF72De23Eb02e4831".to_string(),
-                marketplace_address: "0xD7992b6A863FBacE3BB58BFE5D31EAe580adF4E0".to_string(),
-                collections_address: "0x59453f1f12D10e4B4210fae8188d666011292997".to_string(),
-                name_registry_address: "0xDA5827A8659271C44174894bbA403FD264198C5d".to_string(),
+                // Sepolia deployment (2026-04-01) — fresh deploy with free content + tipping
+                ara_token_address: "0xA4c42cd49774d9B0af9C2D6BB88cf53b49b95b1b".to_string(),
+                staking_address: "0x16e1CA6619FF0555BAFc43dEC9595C39776A2B63".to_string(),
+                registry_address: "0x8C52B0b11cF5759312555ab1C6926e6Ce57297a0".to_string(),
+                marketplace_address: "0xa133F5eb0aE369D627B13F0e283ACDC763Fb48c4".to_string(),
+                collections_address: "0x606658d5935E788CccCDF9188308434130a7C671".to_string(),
+                name_registry_address: "0x5C451d9B613468D4212AE31b5F139E759dD992FA".to_string(),
                 moderation_address: String::new(), // Not yet deployed
-                deployment_block: 10_349_200, // Sepolia deploy block (2026-02-27)
+                deployment_block: 10_569_600, // Sepolia deploy block (2026-04-01)
                 supported_tokens: vec![],     // No ERC-20 tokens configured by default
             },
             iroh: IrohConfig {

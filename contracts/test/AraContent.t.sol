@@ -67,13 +67,11 @@ contract AraContentTest is DeployHelper {
         assertEq(contentToken.getContentCount(), 2);
     }
 
-    function test_RevertPublishPriceTooLow() public {
+    function test_PublishFreeContent() public {
         vm.prank(creator);
-        vm.expectRevert(AraContent.PriceTooLow.selector);
-        contentToken.publishContent(contentHash, metadataURI, 0, fileSize, 0, 0);
-        vm.prank(creator);
-        vm.expectRevert(AraContent.PriceTooLow.selector);
-        contentToken.publishContent(contentHash, metadataURI, 999, fileSize, 0, 0);
+        bytes32 freeId = contentToken.publishContent(contentHash, metadataURI, 0, fileSize, 0, 0);
+        assertTrue(contentToken.isActive(freeId));
+        assertEq(contentToken.getPrice(freeId), 0);
     }
 
     function test_RevertPublishZeroFileSize() public {

@@ -285,6 +285,8 @@ function Marketplace() {
                         {item.min_resale_price_eth} {item.payment_token_symbol ?? "ETH"}
                         <span className="text-[10px] font-normal text-slate-400 ml-1">resale</span>
                       </span>
+                    ) : item.price_eth === "0" || item.price_eth === "0.0" ? (
+                      <span className="text-green-500 dark:text-green-400 font-bold text-sm">Free</span>
                     ) : (
                       <span className="text-ara-600 dark:text-ara-400 font-bold text-sm">
                         {item.price_eth} {item.payment_token_symbol ?? "ETH"}

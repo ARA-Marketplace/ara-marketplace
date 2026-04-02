@@ -6,6 +6,8 @@ import {
   getContentDetail,
   purchaseContent,
   confirmPurchase,
+  tipContent,
+  confirmTip,
   updateContent,
   confirmUpdateContent,
   broadcastDeliveryReceipt,
@@ -129,6 +131,33 @@ function ContentDetail() {
   const [editStep, setEditStep] = useState<EditStep>("idle");
   const [editError, setEditError] = useState<string | null>(null);
   const [linkCopied, setLinkCopied] = useState(false);
+
+  // Tip state
+  const [tipAmount, setTipAmount] = useState("");
+  const [tipStep, setTipStep] = useState<"idle" | "signing" | "confirming" | "done">("idle");
+  const [tipError, setTipError] = useState<string | null>(null);
+
+  const isFreeContent = content && (content.price_eth === "0" || content.price_eth === "0.0");
+
+  const handleTip = async () => {
+    if (!walletProvider || !content || !tipAmount.trim()) return;
+    const amt = parseFloat(tipAmount);
+    if (isNaN(amt) || amt <= 0) { setTipError("Enter a valid tip amount"); return; }
+    setTipError(null);
+    setTipStep("signing");
+    try {
+      const txs = await tipContent({ contentId: content.content_id, tipAmountEth: tipAmount });
+      const txHash = await signAndSendTransactions(walletProvider, txs, () => {});
+      setTipStep("confirming");
+      await confirmTip({ contentId: content.content_id, txHash });
+      setTipStep("done");
+      setTipAmount("");
+      setTimeout(() => setTipStep("idle"), 3000);
+    } catch (e: unknown) {
+      setTipError(e instanceof Error ? e.message : String(e));
+      setTipStep("idle");
+    }
+  };
 
   const loadContent = async (id: string) => {
     setLoading(true);
@@ -919,8 +948,10 @@ function ContentDetail() {
                     >
                       {purchaseStep === "idle"
                         ? !isConnected
-                          ? "Connect Wallet to Purchase"
-                          : `Purchase for ${content.price_eth} ${content.payment_token_symbol ?? "ETH"}`
+                          ? isFreeContent ? "Connect Wallet to Download" : "Connect Wallet to Purchase"
+                          : isFreeContent
+                            ? "Download Free Content"
+                            : `Purchase for ${content.price_eth} ${content.payment_token_symbol ?? "ETH"}`
                         : purchaseStep === "confirming" && downloadProgress
                           ? "Downloading content..."
                           : STEP_LABELS[purchaseStep]}
@@ -939,6 +970,36 @@ function ContentDetail() {
                         </p>
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* Tip Creator */}
+                {!isCreator && isConnected && (
+                  <div className="card p-4 mt-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-2">
+                      Support Creator
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={tipAmount}
+                        onChange={(e) => setTipAmount(e.target.value)}
+                        disabled={tipStep !== "idle"}
+                        placeholder="0.01"
+                        className="input-base flex-1 text-sm"
+                      />
+                      <button
+                        onClick={handleTip}
+                        disabled={tipStep !== "idle" || !tipAmount.trim()}
+                        className="btn-secondary text-sm px-4 whitespace-nowrap"
+                      >
+                        {tipStep === "idle" ? "Tip ETH" : tipStep === "done" ? "Sent!" : "Sending..."}
+                      </button>
+                    </div>
+                    {tipError && <p className="text-xs text-red-500 mt-1">{tipError}</p>}
+                    <p className="text-[10px] text-slate-400 dark:text-slate-600 mt-1.5">
+                      Tips are split: 85% creator, 2.5% stakers, 12.5% seeders
+                    </p>
                   </div>
                 )}
               </div>
