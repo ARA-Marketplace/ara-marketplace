@@ -18,10 +18,11 @@
 | Low      | 17    | 15    | 2             |
 | Info     | 9     | 0     | 9             |
 
-**All 202+ tests pass. Zero failures across 100,000 fuzz runs per economic invariant.**
+**All 207+ tests pass. Zero failures across 100,000 fuzz runs per economic invariant.**
 **Phase 5 scope:** HTTP client hardening, SQLite defense, preview upload limits, Arweave download safety, content theft analysis.
 **Phase 6 scope:** Frontend audit (clean), metadata DoS, integer casts, upgrade script safety, SDK validation.
 **Phase 7 scope:** cancelListing griefing, collection/moderation hardening, deep link validation, DRY cleanup, production readiness, cross-platform fixes.
+**Phase 8 scope:** Free content (`MIN_PRICE=0`), `tipContent()` function, reentrancy protection, tipping split math safety.
 
 ---
 
@@ -662,13 +663,40 @@ Two-step token purchase (approve + buy) can leave a dangling ERC-20 approval if 
 
 ---
 
+### Phase 8 Findings (Free Content + Tipping)
+
+#### INFO-10: `MIN_PRICE` lowered to 0 — free content enabled
+**File:** `contracts/src/AraContent.sol`
+**Status:** ACCEPTED (by design)
+`MIN_PRICE` changed from 1000 wei to 0 to enable free content publishing. All downstream arithmetic (purchase splits, staker rewards, seeder rewards) produces 0 when price=0 — no division-by-zero, no underflow. The 10 ARA staking requirement still applies to publishers of free content, preventing spam.
+
+#### INFO-11: `tipContent()` uses same split math as `purchase()`
+**File:** `contracts/src/Marketplace.sol`
+**Status:** VERIFIED SAFE
+New `tipContent(bytes32 contentId)` function applies the same 85/2.5/12.5 split to `msg.value`. Key properties:
+- `nonReentrant` modifier prevents reentrancy via creator `receive()` callback
+- Does NOT mint edition tokens (tipping ≠ ownership)
+- `buyerReward[contentId][tipper] += rewardAmount` is additive (supports multiple tips)
+- Reverts on `msg.value == 0` and inactive content
+- Seeder reward claiming via delivery receipts works identically to purchase rewards
+
+**Tests added (8 total):**
+- `test_PublishFreeContent` — price=0 accepted by AraContent
+- `test_PublishAndPurchaseFreeContent` — purchase at price=0 succeeds, all splits=0
+- `test_TipFreeContent` — 1 ETH tip verifies 85/2.5/12.5 split
+- `test_TipZeroReverts` — msg.value=0 rejected
+- `test_TipInactiveContentReverts` — delisted content rejected
+- `test_MultipleTipsAccumulate` — additive buyerReward
+- `test_ReentrantTipBlocked` — reentrancy via malicious receive() blocked by nonReentrant
+- `test_UpdateContentToFreePrice` — price can be updated to 0
+
 ## Contracts Audited
 
 | Contract | LOC | Version | Upgradeable | Storage Gap |
 |----------|-----|---------|-------------|-------------|
 | AraStaking | 335 | V4 | UUPS | Yes (50) |
 | AraContent | 463 | V5 | UUPS | Yes (50) |
-| Marketplace | 681 | V4 | UUPS | Yes (50) |
+| Marketplace | 740 | V5 (tipContent) | UUPS | Yes (50) |
 | AraCollections | ~200 | V2 | UUPS | Yes (50) |
 | AraNameRegistry | ~180 | V2 | UUPS | Yes (50) |
 | AraModeration | 391 | V2 | UUPS | Yes (50) |

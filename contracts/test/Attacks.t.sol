@@ -67,6 +67,33 @@ contract ReentrantStaker {
     }
 }
 
+/// @dev Malicious contract that attempts reentrancy on tip's ETH receive
+contract ReentrantTipper {
+    Marketplace public marketplace;
+    bytes32 public targetContentId;
+    uint256 public attackCount;
+
+    constructor(address _marketplace) {
+        marketplace = Marketplace(payable(_marketplace));
+    }
+
+    function setTarget(bytes32 cId) external {
+        targetContentId = cId;
+    }
+
+    function tip(bytes32 cId) external payable {
+        marketplace.tipContent{value: msg.value}(cId);
+    }
+
+    receive() external payable {
+        // Attempt reentrant tip (should fail due to nonReentrant)
+        if (attackCount < 1) {
+            attackCount++;
+            try marketplace.tipContent{value: msg.value}(targetContentId) {} catch {}
+        }
+    }
+}
+
 contract AttacksTest is DeployHelper {
     address public deployer = makeAddr("deployer");
     address public creator = makeAddr("creator");
@@ -651,6 +678,21 @@ contract AttacksTest is DeployHelper {
         marketplace.tipContent{value: tip2}(contentId);
         uint256 reward2 = marketplace.buyerReward(contentId, buyer);
         assertTrue(reward2 > reward1); // additive
+    }
+
+    /// @notice Reentrancy on tipContent via malicious creator receive() is blocked
+    function test_ReentrantTipBlocked() public {
+        // Deploy a reentrant tipper that tries to re-enter tipContent from receive()
+        ReentrantTipper attacker = new ReentrantTipper(address(marketplace));
+        attacker.setTarget(contentId);
+        vm.deal(address(attacker), 2 ether);
+
+        // Tip should succeed (nonReentrant blocks the reentrant callback)
+        attacker.tip{value: 1 ether}(contentId);
+        // Verify only one tip's worth of reward landed
+        uint256 reward = marketplace.buyerReward(contentId, address(attacker));
+        uint256 expectedSeeder = (1 ether * 1250) / 10_000; // 12.5%
+        assertEq(reward, expectedSeeder);
     }
 
     // ═══════════════════════════════════════════════════════════════════

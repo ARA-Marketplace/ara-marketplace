@@ -297,6 +297,22 @@ The reward system solves three problems simultaneously:
 2. **Anti-fraud**: Seeders can't inflate their own reward share
 3. **Liveness**: A non-cooperative creator can't lock rewards forever
 
+### 4.1b Free Content & Tipping
+
+**Free content** (`MIN_PRICE = 0`): Creators can publish at price 0. Free content requires no on-chain purchase to download — buyers get the file via P2P directly. The 10 ARA staking requirement still applies to publish free content.
+
+**Tipping** (`Marketplace.tipContent(contentId)`): Anyone can tip ETH on any content (free or paid). Tips use the same 85/2.5/12.5 split as purchases:
+- Creator gets 85% (via `_payCreatorETH`, supports collaborator splits)
+- Stakers get 2.5% (via `staking.addReward`)
+- Seeders get 12.5% (stored in `buyerReward[contentId][tipper]`)
+
+Key differences from purchases:
+- Tips do NOT mint edition tokens (tipping ≠ ownership)
+- Tips are additive: `buyerReward[contentId][tipper] += rewardAmount`
+- Multiple tips from the same address accumulate
+- Protected by `nonReentrant` (same as purchase)
+- Seeders claim tip rewards via the same delivery receipt mechanism
+
 ### 4.2 Delivery Receipts
 
 The anti-fraud mechanism is **buyer-signed EIP-712 delivery receipts**. After downloading content, the buyer is prompted (optionally) to sign:

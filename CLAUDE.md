@@ -61,16 +61,18 @@ Two-step pattern used throughout:
 
 | Contract | Address | Purpose |
 |----------|---------|---------|
-| MockARAToken | `0x53720EcdDF71fE618c7A5aEc99ac2e958ad4dF99` | ERC-20 test token (mintable, 18 decimals) |
-| AraStaking (proxy) | `0xfD41Ae37cD729b6a70e42641ea14187e213b29e6` | Stake ARA to publish (10 ARA min) or seed (1 ARA/content) |
-| AraContent (proxy) | `0xd45ff950bBC1c823F66C4EbdF72De23Eb02e4831` | ERC-1155 content token (editions, nonce-based IDs, fileSize tracking) |
-| Marketplace (proxy) | `0xD7992b6A863FBacE3BB58BFE5D31EAe580adF4E0` | ETH purchases, 85% creator / 2.5% stakers / 12.5% seeders |
-| AraCollections (proxy) | `0x59453f1f12D10e4B4210fae8188d666011292997` | On-chain collections for content grouping |
-| AraNameRegistry (proxy) | `0xDA5827A8659271C44174894bbA403FD264198C5d` | Display name registry for wallet addresses |
+| MockARAToken | `0xA4c42cd49774d9B0af9C2D6BB88cf53b49b95b1b` | ERC-20 test token (mintable, 18 decimals) |
+| AraStaking (proxy) | `0x16e1CA6619FF0555BAFc43dEC9595C39776A2B63` | Stake ARA to publish (10 ARA min) or seed (1 ARA/content) |
+| AraContent (proxy) | `0x8C52B0b11cF5759312555ab1C6926e6Ce57297a0` | ERC-1155 content token (editions, nonce-based IDs, MIN_PRICE=0) |
+| Marketplace (proxy) | `0xa133F5eb0aE369D627B13F0e283ACDC763Fb48c4` | ETH purchases + tipping, 85% creator / 2.5% stakers / 12.5% seeders |
+| AraCollections (proxy) | `0x606658d5935E788CccCDF9188308434130a7C671` | On-chain collections for content grouping |
+| AraNameRegistry (proxy) | `0x5C451d9B613468D4212AE31b5F139E759dD992FA` | Display name registry for wallet addresses |
 
 ### Reward System (Three-Way Split)
 
-Purchase split: `85% creator / 2.5% stakers / 12.5% seeders`. Resale split: `royalty to creator / 1% stakers / 4% seeders / remainder to seller`.
+Purchase split: `85% creator / 2.5% stakers / 12.5% seeders`. Resale split: `royalty to creator / 1% stakers / 4% seeders / remainder to seller`. Tipping split: same as purchase (85/2.5/12.5), applied to the tip amount. Tips don't mint editions.
+
+**Free content**: `MIN_PRICE = 0` allows publishing at price 0. Free content requires no on-chain purchase transaction to download (pure P2P). Staking requirement (10 ARA) still applies to publish free content.
 
 **Passive staker rewards** (AraStaking V2): Uses a Synthetix-style reward accumulator for O(1) gas-efficient proportional distribution. On each purchase, Marketplace calls `staking.addReward{value: stakerReward}()` which updates `rewardPerTokenStored`. Each staker's payout is proportional to their staked ARA: `earned = userStake * (rewardPerTokenStored - userCheckpoint) / 1e18`. Claim via `claimStakingReward()`. Edge case: if `totalStaked == 0`, the staker share falls back to the seeder pool.
 
@@ -154,7 +156,7 @@ cd contracts && forge script script/Deploy.s.sol --rpc-url $SEPOLIA_RPC_URL --br
 
 **Content**: `publish_content`, `confirm_publish`, `get_content_detail`, `search_content`, `update_content`, `confirm_update_content`, `get_my_content`, `get_published_content`, `delist_content`, `confirm_delist`, `update_content_file`, `confirm_content_file_update`, `import_preview_assets`, `get_preview_asset`
 
-**Marketplace**: `purchase_content`, `confirm_purchase`, `get_library`, `open_downloaded_content`, `open_content_folder`, `broadcast_delivery_receipt`, `get_marketplace_address`, `get_receipt_count`, `list_for_resale`, `confirm_list_for_resale`, `cancel_resale_listing`, `confirm_cancel_listing`, `buy_resale`, `get_resale_listings`, `get_edition_info`
+**Marketplace**: `purchase_content`, `confirm_purchase`, `tip_content`, `confirm_tip`, `get_library`, `open_downloaded_content`, `open_content_folder`, `broadcast_delivery_receipt`, `get_marketplace_address`, `get_receipt_count`, `list_for_resale`, `confirm_list_for_resale`, `cancel_resale_listing`, `confirm_cancel_listing`, `buy_resale`, `get_resale_listings`, `get_edition_info`
 
 **Seeding**: `start_seeding`, `stop_seeding`, `get_seeder_stats`
 
