@@ -635,8 +635,8 @@ contract Marketplace is Initializable, UUPSUpgradeable, ReentrancyGuard {
             if (_ecrecover(digest, signature) != buyer) return 0;
         }
 
-        // 2. Verify buyer actually purchased this content
-        if (!hasPurchased[contentId][buyer]) return 0;
+        // 2. Verify buyer purchased or tipped (tippers have buyerReward > 0)
+        if (!hasPurchased[contentId][buyer] && buyerReward[contentId][buyer] == 0) return 0;
 
         // 3. bytesServed must be positive
         if (bytesServed == 0) return 0;

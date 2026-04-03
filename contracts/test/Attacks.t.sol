@@ -695,6 +695,43 @@ contract AttacksTest is DeployHelper {
         assertEq(reward, expectedSeeder);
     }
 
+    /// @notice Seeder can claim delivery reward from a tipper's reward pool
+    function test_SeederClaimFromTipReward() public {
+        // Tip without purchasing
+        address tipper = makeAddr("tipper");
+        vm.deal(tipper, 1 ether);
+        vm.prank(tipper);
+        marketplace.tipContent{value: 1 ether}(contentId);
+
+        uint256 tipReward = marketplace.buyerReward(contentId, tipper);
+        assertTrue(tipReward > 0, "Tip should create seeder reward pool");
+
+        // Seeder claims from the tipper's reward pool using a delivery receipt
+        // signed by the tipper (not a purchaser)
+        uint256 tipperPrivKey = 0xAAAA;
+        address tipperAddr = vm.addr(tipperPrivKey);
+        vm.deal(tipperAddr, 1 ether);
+        vm.prank(tipperAddr);
+        marketplace.tipContent{value: 1 ether}(contentId);
+
+        uint256 tipperReward = marketplace.buyerReward(contentId, tipperAddr);
+
+        // Build EIP-712 delivery receipt signed by tipper
+        bytes32 domainSeparator = marketplace.DOMAIN_SEPARATOR();
+        bytes32 receiptTypeHash = marketplace.RECEIPT_TYPE_HASH();
+        bytes32 structHash = keccak256(abi.encode(receiptTypeHash, contentId, seeder1, fileSize, block.timestamp));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(tipperPrivKey, digest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        uint256 seederBefore = seeder1.balance;
+        vm.prank(seeder1);
+        marketplace.claimDeliveryReward(contentId, tipperAddr, fileSize, block.timestamp, sig);
+
+        uint256 seederGain = seeder1.balance - seederBefore;
+        assertEq(seederGain, tipperReward, "Seeder should receive full tip reward");
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     //                    FEE-ON-TRANSFER TOKEN SAFETY
     // ═══════════════════════════════════════════════════════════════════
