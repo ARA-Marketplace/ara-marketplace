@@ -74,11 +74,11 @@ The architecture is deliberately layered. Smart contracts handle money and prove
 
 All contracts are on Sepolia testnet, compiled with Solidity 0.8.24, and tested with Foundry.
 
-### 2.1 MockARAToken (`0xE8486e01aA1Da716448a3893792837AF9f1bBFa2`)
+### 2.1 MockARAToken (`0xA4c42cd49774d9B0af9C2D6BB88cf53b49b95b1b`)
 
 A standard ERC-20 token with a public `mint()` function for testnet distribution. In production this would be replaced with the real ARA token. 18 decimals. Used exclusively as the staking currency — ETH is used for payments.
 
-### 2.2 AraStaking (`0x119554583bDB704CdA18f674054C2C7EF4C2A60c`)
+### 2.2 AraStaking (`0x16e1CA6619FF0555BAFc43dEC9595C39776A2B63`)
 
 Manages two types of stake:
 
@@ -104,7 +104,7 @@ Key functions:
 - `isEligibleSeeder(user, contentId)` — checks content-specific stake
 - `getContentStake(user, contentId)` — view function
 
-### 2.3 ContentRegistry (`0x2ECb7C21A99BcB52CD202a94484C935b31cB0Ea0`)
+### 2.3 AraContent (`0x8C52B0b11cF5759312555ab1C6926e6Ce57297a0`)
 
 On-chain catalogue of all published content.
 
@@ -137,7 +137,7 @@ Key functions:
 - `delistContent(contentId)` — creator only, sets `active = false`
 - `getCreator(contentId)`, `getPrice(contentId)`, `getContentHash(contentId)`, `isActive(contentId)` — view functions
 
-### 2.4 Marketplace (`0xA4bBCCBFc6F7C12ad80c45C0aed386289636Bb6E`)
+### 2.4 Marketplace (`0xa133F5eb0aE369D627B13F0e283ACDC763Fb48c4`)
 
 Handles ETH payments and seeder reward distribution.
 
@@ -901,11 +901,13 @@ Located at `data/ara-config.json` (created with defaults on first run):
   "ethereum": {
     "rpc_url": "https://ethereum-sepolia.publicnode.com",
     "chain_id": 11155111,
-    "ara_token_address": "0xE8486e01aA1Da716448a3893792837AF9f1bBFa2",
-    "staking_address": "0x119554583bDB704CdA18f674054C2C7EF4C2A60c",
-    "registry_address": "0x2ECb7C21A99BcB52CD202a94484C935b31cB0Ea0",
-    "marketplace_address": "0xA4bBCCBFc6F7C12ad80c45C0aed386289636Bb6E",
-    "deployment_block": 10293374
+    "ara_token_address": "0xA4c42cd49774d9B0af9C2D6BB88cf53b49b95b1b",
+    "staking_address": "0x16e1CA6619FF0555BAFc43dEC9595C39776A2B63",
+    "registry_address": "0x8C52B0b11cF5759312555ab1C6926e6Ce57297a0",
+    "marketplace_address": "0xa133F5eb0aE369D627B13F0e283ACDC763Fb48c4",
+    "collections_address": "0x606658d5935E788CccCDF9188308434130a7C671",
+    "name_registry_address": "0x5C451d9B613468D4212AE31b5F139E759dD992FA",
+    "deployment_block": 10569600
   },
   "iroh": {
     "relay_urls": ["https://relay.iroh.network"],

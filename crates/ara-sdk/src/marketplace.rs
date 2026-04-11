@@ -247,7 +247,12 @@ impl MarketplaceOps<'_> {
             .collect())
     }
 
-    /// Prepare a tip transaction. Tips flow through the same 85/2.5/12.5 split as purchases.
+    /// Prepare a tip transaction. Tips flow through the same 85/2.5/12.5 split as purchases
+    /// (85% creator, 2.5% stakers, 12.5% seeder reward pool).
+    ///
+    /// Unlike `prepare_purchase`, tipping does **NOT** mint an edition token — tipping
+    /// expresses support, not ownership. A tipper can still purchase the content separately.
+    /// Works on both free (price=0) and paid content.
     pub fn prepare_tip(
         &self,
         content_id: FixedBytes<32>,

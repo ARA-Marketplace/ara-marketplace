@@ -85,7 +85,13 @@ Every ETH payment on Ara is deterministically split by smart contracts — no pl
 | ARA Stakers | 1% | Same proportional distribution as primary |
 | Seeders | 4% | Same delivery-receipt mechanism as primary |
 
-**Staking rewards are proportional**: if you stake 1% of the total ARA staked across all users, you earn 1% of the staker reward from every purchase. There is no minimum stake to earn — any staked ARA earns its proportional share.
+### Tipping
+Anyone can tip ETH on any content (free or paid) via `Marketplace.tipContent()`. Tips use the **same 85/2.5/12.5 split** as purchases — stakers and seeders still get their share. Unlike purchases, tipping does **not** mint an edition token. Multiple tips from the same address accumulate. Tippers can still purchase the content separately.
+
+### Free Content
+Creators can publish at price **0** (`MIN_PRICE = 0`). Free downloads require no on-chain purchase transaction — buyers get the file directly via P2P. The 10 ARA staking requirement still applies to publish free content, preventing spam. Free content supports tipping so supporters can contribute.
+
+**Staking rewards are proportional**: if you stake 1% of the total ARA staked across all users, you earn 1% of the staker reward from every purchase or tip. There is no minimum stake to earn — any staked ARA earns its proportional share.
 
 ---
 
@@ -156,12 +162,17 @@ powershell -ExecutionPolicy Bypass -File scripts\setup-windows.ps1
 ### Run the App
 
 ```bash
-# Add your WalletConnect project ID to app/.env
-# Get one free at https://cloud.walletconnect.com
-echo "VITE_WALLETCONNECT_PROJECT_ID=your_id_here" > app/.env
+# Configure app/.env (WalletConnect project ID is required; chain ID defaults to Sepolia)
+# Get a free WalletConnect project ID at https://cloud.walletconnect.com
+cat > app/.env <<'ENV'
+VITE_WALLETCONNECT_PROJECT_ID=your_id_here
+VITE_CHAIN_ID=11155111    # 11155111 = Sepolia testnet, 1 = Ethereum mainnet
+ENV
 
 pnpm dev
 ```
+
+> **Chain selection**: `VITE_CHAIN_ID` tells Web3Modal which chain to default to and which RPC to pair with it. Flip to `1` when contracts deploy to mainnet — no other code changes needed. The Rust backend reads its own chain config from `AppConfig`, which must match.
 
 The app opens as a native desktop window. Connect MetaMask on Sepolia testnet, get test ARA from the faucet, and start publishing or buying content.
 
@@ -303,12 +314,14 @@ ara-marketplace/
 
 | Contract | Address |
 |----------|---------|
-| MockARAToken | `0x53720EcdDF71fE618c7A5aEc99ac2e958ad4dF99` |
-| AraStaking (proxy) | `0xfD41Ae37cD729b6a70e42641ea14187e213b29e6` |
-| AraContent (proxy) | `0xd45ff950bBC1c823F66C4EbdF72De23Eb02e4831` |
-| Marketplace (proxy) | `0xD7992b6A863FBacE3BB58BFE5D31EAe580adF4E0` |
-| AraCollections (proxy) | `0x59453f1f12D10e4B4210fae8188d666011292997` |
-| AraNameRegistry (proxy) | `0xDA5827A8659271C44174894bbA403FD264198C5d` |
+| MockARAToken | `0xA4c42cd49774d9B0af9C2D6BB88cf53b49b95b1b` |
+| AraStaking (proxy) | `0x16e1CA6619FF0555BAFc43dEC9595C39776A2B63` |
+| AraContent (proxy) | `0x8C52B0b11cF5759312555ab1C6926e6Ce57297a0` |
+| Marketplace (proxy) | `0xa133F5eb0aE369D627B13F0e283ACDC763Fb48c4` |
+| AraCollections (proxy) | `0x606658d5935E788CccCDF9188308434130a7C671` |
+| AraNameRegistry (proxy) | `0x5C451d9B613468D4212AE31b5F139E759dD992FA` |
+
+> **Deployed 2026-04-01** with free content + tipping support. Proxy addresses are permanent; only implementations are upgraded over time.
 
 All contracts are verified on [Sepolia Etherscan](https://sepolia.etherscan.io).
 
@@ -316,14 +329,14 @@ All contracts are verified on [Sepolia Etherscan](https://sepolia.etherscan.io).
 
 ## Security
 
-Ara has undergone a comprehensive 7-phase security audit covering smart contracts, Rust backend, P2P layer, desktop app, and frontend. Key measures include:
+Ara has undergone a comprehensive 8-phase security audit covering smart contracts, Rust backend, P2P layer, desktop app, and frontend. Key measures include:
 
-- **Smart contracts**: Reentrancy guards, integer overflow protection, access control, upgrade guards, 202 tests (including fuzz and invariant testing)
+- **Smart contracts**: Reentrancy guards (including `tipContent`), integer overflow protection, access control, upgrade guards, 208 tests (7 fuzz × 10K runs, 4 invariant × 256 runs)
 - **Backend**: HTTP timeouts, SQLite hardening, upload size limits, metadata DoS caps, input validation at all system boundaries
 - **P2P**: Content hash verification, gossip message validation
-- **Desktop app**: Deep link whitelist, devtools gated behind feature flag, cross-platform logging
+- **Desktop app**: Deep link whitelist, devtools gated behind feature flag, cross-platform logging, CSP (`localasset:`, `http://ipc.localhost`, `https://*.walletconnect.com` and friends)
 
-See [AUDIT.md](AUDIT.md) for the full audit report (52+ findings across 3 critical, 9 high, 23 medium, 17 low severity).
+See [AUDIT.md](AUDIT.md) for the full audit report (52+ findings across 3 critical, 9 high, 23 medium, 17 low severity, plus Phase 8 covering free content and tipping).
 
 ---
 

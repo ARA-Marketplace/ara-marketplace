@@ -154,6 +154,38 @@ if let Some(item) = items.first() {
 }
 ```
 
+### Tipping Creators
+
+Tips flow through the same **85% creator / 2.5% stakers / 12.5% seeders** split as purchases, but do **not** mint an edition token. Tipping works on both free and paid content. A tipper can still purchase the content separately.
+
+```rust
+use alloy::primitives::U256;
+
+// Tip 0.01 ETH to a creator
+let content_id: FixedBytes<32> = /* your content id */;
+let tip_wei = U256::from(10_000_000_000_000_000u128); // 0.01 ETH
+
+let txs = client.marketplace().prepare_tip(content_id, tip_wei)?;
+client.execute_transactions(&txs).await?;
+```
+
+### Publishing Free Content
+
+Set the price to `"0"` when preparing a publish transaction. Free content still requires 10 ARA staked to publish (prevents spam), and still supports tipping so supporters can contribute.
+
+```rust
+let result = client.content().prepare_publish(
+    content_hash,
+    metadata.to_string(),
+    "0",          // free — buyers download via P2P without any on-chain tx
+    file_size,
+    0,            // unlimited supply
+    0,            // no royalty
+    None,         // ETH payments (tips)
+).await?;
+client.execute_transactions(&result.transactions).await?;
+```
+
 ### Collections
 
 ```rust
