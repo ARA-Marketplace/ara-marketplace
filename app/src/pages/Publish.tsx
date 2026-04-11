@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useRef, type DragEvent } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   publishContent,
   confirmPublish,
@@ -171,26 +172,40 @@ function Publish() {
     );
   };
 
-  const handleDragOver = useCallback((e: DragEvent) => {
-    e.preventDefault(); e.stopPropagation(); setIsDragging(true);
-  }, []);
-  const handleDragLeave = useCallback((e: DragEvent) => {
-    e.preventDefault(); e.stopPropagation(); setIsDragging(false);
-  }, []);
-  const handleDrop = useCallback((e: DragEvent) => {
-    e.preventDefault(); e.stopPropagation(); setIsDragging(false);
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      const path = (files[0] as unknown as { path?: string }).path;
-      if (path) {
-        setFilePath(path);
-        if (!title.trim()) {
-          const name = path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "";
-          if (name) setTitle(name);
+  // Tauri v2 drag-drop: file drops from the OS are delivered via a window-level
+  // event, not HTML5 drop events (v1 exposed .path on File — v2 removed it).
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let cancelled = false;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "over" || event.payload.type === "enter") {
+          setIsDragging(true);
+        } else if (event.payload.type === "leave") {
+          setIsDragging(false);
+        } else if (event.payload.type === "drop") {
+          setIsDragging(false);
+          const paths = event.payload.paths;
+          if (paths.length > 0) {
+            const path = paths[0];
+            setFilePath(path);
+            setTitle((current) => {
+              if (current.trim()) return current;
+              const name = path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "";
+              return name || current;
+            });
+          }
         }
-      }
-    }
-  }, [title]);
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      });
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   const fileName = filePath ? filePath.split(/[\\/]/).pop() ?? filePath : null;
   const splitsValid = splitMode === "solo" || (
@@ -380,9 +395,6 @@ function Publish() {
           <label className="label">Content File</label>
           <button
             onClick={selectFile}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
             disabled={!isForm}
             className={`w-full px-4 py-8 border-2 border-dashed rounded-xl transition-colors disabled:opacity-50 text-sm ${
               isDragging

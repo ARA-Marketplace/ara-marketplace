@@ -893,7 +893,7 @@ checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
 name = "ara-chain"
-version = "1.0.5"
+version = "1.0.7"
 dependencies = [
  "alloy",
  "anyhow",
@@ -907,7 +907,7 @@ dependencies = [
 
 [[package]]
 name = "ara-core"
-version = "1.0.5"
+version = "1.0.7"
 dependencies = [
  "anyhow",
  "hex",
@@ -919,7 +919,7 @@ dependencies = [
 
 [[package]]
 name = "ara-marketplace-app"
-version = "1.0.5"
+version = "1.0.7"
 dependencies = [
  "alloy",
  "anyhow",
@@ -955,7 +955,7 @@ dependencies = [
 
 [[package]]
 name = "ara-p2p"
-version = "1.0.5"
+version = "1.0.7"
 dependencies = [
  "anyhow",
  "ara-core",
@@ -976,7 +976,7 @@ dependencies = [
 
 [[package]]
 name = "ara-sdk"
-version = "1.0.5"
+version = "1.0.7"
 dependencies = [
  "alloy",
  "anyhow",
