@@ -18,14 +18,19 @@ export default function CollectionCard({ collection }: CollectionCardProps) {
       className="card card-hover overflow-hidden group"
     >
       {/* Banner */}
-      <div className="h-28 bg-gradient-to-br from-ara-600/30 to-purple-600/30 relative overflow-hidden">
-        {collection.banner_uri && (
+      <div className="h-28 bg-gradient-to-br from-ara-700/40 via-purple-700/40 to-indigo-800/40 relative overflow-hidden">
+        {collection.banner_uri ? (
           <img
             src={collection.banner_uri}
             alt=""
             className="w-full h-full object-cover"
             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
+        ) : (
+          <>
+            <div className="absolute -left-4 -top-4 w-24 h-24 rounded-full bg-ara-500/30 blur-2xl" />
+            <div className="absolute right-0 bottom-0 w-28 h-28 rounded-full bg-purple-500/30 blur-2xl" />
+          </>
         )}
         <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent" />
       </div>

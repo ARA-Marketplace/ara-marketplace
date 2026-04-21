@@ -1,6 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getSeederStats, type SeederStats } from "../lib/tauri";
+import {
+  getSeederStats,
+  getMarketplaceOverview,
+  getAraPriceUsd,
+  type SeederStats,
+  type MarketplaceOverview,
+} from "../lib/tauri";
 import { useWeb3ModalAccount } from "@web3modal/ethers/react";
 
 function formatBytes(bytes: number) {
@@ -10,11 +16,27 @@ function formatBytes(bytes: number) {
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 }
 
+function fmtAra(val: string): string {
+  const n = parseFloat(val);
+  if (isNaN(n)) return val;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(2)}K`;
+  return n.toFixed(2);
+}
+
 function Dashboard() {
   const { isConnected } = useWeb3ModalAccount();
   const [stats, setStats] = useState<SeederStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [overview, setOverview] = useState<MarketplaceOverview | null>(null);
+  const [araPriceUsd, setAraPriceUsd] = useState<number>(0);
+
+  useEffect(() => {
+    // Network stats don't require a connected wallet — load regardless
+    getMarketplaceOverview().then(setOverview).catch(() => {});
+    getAraPriceUsd().then(setAraPriceUsd).catch(() => {});
+  }, []);
 
   const fetchStats = useCallback(() => {
     getSeederStats()
@@ -45,6 +67,68 @@ function Dashboard() {
       <div className="mb-6">
         <h1 className="page-title">Seeding Dashboard</h1>
         <p className="page-subtitle">Monitor your seeding activity and earnings.</p>
+      </div>
+
+      {/* Network-wide stats — visible to everyone, no wallet required */}
+      <div className="mb-8">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-3">
+          Network Stats
+        </h2>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <div className="card p-4">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
+              ARA Price
+            </p>
+            <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
+              {araPriceUsd > 0 ? `$${araPriceUsd.toFixed(4)}` : "—"}
+            </p>
+            <a
+              href="https://www.coingecko.com/en/coins/ara"
+              target="_blank"
+              rel="noreferrer"
+              className="text-[10px] text-slate-500 hover:text-ara-500"
+            >
+              via CoinGecko
+            </a>
+          </div>
+          <div className="card p-4">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
+              Total ARA Staked
+            </p>
+            <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
+              {overview ? fmtAra(overview.total_staked_ara) : "—"}
+            </p>
+            {overview && araPriceUsd > 0 && (
+              <p className="text-[10px] text-slate-500">
+                ≈ ${fmtAra(String(parseFloat(overview.total_staked_ara) * araPriceUsd))}
+              </p>
+            )}
+          </div>
+          <div className="card p-4">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
+              Total Volume
+            </p>
+            <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
+              {overview ? `${parseFloat(overview.total_volume_eth).toFixed(3)} ETH` : "—"}
+            </p>
+          </div>
+          <div className="card p-4">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
+              Seeder Rewards Paid
+            </p>
+            <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
+              {overview ? `${parseFloat(overview.total_rewards_paid_eth).toFixed(3)} ETH` : "—"}
+            </p>
+          </div>
+          <div className="card p-4">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
+              Content Published
+            </p>
+            <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
+              {overview ? overview.total_items : "—"}
+            </p>
+          </div>
+        </div>
       </div>
 
       {!isConnected && (

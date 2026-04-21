@@ -665,6 +665,212 @@ pub async fn get_reward_history(
     })
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct TransactionHistoryRow {
+    /// One of: "reward" | "sale" | "purchase" | "tip_sent"
+    pub kind: String,
+    pub content_id: String,
+    pub content_title: String,
+    pub amount_eth: String,
+    /// Buyer address for "sale", seller for "purchase". None for rewards/tips_sent.
+    pub counterparty: Option<String>,
+    pub tx_hash: Option<String>,
+    pub timestamp: u64,
+}
+
+/// Unified transaction history for the connected wallet: rewards received, sales,
+/// purchases made, and tips sent. Rows are returned sorted newest-first.
+///
+/// `kind_filter` optionally restricts results to one type (for the filter dropdown).
+/// Tips received by this wallet (as a creator) are not yet included — they require
+/// chain-sync of ContentTipped events and will land in a follow-up release.
+#[tauri::command]
+pub async fn get_transaction_history(
+    state: State<'_, AppState>,
+    kind_filter: Option<String>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<Vec<TransactionHistoryRow>, String> {
+    let limit = limit.unwrap_or(30) as i64;
+    let offset = offset.unwrap_or(0) as i64;
+
+    let wallet_addr = state.wallet_address.lock().await.as_ref().cloned();
+    let Some(wallet) = wallet_addr else {
+        return Ok(vec![]);
+    };
+    // SQL LIKE for case-insensitive matching on the wallet address
+    let wallet_lc = wallet.to_lowercase();
+    let filter = kind_filter.unwrap_or_else(|| "all".to_string());
+
+    let db = state.db.lock().await;
+    let conn = db.conn();
+
+    let mut rows: Vec<TransactionHistoryRow> = Vec::new();
+
+    let title_for = |cid: &str| -> String {
+        conn.query_row(
+            "SELECT COALESCE(title, '') FROM content WHERE content_id = ?1",
+            rusqlite::params![cid],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| "Unknown".to_string())
+    };
+
+    // --- Rewards received ---
+    if filter == "all" || filter == "reward" {
+        let mut stmt = conn
+            .prepare(
+                "SELECT content_id, amount_wei, tx_hash, distributed_at
+                 FROM rewards ORDER BY distributed_at DESC",
+            )
+            .map_err(|e| format!("DB prepare: {e}"))?;
+        let iter = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|e| format!("DB query: {e}"))?;
+        for r in iter.flatten() {
+            let amount_wei: U256 = r.1.parse().unwrap_or(U256::ZERO);
+            rows.push(TransactionHistoryRow {
+                kind: "reward".into(),
+                content_id: r.0.clone(),
+                content_title: title_for(&r.0),
+                amount_eth: format_wei(amount_wei),
+                counterparty: None,
+                tx_hash: r.2,
+                timestamp: r.3 as u64,
+            });
+        }
+    }
+
+    // --- Purchases made by this wallet ---
+    if filter == "all" || filter == "purchase" {
+        let mut stmt = conn
+            .prepare(
+                "SELECT content_id, price_paid_wei, tx_hash, purchased_at
+                 FROM purchases WHERE LOWER(buyer) = ?1 ORDER BY purchased_at DESC",
+            )
+            .map_err(|e| format!("DB prepare: {e}"))?;
+        let iter = stmt
+            .query_map(rusqlite::params![&wallet_lc], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|e| format!("DB query: {e}"))?;
+        for r in iter.flatten() {
+            let amount_wei: U256 = r.1.parse().unwrap_or(U256::ZERO);
+            // Look up the creator as counterparty
+            let creator: Option<String> = conn
+                .query_row(
+                    "SELECT creator FROM content WHERE content_id = ?1",
+                    rusqlite::params![&r.0],
+                    |row| row.get(0),
+                )
+                .ok();
+            rows.push(TransactionHistoryRow {
+                kind: "purchase".into(),
+                content_id: r.0.clone(),
+                content_title: title_for(&r.0),
+                amount_eth: format_wei(amount_wei),
+                counterparty: creator,
+                tx_hash: r.2,
+                timestamp: r.3 as u64,
+            });
+        }
+    }
+
+    // --- Sales received (this wallet is the creator of content bought by others) ---
+    if filter == "all" || filter == "sale" {
+        let mut stmt = conn
+            .prepare(
+                "SELECT ap.content_id, ap.buyer, ap.price_paid_wei, ap.tx_hash,
+                        COALESCE(ap.timestamp, ap.block_number)
+                 FROM all_purchases ap
+                 JOIN content c ON c.content_id = ap.content_id
+                 WHERE LOWER(c.creator) = ?1
+                 ORDER BY COALESCE(ap.timestamp, ap.block_number) DESC",
+            )
+            .map_err(|e| format!("DB prepare: {e}"))?;
+        let iter = stmt
+            .query_map(rusqlite::params![&wallet_lc], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .map_err(|e| format!("DB query: {e}"))?;
+        for r in iter.flatten() {
+            let amount_wei: U256 = r.2.parse().unwrap_or(U256::ZERO);
+            rows.push(TransactionHistoryRow {
+                kind: "sale".into(),
+                content_id: r.0.clone(),
+                content_title: title_for(&r.0),
+                amount_eth: format_wei(amount_wei),
+                counterparty: Some(r.1),
+                tx_hash: Some(r.3),
+                timestamp: r.4 as u64,
+            });
+        }
+    }
+
+    // --- Tips sent ---
+    if filter == "all" || filter == "tip_sent" {
+        let mut stmt = conn
+            .prepare(
+                "SELECT content_id, amount_wei, tx_hash, tipped_at
+                 FROM tips_sent WHERE LOWER(tipper) = ?1 ORDER BY tipped_at DESC",
+            )
+            .map_err(|e| format!("DB prepare: {e}"))?;
+        let iter = stmt
+            .query_map(rusqlite::params![&wallet_lc], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|e| format!("DB query: {e}"))?;
+        for r in iter.flatten() {
+            let amount_wei: U256 = r.1.parse().unwrap_or(U256::ZERO);
+            let creator: Option<String> = conn
+                .query_row(
+                    "SELECT creator FROM content WHERE content_id = ?1",
+                    rusqlite::params![&r.0],
+                    |row| row.get(0),
+                )
+                .ok();
+            rows.push(TransactionHistoryRow {
+                kind: "tip_sent".into(),
+                content_id: r.0.clone(),
+                content_title: title_for(&r.0),
+                amount_eth: format_wei(amount_wei),
+                counterparty: creator,
+                tx_hash: Some(r.2),
+                timestamp: r.3 as u64,
+            });
+        }
+    }
+
+    // Sort newest-first and paginate
+    rows.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    let start = (offset as usize).min(rows.len());
+    let end = ((offset + limit) as usize).min(rows.len());
+    Ok(rows[start..end].to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

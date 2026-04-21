@@ -78,7 +78,29 @@ impl ContentManager {
             .finish()
             .await?;
 
-        info!("Export complete: {}", output_path.display());
+        // SECURITY: Re-hash the exported bytes and verify they match the expected hash.
+        // Iroh's blob protocol verifies data against the BAO tree as it streams in, so a
+        // malicious seeder cannot inject wrong bytes during download. This post-export
+        // check is defense-in-depth — it catches any local corruption or export bug that
+        // could slip past the transport-level verification.
+        let actual = tokio::task::spawn_blocking({
+            let path = output_path.to_path_buf();
+            move || -> Result<ContentHash> {
+                let bytes = std::fs::read(&path)?;
+                Ok(*blake3::hash(&bytes).as_bytes())
+            }
+        })
+        .await??;
+        if actual != *hash {
+            let _ = std::fs::remove_file(output_path);
+            anyhow::bail!(
+                "BLAKE3 hash mismatch after export: expected {}, got {} (file deleted)",
+                hex::encode(hash),
+                hex::encode(actual),
+            );
+        }
+
+        info!("Export complete + hash verified: {}", output_path.display());
         Ok(())
     }
 

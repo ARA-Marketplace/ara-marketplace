@@ -61,6 +61,12 @@ impl<P: Provider + Clone> MarketplaceClient<P> {
         Ok(result)
     }
 
+    /// Get the lifetime total of seeder/reward ETH claimed across all content.
+    pub async fn total_rewards_claimed(&self) -> Result<U256> {
+        let contract = IMarketplace::new(self.address, &self.provider);
+        Ok(contract.totalRewardsClaimed().call().await?)
+    }
+
     /// Get the marketplace contract address.
     pub fn address(&self) -> Address {
         self.address

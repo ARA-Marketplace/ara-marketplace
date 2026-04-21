@@ -243,26 +243,47 @@ export default function CollectionDetailPage() {
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
-      {/* Banner */}
-      <div className="h-48 rounded-xl bg-gradient-to-br from-ara-600/30 to-purple-600/30 relative overflow-hidden">
-        {info.banner_uri && (
-          <img
-            src={info.banner_uri}
-            alt=""
-            className="w-full h-full object-cover"
-            onError={(e) => {
-              (e.target as HTMLImageElement).style.display = "none";
-            }}
-          />
-        )}
-        <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
-        <div className="absolute bottom-4 left-6">
-          <h1 className="text-2xl font-bold text-white">{info.name}</h1>
-          <div className="text-white/70 text-sm mt-1">
-            by <AddressDisplay address={info.creator} className="text-white/90" />
+      {/* Banner — priority: explicit banner_uri > first item's preview > rich gradient */}
+      {(() => {
+        const fallbackPreview = items.length > 0 ? previewSrcs[items[0].content_id] : undefined;
+        const bannerImg = info.banner_uri || fallbackPreview;
+        const emptyStateGradient =
+          "bg-gradient-to-br from-ara-700/40 via-purple-700/40 to-indigo-800/40";
+        return (
+          <div className={`h-48 rounded-xl relative overflow-hidden ${bannerImg ? "" : emptyStateGradient}`}>
+            {bannerImg && (
+              <>
+                <img
+                  src={bannerImg}
+                  alt=""
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = "none";
+                  }}
+                />
+                {/* Blur the fallback preview so the title stays readable */}
+                {!info.banner_uri && fallbackPreview && (
+                  <div className="absolute inset-0 backdrop-blur-md bg-black/30" />
+                )}
+              </>
+            )}
+            {/* Animated orbs to give empty collections some life */}
+            {!bannerImg && (
+              <>
+                <div className="absolute -left-8 -top-8 w-40 h-40 rounded-full bg-ara-500/25 blur-3xl animate-pulse" />
+                <div className="absolute right-0 bottom-0 w-48 h-48 rounded-full bg-purple-500/25 blur-3xl animate-pulse [animation-delay:1s]" />
+              </>
+            )}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
+            <div className="absolute bottom-4 left-6">
+              <h1 className="text-2xl font-bold text-white">{info.name}</h1>
+              <div className="text-white/70 text-sm mt-1">
+                by <AddressDisplay address={info.creator} className="text-white/90" />
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
+        );
+      })()}
 
       {/* Stats bar */}
       <div className="flex flex-wrap gap-8 px-1">

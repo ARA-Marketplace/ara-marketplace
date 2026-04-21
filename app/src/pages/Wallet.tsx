@@ -17,9 +17,12 @@ import {
   confirmRegisterName,
   removeDisplayName,
   confirmRemoveName,
+  getTransactionHistory,
   type RewardHistoryItem,
   type RewardHistoryResponse,
   type RewardPipelineResponse,
+  type TransactionHistoryRow,
+  type TransactionKind,
 } from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
 
@@ -67,6 +70,11 @@ function Wallet() {
   const [historyOffset, setHistoryOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Transaction history state
+  const [txHistory, setTxHistory] = useState<TransactionHistoryRow[]>([]);
+  const [txFilter, setTxFilter] = useState<TransactionKind | "all">("all");
+  const [loadingTxHistory, setLoadingTxHistory] = useState(false);
 
   // Pipeline state
   const [pipeline, setPipeline] = useState<RewardPipelineResponse | null>(null);
@@ -118,6 +126,24 @@ function Wallet() {
       setHistoryItems([]);
     }
   }, [address, fetchRewardHistory]);
+
+  // Transaction history — unified feed of rewards, purchases, sales, tips-sent
+  const fetchTxHistory = useCallback(async (filter: TransactionKind | "all") => {
+    setLoadingTxHistory(true);
+    try {
+      const rows = await getTransactionHistory({ kindFilter: filter, limit: 100 });
+      setTxHistory(rows);
+    } catch {
+      // silently fail
+    } finally {
+      setLoadingTxHistory(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (address) fetchTxHistory(txFilter);
+    else setTxHistory([]);
+  }, [address, txFilter, fetchTxHistory]);
 
   // Fetch current display name
   useEffect(() => {
@@ -584,6 +610,74 @@ function Wallet() {
               <p>Resale purchases split similarly: 4% to seeders, 1% to stakers (plus creator royalties).</p>
               <p>Seeders who deliver content earn signed delivery receipts. Click <span className="font-medium text-slate-700 dark:text-slate-300">Collect All</span> to claim seeder rewards.</p>
             </div>
+          </div>
+
+          {/* Transaction History — unified feed */}
+          <div className="card overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500">
+                Transaction History
+              </p>
+              <select
+                value={txFilter}
+                onChange={(e) => setTxFilter(e.target.value as TransactionKind | "all")}
+                className="input-base text-xs py-1 px-2 w-auto"
+              >
+                <option value="all">All</option>
+                <option value="purchase">Purchases</option>
+                <option value="sale">Sales</option>
+                <option value="reward">Rewards</option>
+                <option value="tip_sent">Tips Sent</option>
+              </select>
+            </div>
+            {loadingTxHistory && txHistory.length === 0 ? (
+              <div className="px-5 py-8 text-center text-sm text-slate-400 dark:text-slate-600">Loading…</div>
+            ) : txHistory.length === 0 ? (
+              <div className="px-5 py-8 text-center text-sm text-slate-400 dark:text-slate-600">
+                No transactions yet. Publish, purchase, or tip content to see activity.
+              </div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="border-b border-slate-200 dark:border-slate-800">
+                  <tr>
+                    {["Type", "Content", "Amount", "Counterparty", "Date"].map((h) => (
+                      <th key={h} className="px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 text-left">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                  {txHistory.map((r, i) => (
+                    <tr key={`${r.kind}-${r.tx_hash ?? r.content_id}-${i}`}>
+                      <td className="px-4 py-2.5">
+                        <span className={
+                          r.kind === "sale" ? "badge-green" :
+                          r.kind === "reward" ? "badge-blue" :
+                          r.kind === "tip_sent" ? "badge-purple" :
+                          "badge-gray"
+                        }>
+                          {r.kind === "tip_sent" ? "Tip Sent" : r.kind.charAt(0).toUpperCase() + r.kind.slice(1)}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 text-slate-900 dark:text-slate-200">{r.content_title}</td>
+                      <td className={`px-4 py-2.5 font-mono text-xs ${
+                        r.kind === "purchase" || r.kind === "tip_sent" ? "text-red-500" : "text-green-500"
+                      }`}>
+                        {(r.kind === "purchase" || r.kind === "tip_sent") ? "-" : "+"}
+                        {parseFloat(r.amount_eth).toFixed(4)} ETH
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400 font-mono">
+                        {r.counterparty ? `${r.counterparty.slice(0, 6)}…${r.counterparty.slice(-4)}` : "—"}
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">
+                        {fmtDate(r.timestamp)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
 
           {/* Reward History */}

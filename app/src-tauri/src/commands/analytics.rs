@@ -43,6 +43,10 @@ pub struct MarketplaceOverview {
     pub total_sales: u32,
     pub total_collections: u32,
     pub total_items: u32,
+    /// Total ARA staked network-wide (formatted with 18 decimals). Queried on-chain.
+    pub total_staked_ara: String,
+    /// Total ETH paid out as seeder rewards (lifetime). Queried on-chain.
+    pub total_rewards_paid_eth: String,
 }
 
 #[tauri::command]
@@ -326,11 +330,32 @@ pub async fn get_marketplace_overview(
     ).unwrap_or(0);
 
     let vol_wei: U256 = total_volume.parse().unwrap_or(U256::ZERO);
+    drop(db);
+
+    // Pull network-wide totals from chain. Failures degrade gracefully to "0" — the
+    // dashboard card never fails because the chain RPC is flaky.
+    let (total_staked_ara, total_rewards_paid_eth) = if let Ok(chain) = state.chain_client() {
+        let staked = chain
+            .staking
+            .total_staked()
+            .await
+            .unwrap_or(U256::ZERO);
+        let rewards = chain
+            .marketplace
+            .total_rewards_claimed()
+            .await
+            .unwrap_or(U256::ZERO);
+        (format_wei(staked), format_wei(rewards))
+    } else {
+        ("0.0".to_string(), "0.0".to_string())
+    };
 
     Ok(MarketplaceOverview {
         total_volume_eth: format_wei(vol_wei),
         total_sales,
         total_collections,
         total_items,
+        total_staked_ara,
+        total_rewards_paid_eth,
     })
 }

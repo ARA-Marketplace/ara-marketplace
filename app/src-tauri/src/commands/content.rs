@@ -2200,3 +2200,150 @@ fn parse_content_hash_bytes(s: &str) -> Result<[u8; 32], String> {
     hash.copy_from_slice(&bytes);
     Ok(hash)
 }
+
+#[derive(serde::Serialize)]
+pub struct TopCreator {
+    pub address: String,
+    pub display_name: Option<String>,
+    pub content_count: u32,
+    /// Aggregate list-price volume (price × items). Formatted as decimal ETH.
+    pub total_list_volume_eth: String,
+    /// Realized sales volume from all_purchases. Formatted as decimal ETH.
+    pub total_sales_eth: String,
+    pub latest_publish_at: i64,
+}
+
+/// Return the top N creators by realized sales volume (all_purchases), falling back
+/// to list-price volume when there are no sales yet. Joins with address_names for
+/// display names. Used by the Top Creators tab.
+#[tauri::command]
+pub async fn get_top_creators(
+    state: tauri::State<'_, AppState>,
+    limit: Option<u32>,
+) -> Result<Vec<TopCreator>, String> {
+    let limit = limit.unwrap_or(20) as i64;
+    let db = state.db.lock().await;
+    let conn = db.conn();
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT LOWER(c.creator) AS creator,
+                    COUNT(DISTINCT c.content_id) AS content_count,
+                    COALESCE(SUM(CAST(c.price_wei AS INTEGER)), 0) AS list_vol,
+                    COALESCE((
+                        SELECT SUM(CAST(ap.price_paid_wei AS INTEGER))
+                        FROM all_purchases ap
+                        JOIN content cc ON cc.content_id = ap.content_id
+                        WHERE LOWER(cc.creator) = LOWER(c.creator)
+                    ), 0) AS sales_vol,
+                    COALESCE(MAX(c.created_at), 0) AS latest_at,
+                    (SELECT name FROM address_names WHERE LOWER(address) = LOWER(c.creator) LIMIT 1) AS display_name
+             FROM content c
+             WHERE c.active = 1
+             GROUP BY LOWER(c.creator)
+             ORDER BY sales_vol DESC, list_vol DESC, latest_at DESC
+             LIMIT ?1",
+        )
+        .map_err(|e| format!("DB prepare: {e}"))?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![limit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })
+        .map_err(|e| format!("DB query: {e}"))?;
+
+    let mut out = Vec::new();
+    for r in rows.flatten() {
+        let list_wei: alloy::primitives::U256 = r.2.parse().unwrap_or(alloy::primitives::U256::ZERO);
+        let sales_wei: alloy::primitives::U256 = r.3.parse().unwrap_or(alloy::primitives::U256::ZERO);
+        out.push(TopCreator {
+            address: r.0,
+            display_name: r.5,
+            content_count: r.1 as u32,
+            total_list_volume_eth: crate::commands::types::format_wei(list_wei),
+            total_sales_eth: crate::commands::types::format_wei(sales_wei),
+            latest_publish_at: r.4,
+        });
+    }
+    Ok(out)
+}
+
+/// Return all active content published by a specific creator address (used by creator profile page).
+/// Does not require a connected wallet.
+#[tauri::command]
+pub async fn get_creator_content(
+    state: tauri::State<'_, AppState>,
+    creator: String,
+) -> Result<Vec<ContentDetail>, String> {
+    let creator = creator.to_lowercase();
+    let db = state.db.lock().await;
+    let conn = db.conn();
+
+    let supported_tokens = &state.config.ethereum.supported_tokens;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT content_id, content_hash, creator, title, description,
+                    content_type, price_wei, active, file_size_bytes,
+                    COALESCE(metadata_uri,''), updated_at, COALESCE(categories,'[]'),
+                    COALESCE(max_supply,0), COALESCE(total_minted,0),
+                    COALESCE(payment_token,'')
+             FROM content WHERE LOWER(creator) = ?1 AND active = 1
+             ORDER BY COALESCE(updated_at, 0) DESC",
+        )
+        .map_err(|e| format!("DB prepare: {e}"))?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![&creator], |row| {
+            let price_wei_str: String = row.get(6)?;
+            let price_wei = price_wei_str
+                .parse::<alloy::primitives::U256>()
+                .unwrap_or(alloy::primitives::U256::ZERO);
+            let cats_json: String = row.get(11)?;
+            let pt: String = row.get(14)?;
+            let is_token = !pt.is_empty() && pt != "0x0000000000000000000000000000000000000000";
+            let token_cfg = if is_token {
+                supported_tokens.iter().find(|t| t.address.eq_ignore_ascii_case(&pt))
+            } else {
+                None
+            };
+            let symbol = token_cfg.map(|t| t.symbol.clone()).unwrap_or_else(|| "ETH".to_string());
+            let decimals = token_cfg.map(|t| t.decimals).unwrap_or(18);
+            Ok(ContentDetail {
+                content_id: row.get(0)?,
+                content_hash: row.get(1)?,
+                creator: row.get(2)?,
+                title: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                description: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                content_type: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                price_eth: format_token_amount(price_wei, decimals),
+                active: row.get::<_, i32>(7)? != 0,
+                seeder_count: 0,
+                purchase_count: 0,
+                metadata_uri: row.get(9)?,
+                updated_at: row.get(10)?,
+                categories: serde_json::from_str(&cats_json).unwrap_or_default(),
+                max_supply: row.get(12)?,
+                total_minted: row.get(13)?,
+                resale_count: 0,
+                min_resale_price_eth: None,
+                payment_token: if is_token { Some(pt) } else { None },
+                payment_token_symbol: symbol,
+                collaborators: vec![],
+            })
+        })
+        .map_err(|e| format!("DB query: {e}"))?;
+
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| format!("Row parse: {e}"))?);
+    }
+    Ok(out)
+}

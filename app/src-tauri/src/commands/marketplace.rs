@@ -529,6 +529,201 @@ pub async fn get_library(state: State<'_, AppState>) -> Result<Vec<LibraryItem>,
     Ok(items)
 }
 
+/// Return the local path of a downloaded content file if the current wallet has purchased it.
+/// Returns None when the viewer doesn't own the content or hasn't downloaded it yet.
+/// Used by the frontend to render an inline media player for owned content.
+#[tauri::command]
+pub async fn get_owned_content_path(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<Option<String>, String> {
+    let wallet = state.wallet_address.lock().await;
+    let Some(buyer) = wallet.as_ref().cloned() else {
+        return Ok(None);
+    };
+    drop(wallet);
+
+    let db = state.db.lock().await;
+    let row = db.conn().query_row(
+        "SELECT downloaded_path FROM purchases WHERE content_id = ?1 AND buyer = ?2",
+        rusqlite::params![&content_id, &buyer],
+        |row| row.get::<_, Option<String>>(0),
+    );
+    drop(db);
+
+    let downloaded_path = match row {
+        Ok(p) => p,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(e) => return Err(format!("DB error: {e}")),
+    };
+    let Some(path) = downloaded_path else {
+        return Ok(None);
+    };
+
+    // SECURITY: same check as open_downloaded_content — the path must be inside
+    // the downloads directory to prevent rendering arbitrary local files. If the
+    // file was moved or deleted, canonicalize fails — return None so the frontend
+    // can offer a redownload button instead of erroring out.
+    let canonical = match std::fs::canonicalize(&path) {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
+    let downloads_base = std::fs::canonicalize(&state.config.storage.downloads_dir)
+        .map_err(|e| format!("Downloads dir error: {e}"))?;
+    if !canonical.starts_with(&downloads_base) {
+        return Err("Security: file is not in downloads directory".into());
+    }
+
+    Ok(Some(path))
+}
+
+/// Return true if the current wallet purchased this content (based on the `purchases` DB).
+/// Used by the frontend to distinguish "not owned" from "owned but file missing".
+#[tauri::command]
+pub async fn has_purchased_content(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<bool, String> {
+    let wallet = state.wallet_address.lock().await;
+    let Some(buyer) = wallet.as_ref().cloned() else {
+        return Ok(false);
+    };
+    drop(wallet);
+
+    let db = state.db.lock().await;
+    let count: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM purchases WHERE content_id = ?1 AND buyer = ?2",
+            rusqlite::params![&content_id, &buyer],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    Ok(count > 0)
+}
+
+/// Re-download content the viewer previously purchased but has since moved or deleted.
+/// Looks up the content hash + publisher from the DB and re-runs the P2P fetch + export.
+/// Returns the new local path on success.
+#[tauri::command]
+pub async fn redownload_content(
+    state: State<'_, AppState>,
+    content_id: String,
+) -> Result<String, String> {
+    let wallet = state.wallet_address.lock().await;
+    let buyer = wallet.as_ref().ok_or("No wallet connected")?.clone();
+    drop(wallet);
+
+    // Verify the wallet actually owns this content
+    {
+        let db = state.db.lock().await;
+        let count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM purchases WHERE content_id = ?1 AND buyer = ?2",
+                rusqlite::params![&content_id, &buyer],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if count == 0 {
+            return Err("You haven't purchased this content.".into());
+        }
+    }
+
+    // Look up content details from the content table — same fields used by confirm_purchase
+    let (content_hash_str, publisher_node_id_opt, publisher_relay_url_opt, filename_opt) = {
+        let db = state.db.lock().await;
+        let row = db
+            .conn()
+            .query_row(
+                "SELECT content_hash, publisher_node_id, publisher_relay_url, filename
+                 FROM content WHERE content_id = ?1",
+                rusqlite::params![&content_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .map_err(|e| format!("Content not found: {e}"))?;
+        (
+            row.0,
+            row.1.filter(|s| !s.is_empty()),
+            row.2.filter(|s| !s.is_empty()),
+            row.3.filter(|s| !s.is_empty()),
+        )
+    };
+
+    let content_hash_bytes = parse_content_hash_bytes(&content_hash_str)?;
+
+    let downloads_dir = Path::new(&state.config.storage.downloads_dir);
+    std::fs::create_dir_all(downloads_dir)
+        .map_err(|e| format!("Failed to create downloads dir: {e}"))?;
+
+    let known_filename = filename_opt
+        .as_deref()
+        .and_then(|f| Path::new(f).file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|f| Path::new(f).extension().map_or(false, |e| e != "bin"));
+    let hash_prefix = alloy::hex::encode(&content_hash_bytes[..8]);
+    let temp_filename = format!("{}.bin", hash_prefix);
+    let output_path = downloads_dir.join(known_filename.as_deref().unwrap_or(&temp_filename));
+
+    let (blobs_client, our_node_id_str) = {
+        let guard = state.ensure_iroh().await?;
+        let node = guard.as_ref().unwrap();
+        (node.blobs_client(), node.node_id().to_string())
+    };
+    let content_mgr = ContentManager::new(blobs_client);
+
+    let already_local = content_mgr.has_blob(&content_hash_bytes).await.unwrap_or(false);
+    let is_self = publisher_node_id_opt.as_deref() == Some(our_node_id_str.as_str());
+
+    if !already_local && !is_self {
+        let node_id_str = publisher_node_id_opt
+            .as_deref()
+            .ok_or("Publisher node ID not available — cannot redownload")?;
+        let node_id: iroh::NodeId = node_id_str
+            .parse()
+            .map_err(|e| format!("Invalid publisher node ID: {e}"))?;
+        let mut node_addr = iroh::NodeAddr::from(node_id);
+        if let Some(relay_url) = publisher_relay_url_opt.as_deref() {
+            if let Ok(url) = relay_url.parse() {
+                node_addr = node_addr.with_relay_url(url);
+            }
+        }
+        content_mgr
+            .download_from(&content_hash_bytes, node_addr)
+            .await
+            .map_err(|e| format!("P2P download failed: {e}"))?;
+    }
+
+    // Export (re-hashes and verifies — see content.rs)
+    if !output_path.exists() {
+        content_mgr
+            .export_blob(&content_hash_bytes, &output_path)
+            .await
+            .map_err(|e| format!("Export failed: {e}"))?;
+    }
+
+    let download_path_str = output_path.to_string_lossy().into_owned();
+    {
+        let db = state.db.lock().await;
+        db.conn()
+            .execute(
+                "UPDATE purchases SET downloaded_path = ?1
+                 WHERE content_id = ?2 AND buyer = ?3",
+                rusqlite::params![&download_path_str, &content_id, &buyer],
+            )
+            .map_err(|e| format!("DB update failed: {e}"))?;
+    }
+    info!("Redownload complete: {}", download_path_str);
+    Ok(download_path_str)
+}
+
 /// Open a downloaded content file with the OS default application.
 /// Returns the file path that was opened.
 #[tauri::command]
@@ -747,13 +942,32 @@ pub async fn tip_content(
 }
 
 /// Confirm a tip transaction. The frontend calls this after the tx is confirmed on-chain.
+/// Records the tip in the local DB so it shows up in Transaction History.
 #[tauri::command]
 pub async fn confirm_tip(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
     content_id: String,
     tx_hash: String,
+    tip_amount_eth: String,
 ) -> Result<(), String> {
-    info!("Tip confirmed: content={}, tx={}", content_id, tx_hash);
+    info!("Tip confirmed: content={}, tx={}, amount={} ETH", content_id, tx_hash, tip_amount_eth);
+
+    let tipper = state.wallet_address.lock().await.as_ref().cloned();
+    let tip_wei = crate::commands::types::parse_token_amount(&tip_amount_eth)
+        .unwrap_or(alloy::primitives::U256::ZERO);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    if let Some(addr) = tipper {
+        let db = state.db.lock().await;
+        let _ = db.conn().execute(
+            "INSERT OR REPLACE INTO tips_sent (tx_hash, content_id, tipper, amount_wei, tipped_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![&tx_hash, &content_id, &addr, &tip_wei.to_string(), now],
+        );
+    }
     Ok(())
 }
 

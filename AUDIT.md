@@ -23,6 +23,7 @@
 **Phase 6 scope:** Frontend audit (clean), metadata DoS, integer casts, upgrade script safety, SDK validation.
 **Phase 7 scope:** cancelListing griefing, collection/moderation hardening, deep link validation, DRY cleanup, production readiness, cross-platform fixes.
 **Phase 8 scope:** Free content (`MIN_PRICE=0`), `tipContent()` function, reentrancy protection, tipping split math safety.
+**Phase 9 scope:** P2P architecture review (iroh permissionless blob access, gossip ETH address exposure, node ID stability), localasset symlink traversal, BLAKE3 hash verification on download.
 
 ---
 
@@ -689,6 +690,39 @@ New `tipContent(bytes32 contentId)` function applies the same 85/2.5/12.5 split 
 - `test_MultipleTipsAccumulate` — additive buyerReward
 - `test_ReentrantTipBlocked` — reentrancy via malicious receive() blocked by nonReentrant
 - `test_UpdateContentToFreePrice` — price can be updated to 0
+
+### Phase 9 Findings (P2P + Desktop Hardening)
+
+#### MEDIUM-09b: `localasset://` symlink traversal
+**File:** `app/src-tauri/src/lib.rs:155-168`
+**Status:** FIXED
+The custom URI scheme handler used `std::fs::canonicalize()` to resolve and validate paths, but symlinks were followed before the "inside app data dir" check. A symlink dropped in the app data dir pointing to e.g. `C:\Windows\System32` could exfiltrate local files.
+**Fix:** Reject all symlinks via `std::fs::symlink_metadata()` before canonicalize. The app never writes symlinks, so this is a safe blanket reject.
+
+#### INFO-12: BLAKE3 hash verification after blob export (defense-in-depth)
+**File:** `crates/ara-p2p/src/content.rs:62-110` (`export_blob`)
+**Status:** FIXED
+Iroh's blob protocol verifies downloaded chunks against the BAO tree during transport, so a malicious seeder cannot forge bytes that hash to the expected content ID. This is a belt-and-suspenders post-export check: after exporting a blob to disk, re-read the file and verify BLAKE3(bytes) == expected_hash. If mismatch, the file is deleted and the export returns an error. Catches local storage corruption and any hypothetical export-layer bug that could slip past transport verification.
+
+#### INFO-13: Iroh blob protocol is permissionless (architectural)
+**File:** `crates/ara-p2p/src/node.rs`, `crates/ara-p2p/src/content.rs`
+**Status:** ACCEPTED (inherent design)
+Iroh blob transfer is permissionless by design (like BitTorrent): any peer that knows a BLAKE3 content hash can download the blob from any seeder, regardless of purchase status. The on-chain purchase gate is orthogonal. Content encryption was explicitly deferred during Phase 5 (see CLAUDE.md "Known Issues / Gotchas"). For genuinely private content, creators must encrypt before publishing and manage key distribution themselves. Consider post-v1 work: add a symmetric-encryption layer keyed off the purchase signature.
+
+#### INFO-14: Gossip messages broadcast Ethereum addresses in plaintext
+**File:** `app/src-tauri/src/gossip_actor.rs` (`SeederIdentity`, `DeliveryReceipt`)
+**Status:** ACCEPTED (known exposure, UX warning deferred)
+`SeederIdentity` messages broadcast `eth_address` to all subscribers of a content's gossip topic. `DeliveryReceipt` messages include both `buyer_eth_address` and `seeder_eth_address`. Any peer that knows a content hash can join the topic and observe every participant's address. This is a known trade-off: the marketplace needs the binding between iroh NodeId and Ethereum address to pay out rewards. Mitigations for future consideration: commit-reveal schemes for seeder identity, or zero-knowledge delivery proofs that reveal neither buyer nor seeder publicly.
+
+#### INFO-15: iroh NodeId is stable across restarts
+**File:** `crates/ara-p2p/src/node.rs:49-55`
+**Status:** ACCEPTED (required for seeder discovery)
+Each node persists its secret key so its NodeId stays stable. This is required so gossip peers can reliably reconnect. Side effect: network observers can build a long-term graph of which NodeId seeds which content. Not fixable without breaking seeder discovery. Future consideration: optional NodeId rotation with a short grace period.
+
+**Fixed files summary (Phase 9)**:
+- `app/src-tauri/src/lib.rs` — symlink check
+- `crates/ara-p2p/src/content.rs` — post-export hash verification
+- `crates/ara-p2p/Cargo.toml` — added `blake3` dep
 
 ## Contracts Audited
 

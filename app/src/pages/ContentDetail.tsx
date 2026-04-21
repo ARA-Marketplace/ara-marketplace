@@ -15,6 +15,9 @@ import {
   getPreviewAsset,
   openDownloadedContent,
   openContentFolder,
+  getOwnedContentPath,
+  hasPurchasedContent,
+  redownloadContent,
   getEditionInfo,
   getResaleListings,
   buyResale,
@@ -137,6 +140,27 @@ function ContentDetail() {
   const [tipStep, setTipStep] = useState<"idle" | "signing" | "confirming" | "done">("idle");
   const [tipError, setTipError] = useState<string | null>(null);
 
+  // Owned content state — set to a localasset:// URL when the viewer owns and has downloaded this content
+  const [ownedSrc, setOwnedSrc] = useState<string | null>(null);
+  // True if the viewer purchased this content at some point (independent of whether the file is still on disk)
+  const [ownsContent, setOwnsContent] = useState(false);
+  const [redownloadStep, setRedownloadStep] = useState<"idle" | "running">("idle");
+  const [redownloadError, setRedownloadError] = useState<string | null>(null);
+
+  const handleRedownload = async () => {
+    if (!content) return;
+    setRedownloadError(null);
+    setRedownloadStep("running");
+    try {
+      const newPath = await redownloadContent(content.content_id);
+      setOwnedSrc(convertFileSrc(newPath, "localasset"));
+    } catch (e: unknown) {
+      setRedownloadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRedownloadStep("idle");
+    }
+  };
+
   const isFreeContent = content && (content.price_eth === "0" || content.price_eth === "0.0");
 
   const handleTip = async () => {
@@ -149,7 +173,7 @@ function ContentDetail() {
       const txs = await tipContent({ contentId: content.content_id, tipAmountEth: tipAmount });
       const txHash = await signAndSendTransactions(walletProvider, txs, () => {});
       setTipStep("confirming");
-      await confirmTip({ contentId: content.content_id, txHash });
+      await confirmTip({ contentId: content.content_id, txHash, tipAmountEth: tipAmount });
       setTipStep("done");
       setTipAmount("");
       setTimeout(() => setTipStep("idle"), 3000);
@@ -266,6 +290,26 @@ function ContentDetail() {
     address &&
     content?.creator &&
     address.toLowerCase() === content.creator.toLowerCase();
+
+  // Resolve owned content → localasset URL for inline playback. Re-runs when wallet
+  // changes or when a purchase completes (purchaseStep === "done"). Also tracks whether
+  // the viewer *purchased* the content (independent of file-on-disk), so we can offer
+  // a redownload button when the file has been moved or deleted.
+  useEffect(() => {
+    if (!content || !isConnected) { setOwnedSrc(null); setOwnsContent(false); return; }
+    let cancelled = false;
+    Promise.all([
+      getOwnedContentPath(content.content_id),
+      hasPurchasedContent(content.content_id),
+    ])
+      .then(([path, owns]) => {
+        if (cancelled) return;
+        setOwnsContent(owns);
+        setOwnedSrc(path ? convertFileSrc(path, "localasset") : null);
+      })
+      .catch(() => { if (!cancelled) { setOwnedSrc(null); setOwnsContent(false); } });
+    return () => { cancelled = true; };
+  }, [content, isConnected, address, purchaseStep]);
 
   const startEditing = () => {
     if (!content) return;
@@ -846,6 +890,46 @@ function ContentDetail() {
                 </div>
               </div>
 
+              {/* Inline player — shown whenever the viewer owns and has downloaded this content */}
+              {ownedSrc && content && (
+                <div className="mt-6">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-2">
+                    Your Content
+                  </p>
+                  {content.content_type === "video" ? (
+                    <video src={ownedSrc} controls className="w-full rounded-lg bg-black" />
+                  ) : content.content_type === "music" ? (
+                    <audio src={ownedSrc} controls className="w-full" />
+                  ) : content.content_type === "image" ? (
+                    <img src={ownedSrc} alt={content.title} className="max-h-[700px] w-auto mx-auto rounded-lg" />
+                  ) : content.content_type === "document" ? (
+                    <iframe
+                      src={ownedSrc}
+                      title={content.title}
+                      className="w-full h-[700px] rounded-lg border border-slate-200 dark:border-slate-800 bg-white"
+                    />
+                  ) : (
+                    <div className="card p-4 text-sm text-slate-600 dark:text-slate-400">
+                      This file type can't be played in the app. Use the buttons below to open it.
+                    </div>
+                  )}
+                  <div className="flex gap-2 mt-3">
+                    <button
+                      onClick={() => contentId && openDownloadedContent(decodeURIComponent(contentId))}
+                      className="btn-secondary text-xs px-3 py-1.5"
+                    >
+                      Open in default app
+                    </button>
+                    <button
+                      onClick={() => contentId && openContentFolder(decodeURIComponent(contentId))}
+                      className="btn-secondary text-xs px-3 py-1.5"
+                    >
+                      Show in folder
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Purchase section */}
               <div className="mt-6 space-y-3">
                 {purchaseError && (
@@ -931,6 +1015,31 @@ function ContentDetail() {
                 ) : isCreator ? (
                   <div className="alert-info">
                     You are the creator of this listing.
+                  </div>
+                ) : ownedSrc ? (
+                  <div className="alert-success">
+                    <p className="font-medium">You own this content.</p>
+                    <p className="text-xs mt-1 opacity-80">
+                      Play it above, or tip the creator below to show your support.
+                    </p>
+                  </div>
+                ) : ownsContent ? (
+                  <div className="alert-warning space-y-2">
+                    <p className="font-medium">File missing from disk.</p>
+                    <p className="text-xs opacity-80">
+                      You own this content, but the file can't be found — it may have been moved or deleted.
+                      Redownload to restore it from the P2P network.
+                    </p>
+                    <button
+                      onClick={handleRedownload}
+                      disabled={redownloadStep === "running"}
+                      className="btn-primary text-sm px-4 py-2"
+                    >
+                      {redownloadStep === "running" ? "Redownloading..." : "Redownload"}
+                    </button>
+                    {redownloadError && (
+                      <p className="text-xs text-red-500">{redownloadError}</p>
+                    )}
                   </div>
                 ) : isSoldOut ? (
                   <div className="alert-warning">

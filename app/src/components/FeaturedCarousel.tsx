@@ -37,7 +37,7 @@ export default function FeaturedCarousel() {
         <div className="relative group">
           <button
             onClick={() => scroll(-1)}
-            className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full bg-white/80 dark:bg-gray-800/80 shadow flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+            className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full bg-white/80 dark:bg-gray-800/80 shadow flex items-center justify-center invisible group-hover:visible transition-opacity pointer-events-none group-hover:pointer-events-auto"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -55,7 +55,7 @@ export default function FeaturedCarousel() {
           </div>
           <button
             onClick={() => scroll(1)}
-            className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full bg-white/80 dark:bg-gray-800/80 shadow flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+            className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full bg-white/80 dark:bg-gray-800/80 shadow flex items-center justify-center invisible group-hover:visible transition-opacity pointer-events-none group-hover:pointer-events-auto"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />

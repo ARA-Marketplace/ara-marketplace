@@ -4,7 +4,7 @@ import { useWeb3Modal, useWeb3ModalAccount } from "@web3modal/ethers/react";
 import { getDisplayName } from "../lib/tauri";
 import { useWalletStore } from "../store/walletStore";
 import {
-  IconStore, IconUpload, IconLibrary, IconChart, IconWallet,
+  IconStore, IconUpload, IconLibrary, IconChart, IconWallet, IconUsers,
   IconSun, IconMoon, IconChevronLeft, IconChevronRight,
 } from "./Icons";
 import AraLogo from "../assets/AraLogo";
@@ -18,6 +18,7 @@ interface NavbarProps {
 
 const NAV_LINKS = [
   { path: "/",          label: "Marketplace", Icon: IconStore   },
+  { path: "/creators",  label: "Creators",    Icon: IconUsers   },
   { path: "/publish",   label: "Publish",     Icon: IconUpload  },
   { path: "/library",   label: "Library",     Icon: IconLibrary },
   { path: "/dashboard", label: "Dashboard",   Icon: IconChart   },

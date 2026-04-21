@@ -248,6 +248,67 @@ export async function openDownloadedContent(contentId: string): Promise<string> 
   return invoke("open_downloaded_content", { contentId });
 }
 
+/** Returns the local file path for owned+downloaded content, or null otherwise. */
+export async function getOwnedContentPath(contentId: string): Promise<string | null> {
+  return invoke("get_owned_content_path", { contentId });
+}
+
+/** Returns true if the current wallet purchased this content. */
+export async function hasPurchasedContent(contentId: string): Promise<boolean> {
+  return invoke("has_purchased_content", { contentId });
+}
+
+/** Re-download content the viewer owns but no longer has on disk. */
+export async function redownloadContent(contentId: string): Promise<string> {
+  return invoke("redownload_content", { contentId });
+}
+
+/** ARA/USD spot price, fetched from CoinGecko with a 5-minute backend cache. */
+export async function getAraPriceUsd(): Promise<number> {
+  return invoke("get_ara_price_usd");
+}
+
+export interface TopCreator {
+  address: string;
+  display_name: string | null;
+  content_count: number;
+  total_list_volume_eth: string;
+  total_sales_eth: string;
+  latest_publish_at: number;
+}
+
+export async function getTopCreators(limit?: number): Promise<TopCreator[]> {
+  return invoke("get_top_creators", { limit: limit ?? 20 });
+}
+
+export async function getCreatorContent(creator: string): Promise<ContentDetail[]> {
+  return invoke("get_creator_content", { creator });
+}
+
+export type TransactionKind = "reward" | "sale" | "purchase" | "tip_sent";
+
+export interface TransactionHistoryRow {
+  kind: TransactionKind;
+  content_id: string;
+  content_title: string;
+  amount_eth: string;
+  counterparty: string | null;
+  tx_hash: string | null;
+  timestamp: number;
+}
+
+export async function getTransactionHistory(params: {
+  kindFilter?: TransactionKind | "all";
+  limit?: number;
+  offset?: number;
+}): Promise<TransactionHistoryRow[]> {
+  return invoke("get_transaction_history", {
+    kindFilter: params.kindFilter ?? "all",
+    limit: params.limit ?? 30,
+    offset: params.offset ?? 0,
+  });
+}
+
 export async function openContentFolder(contentId: string): Promise<string> {
   return invoke("open_content_folder", { contentId });
 }
@@ -399,6 +460,7 @@ export async function tipContent(params: {
 export async function confirmTip(params: {
   contentId: string;
   txHash: string;
+  tipAmountEth: string;
 }): Promise<void> {
   return invoke("confirm_tip", params);
 }
@@ -744,6 +806,8 @@ export interface MarketplaceOverview {
   total_sales: number;
   total_collections: number;
   total_items: number;
+  total_staked_ara: string;
+  total_rewards_paid_eth: string;
 }
 
 export async function getPriceHistory(

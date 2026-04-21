@@ -438,6 +438,7 @@ function Publish() {
               <option value="game">Game</option>
               <option value="music">Music</option>
               <option value="video">Video</option>
+              <option value="image">Image</option>
               <option value="document">Document</option>
               <option value="software">Software</option>
               <option value="other">Other</option>

@@ -4,6 +4,7 @@ export type ContentType =
   | "game"
   | "music"
   | "video"
+  | "image"
   | "document"
   | "software"
   | "other";

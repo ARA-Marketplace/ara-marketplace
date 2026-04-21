@@ -12,6 +12,8 @@ import Dashboard from "./pages/Dashboard";
 import Wallet from "./pages/Wallet";
 import CollectionDetailPage from "./pages/CollectionDetail";
 import Collections from "./pages/Collections";
+import TopCreators from "./pages/TopCreators";
+import CreatorProfile from "./pages/CreatorProfile";
 
 // Apply saved theme before first render to avoid flash
 const savedTheme = localStorage.getItem("ara-theme") ?? "dark";
@@ -63,6 +65,8 @@ function App() {
         <Route path="/content/:contentId" element={<ContentDetail />} />
         <Route path="/collections" element={<Collections />} />
         <Route path="/collections/:collectionId" element={<CollectionDetailPage />} />
+        <Route path="/creators" element={<TopCreators />} />
+        <Route path="/creator/:address" element={<CreatorProfile />} />
         <Route path="/publish" element={<Publish />} />
         <Route path="/library" element={<Library />} />
         <Route path="/dashboard" element={<Dashboard />} />

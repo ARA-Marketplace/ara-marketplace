@@ -19,6 +19,11 @@ export const CATEGORIES_BY_TYPE: Record<ContentType, string[]> = {
     "Sci-Fi", "Action", "Sports", "Nature", "Travel", "Cooking",
     "Gaming", "Livestream", "Behind the Scenes",
   ],
+  image: [
+    "Photography", "Digital Art", "Illustration", "3D Render",
+    "Stock Photo", "NFT Art", "Meme", "Screenshot", "Concept Art",
+    "Portrait", "Landscape", "Abstract", "Street", "Macro", "Other",
+  ],
   document: [
     "eBook", "Research Paper", "Tutorial", "Guide", "Whitepaper",
     "Magazine", "Newsletter", "Comic", "Manga", "Technical Manual",

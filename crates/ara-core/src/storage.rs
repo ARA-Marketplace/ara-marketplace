@@ -271,6 +271,20 @@ impl Database {
             .conn
             .execute("ALTER TABLE content ADD COLUMN payment_token TEXT", []);
 
+        // Tips sent by the local wallet. Recorded in confirm_tip so Transaction
+        // History can show tipping activity alongside purchases, rewards, and sales.
+        self.conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS tips_sent (
+                tx_hash TEXT PRIMARY KEY,
+                content_id TEXT NOT NULL,
+                tipper TEXT NOT NULL,
+                amount_wei TEXT NOT NULL,
+                tipped_at INTEGER NOT NULL
+            );
+            ",
+        )?;
+
         Ok(())
     }
 

@@ -154,6 +154,16 @@ pub fn run() {
             let path_encoded = request.uri().path().trim_start_matches('/');
             let path = percent_decode(path_encoded);
 
+            // SECURITY: Reject symlinks outright. A symlink inside app_data_dir could
+            // point outside (e.g. to C:\Windows) and canonicalize would happily follow
+            // it. The app never writes symlinks itself, so this is a safe blanket reject.
+            if let Ok(meta) = std::fs::symlink_metadata(&path) {
+                if meta.file_type().is_symlink() {
+                    tracing::warn!("localasset:// rejected symlink: {}", path);
+                    return forbidden();
+                }
+            }
+
             // SECURITY: Canonicalize the requested path and verify it is inside
             // the app data directory. This prevents path traversal attacks
             // (e.g. localasset://../../Windows/System32/config/SAM).
@@ -242,6 +252,8 @@ pub fn run() {
             commands::content::confirm_update_content,
             commands::content::get_my_content,
             commands::content::get_published_content,
+            commands::content::get_top_creators,
+            commands::content::get_creator_content,
             commands::content::delist_content,
             commands::content::confirm_delist,
             commands::content::update_content_file,
@@ -258,6 +270,10 @@ pub fn run() {
             commands::marketplace::confirm_purchase,
             commands::marketplace::get_library,
             commands::marketplace::open_downloaded_content,
+            commands::marketplace::get_owned_content_path,
+            commands::marketplace::has_purchased_content,
+            commands::marketplace::redownload_content,
+            commands::network::get_ara_price_usd,
             commands::marketplace::open_content_folder,
             commands::marketplace::broadcast_delivery_receipt,
             commands::marketplace::get_marketplace_address,
@@ -284,6 +300,7 @@ pub fn run() {
             commands::staking::confirm_claim_rewards,
             commands::staking::get_reward_history,
             commands::staking::get_reward_pipeline,
+            commands::staking::get_transaction_history,
             commands::staking::get_supported_tokens,
             commands::tx::wait_for_transaction,
             commands::sync::sync_content,
