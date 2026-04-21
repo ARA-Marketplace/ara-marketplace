@@ -9,7 +9,7 @@ const projectId =
 // Change to 1 when deploying to mainnet.
 const activeChainId = Number(import.meta.env.VITE_CHAIN_ID) || 11155111;
 
-const chains = [
+const allChains = [
   {
     chainId: 1,
     name: "Ethereum",
@@ -26,7 +26,13 @@ const chains = [
   },
 ];
 
-const defaultChain = chains.find((c) => c.chainId === activeChainId) ?? chains[0];
+// Put the active chain first — Web3Modal uses chains[0] as the default
+// when no explicit defaultChain is set. Passing a top-level `defaultChain`
+// triggers "Cannot set properties of undefined" in @web3modal/ethers 3.5.x.
+const chains = [
+  allChains.find((c) => c.chainId === activeChainId) ?? allChains[0],
+  ...allChains.filter((c) => c.chainId !== activeChainId),
+];
 
 const metadata = {
   name: "Ara Marketplace",
@@ -39,6 +45,5 @@ createWeb3Modal({
   ethersConfig: defaultConfig({ metadata }),
   chains,
   projectId,
-  defaultChain,
   enableAnalytics: false,
 });

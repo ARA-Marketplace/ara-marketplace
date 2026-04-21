@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.7"
+version = "1.0.8"
 edition = "2021"
 license = "BUSL-1.1"
 repository = "https://github.com/ARA-Marketplace/ara-marketplace"
