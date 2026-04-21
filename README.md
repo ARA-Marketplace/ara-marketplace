@@ -8,7 +8,7 @@ Ara is a decentralized content marketplace where creators publish anything — m
 
 ## Download
 
-Desktop apps for Windows, macOS, and Linux are available from the [Releases](https://github.com/AraBlocks/ara-marketplace/releases) page.
+Desktop apps for Windows, macOS, and Linux are available from the [Releases](https://github.com/ARA-Marketplace/ara-marketplace/releases) page.
 
 | Platform | Format |
 |----------|--------|
@@ -140,21 +140,21 @@ What if a creator goes dark and never distributes rewards? After **30 days** fro
 
 **Ubuntu/Debian:**
 ```bash
-git clone https://github.com/AraBlocks/ara-marketplace.git
+git clone https://github.com/ARA-Marketplace/ara-marketplace.git
 cd ara-marketplace
 bash scripts/setup-ubuntu.sh
 ```
 
 **macOS:**
 ```bash
-git clone https://github.com/AraBlocks/ara-marketplace.git
+git clone https://github.com/ARA-Marketplace/ara-marketplace.git
 cd ara-marketplace
 bash scripts/setup-macos.sh
 ```
 
 **Windows** (Administrator PowerShell):
 ```powershell
-git clone https://github.com/AraBlocks/ara-marketplace.git
+git clone https://github.com/ARA-Marketplace/ara-marketplace.git
 cd ara-marketplace
 powershell -ExecutionPolicy Bypass -File scripts\setup-windows.ps1
 ```

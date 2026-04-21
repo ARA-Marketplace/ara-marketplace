@@ -1,6 +1,6 @@
 # Ara SDK
 
-Programmatic Rust SDK for the [Ara Marketplace](https://github.com/AraBlocks/ara-marketplace) — publish, purchase, stake, and manage content on Ethereum without the desktop app.
+Programmatic Rust SDK for the [Ara Marketplace](https://github.com/ARA-Marketplace/ara-marketplace) — publish, purchase, stake, and manage content on Ethereum without the desktop app.
 
 ## Installation
 

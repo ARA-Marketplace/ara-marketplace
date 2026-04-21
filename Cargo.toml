@@ -12,7 +12,7 @@ members = [
 version = "1.0.7"
 edition = "2021"
 license = "BUSL-1.1"
-repository = "https://github.com/AraBlocks/ara-marketplace"
+repository = "https://github.com/ARA-Marketplace/ara-marketplace"
 
 [workspace.dependencies]
 # Async runtime
