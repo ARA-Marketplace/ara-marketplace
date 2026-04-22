@@ -1,5 +1,13 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import type { CollectionInfo, CollectionRanking } from "../lib/tauri";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import {
+  getCollectionItems,
+  getContentDetail,
+  getPreviewAsset,
+  type CollectionInfo,
+  type CollectionRanking,
+} from "../lib/tauri";
 import AddressDisplay from "./AddressDisplay";
 
 type CardData = CollectionInfo | CollectionRanking;
@@ -11,17 +19,44 @@ interface CollectionCardProps {
 export default function CollectionCard({ collection }: CollectionCardProps) {
   const id = collection.collection_id;
   const floorPrice = "floor_price_eth" in collection ? collection.floor_price_eth : null;
+  const [fallbackBanner, setFallbackBanner] = useState<string | null>(null);
+
+  // If no explicit banner, load the first item's preview image as a fallback thumbnail.
+  useEffect(() => {
+    if (collection.banner_uri || collection.item_count === 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const itemIds = await getCollectionItems(id);
+        if (cancelled || itemIds.length === 0) return;
+        const detail = await getContentDetail(itemIds[0]);
+        const meta = JSON.parse(detail.metadata_uri);
+        if (!meta.main_preview_image?.hash) return;
+        const path = await getPreviewAsset({
+          contentId: detail.content_id,
+          previewHash: meta.main_preview_image.hash,
+          filename: meta.main_preview_image.filename,
+        });
+        if (!cancelled) setFallbackBanner(convertFileSrc(path, "localasset"));
+      } catch {
+        /* ignore — gradient fallback will show */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [id, collection.banner_uri, collection.item_count]);
+
+  const banner = collection.banner_uri || fallbackBanner;
 
   return (
     <Link
       to={`/collections/${id}`}
-      className="card card-hover overflow-hidden group"
+      className="block overflow-hidden rounded-xl bg-white dark:bg-slate-900 hover:ring-2 hover:ring-ara-500/40 hover:shadow-lg hover:shadow-ara-500/5 transition-all duration-200 group"
     >
       {/* Banner */}
       <div className="h-28 bg-gradient-to-br from-ara-700/40 via-purple-700/40 to-indigo-800/40 relative overflow-hidden">
-        {collection.banner_uri ? (
+        {banner ? (
           <img
-            src={collection.banner_uri}
+            src={banner}
             alt=""
             className="w-full h-full object-cover"
             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}

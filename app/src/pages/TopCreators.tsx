@@ -1,12 +1,65 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getTopCreators, type TopCreator } from "../lib/tauri";
-import AddressDisplay from "../components/AddressDisplay";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import {
+  getContentDetail,
+  getPreviewAsset,
+  getTopCreators,
+  type TopCreator,
+} from "../lib/tauri";
 
 function fmtDate(unix: number): string {
   if (unix === 0) return "—";
   if (unix < 1_000_000_000) return `Block ${unix}`;
   return new Date(unix * 1000).toLocaleDateString();
+}
+
+/** Circular avatar that lazily loads the creator's most recent content preview. */
+function CreatorAvatar({ creator }: { creator: TopCreator }) {
+  const [src, setSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!creator.avatar_content_id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const detail = await getContentDetail(creator.avatar_content_id!);
+        const meta = JSON.parse(detail.metadata_uri);
+        if (!meta.main_preview_image?.hash) return;
+        const path = await getPreviewAsset({
+          contentId: detail.content_id,
+          previewHash: meta.main_preview_image.hash,
+          filename: meta.main_preview_image.filename,
+        });
+        if (!cancelled) setSrc(convertFileSrc(path, "localasset"));
+      } catch {
+        /* gradient fallback */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [creator.avatar_content_id]);
+
+  // Deterministic fallback gradient keyed on the address, so every creator
+  // has a distinct "color" even without a published preview yet.
+  const hashColor = (addr: string) => {
+    let h = 0;
+    for (let i = 0; i < addr.length; i++) h = (h << 5) - h + addr.charCodeAt(i);
+    return Math.abs(h) % 360;
+  };
+  const hue = hashColor(creator.address);
+
+  return (
+    <div
+      className="w-10 h-10 rounded-full overflow-hidden flex-shrink-0 bg-gradient-to-br"
+      style={
+        src
+          ? undefined
+          : { background: `linear-gradient(135deg, hsl(${hue} 70% 45%), hsl(${(hue + 40) % 360} 65% 35%))` }
+      }
+    >
+      {src && <img src={src} alt="" className="w-full h-full object-cover" />}
+    </div>
+  );
 }
 
 export default function TopCreators() {
@@ -83,16 +136,19 @@ export default function TopCreators() {
                   <td className="px-4 py-3">
                     <Link
                       to={`/creator/${c.address}`}
-                      className="flex flex-col hover:text-ara-500 transition-colors"
+                      className="flex items-center gap-3 hover:text-ara-500 transition-colors"
                     >
-                      <span className="font-medium text-slate-900 dark:text-slate-100">
-                        {c.display_name ?? <AddressDisplay address={c.address} />}
-                      </span>
-                      {c.display_name && (
-                        <span className="text-[10px] text-slate-400 font-mono">
-                          {c.address.slice(0, 6)}…{c.address.slice(-4)}
+                      <CreatorAvatar creator={c} />
+                      <div className="flex flex-col">
+                        <span className="font-medium text-slate-900 dark:text-slate-100 group-hover:text-ara-500">
+                          {c.display_name ?? `${c.address.slice(0, 6)}…${c.address.slice(-4)}`}
                         </span>
-                      )}
+                        {c.display_name && (
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {c.address.slice(0, 6)}…{c.address.slice(-4)}
+                          </span>
+                        )}
+                      </div>
                     </Link>
                   </td>
                   <td className="px-4 py-3 text-right text-slate-900 dark:text-slate-200">

@@ -402,6 +402,12 @@ function ContentDetail() {
         txHash = await signAndSendTransactions(walletProvider, result.transactions);
       }
 
+      // The edition is minted on-chain the moment the tx confirms. Refresh the count
+      // immediately so "0/3 minted" updates to "1/3 minted" even if the subsequent P2P
+      // download stalls (publisher offline, slow peers, etc.). Safe to fire and forget.
+      const decodedIdForRefresh = decodeURIComponent(contentId);
+      getEditionInfo(decodedIdForRefresh).then(setEdition).catch(() => {});
+
       // Start listening for download progress before confirming (which triggers download)
       const unlisten = await listen<{ content_id: string; bytes_received: number; total_bytes: number }>(
         "download-progress",
@@ -1022,6 +1028,31 @@ function ContentDetail() {
                     <p className="text-xs mt-1 opacity-80">
                       Play it above, or tip the creator below to show your support.
                     </p>
+                  </div>
+                ) : ownsContent && purchaseStep !== "idle" ? (
+                  // A purchase is actively running — the `purchases` row has been inserted
+                  // but `downloaded_path` isn't populated yet. Show download progress instead
+                  // of the "File missing" redownload CTA (which would be misleading here).
+                  <div className="alert-info space-y-2">
+                    <p className="font-medium">
+                      {purchaseStep === "confirming"
+                        ? downloadProgress ? "Downloading content…" : "Preparing download…"
+                        : STEP_LABELS[purchaseStep]}
+                    </p>
+                    {purchaseStep === "confirming" && downloadProgress && downloadProgress.total > 0 && (
+                      <div>
+                        <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2 overflow-hidden">
+                          <div
+                            className="bg-ara-500 h-2 rounded-full transition-all duration-300"
+                            style={{ width: `${Math.min(100, (downloadProgress.received / downloadProgress.total) * 100).toFixed(1)}%` }}
+                          />
+                        </div>
+                        <p className="text-xs text-slate-500 mt-1">
+                          {(downloadProgress.received / 1024 / 1024).toFixed(2)} /{" "}
+                          {(downloadProgress.total / 1024 / 1024).toFixed(2)} MB
+                        </p>
+                      </div>
+                    )}
                   </div>
                 ) : ownsContent ? (
                   <div className="alert-warning space-y-2">

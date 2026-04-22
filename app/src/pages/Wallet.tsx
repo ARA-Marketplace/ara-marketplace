@@ -18,7 +18,6 @@ import {
   removeDisplayName,
   confirmRemoveName,
   getTransactionHistory,
-  type RewardHistoryItem,
   type RewardHistoryResponse,
   type RewardPipelineResponse,
   type TransactionHistoryRow,
@@ -26,7 +25,6 @@ import {
 } from "../lib/tauri";
 import { signAndSendTransactions } from "../lib/transactions";
 
-const PAGE_SIZE = 10;
 
 /** Returns true if the value is a non-zero ETH string (handles null/undefined/0/0.0). */
 function hasValue(v: string | undefined | null): boolean {
@@ -64,12 +62,8 @@ function Wallet() {
   const [stakeMode, setStakeMode] = useState<"stake" | "unstake">("stake");
   const [stakeAmount, setStakeAmount] = useState("");
 
-  // Reward history state
+  // Reward summary — used for the lifetime earnings card, no longer rendered as a table
   const [rewardHistory, setRewardHistory] = useState<RewardHistoryResponse | null>(null);
-  const [historyItems, setHistoryItems] = useState<RewardHistoryItem[]>([]);
-  const [historyOffset, setHistoryOffset] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
-  const [loadingHistory, setLoadingHistory] = useState(false);
 
   // Transaction history state
   const [txHistory, setTxHistory] = useState<TransactionHistoryRow[]>([]);
@@ -99,32 +93,19 @@ function Wallet() {
     }
   }, []);
 
-  const fetchRewardHistory = useCallback(async (offset: number, append: boolean) => {
-    setLoadingHistory(true);
+  // Fetch just the reward summary (totals). The per-row list is now shown in
+  // the unified Transaction History, so we don't paginate here.
+  const fetchRewardHistory = useCallback(async () => {
     try {
-      const data = await getRewardHistory(PAGE_SIZE, offset);
-      setRewardHistory(data);
-      if (append) {
-        setHistoryItems((prev) => [...prev, ...data.items]);
-      } else {
-        setHistoryItems(data.items);
-      }
-      setHasMore(data.items.length >= PAGE_SIZE);
+      setRewardHistory(await getRewardHistory(1, 0));
     } catch {
       // Silently fail — history is supplementary
-    } finally {
-      setLoadingHistory(false);
     }
   }, []);
 
   useEffect(() => {
-    if (address) {
-      setHistoryOffset(0);
-      fetchRewardHistory(0, false);
-    } else {
-      setRewardHistory(null);
-      setHistoryItems([]);
-    }
+    if (address) fetchRewardHistory();
+    else setRewardHistory(null);
   }, [address, fetchRewardHistory]);
 
   // Transaction history — unified feed of rewards, purchases, sales, tips-sent
@@ -224,11 +205,9 @@ function Wallet() {
     if (address) {
       refreshBalances();
       fetchPipeline();
-      setHistoryOffset(0);
-      // Sync from chain, then fetch history (so newly claimed rewards appear)
       syncRewards()
         .catch(() => {})
-        .finally(() => fetchRewardHistory(0, false));
+        .finally(() => fetchRewardHistory());
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -239,12 +218,12 @@ function Wallet() {
       if (address) {
         refreshBalances();
         fetchPipeline();
-        fetchRewardHistory(0, false);
-        setHistoryOffset(0);
+        fetchRewardHistory();
+        fetchTxHistory(txFilter);
       }
     });
     return () => { unlisten.then((f) => f()); };
-  }, [address, refreshBalances, fetchPipeline, fetchRewardHistory]);
+  }, [address, refreshBalances, fetchPipeline, fetchRewardHistory, fetchTxHistory, txFilter]);
 
   // Periodic refresh: pipeline queries on-chain data, so poll every 30s to catch
   // purchases of creator's content (which the background sync doesn't detect).
@@ -256,12 +235,6 @@ function Wallet() {
     }, 30_000);
     return () => clearInterval(interval);
   }, [address, refreshBalances, fetchPipeline]);
-
-  const handleLoadMore = () => {
-    const newOffset = historyOffset + PAGE_SIZE;
-    setHistoryOffset(newOffset);
-    fetchRewardHistory(newOffset, true);
-  };
 
   const handleStake = async () => {
     if (!stakeAmount) return;
@@ -312,9 +285,9 @@ function Wallet() {
       await Promise.all([
         refreshBalances(),
         fetchPipeline(),
-        fetchRewardHistory(0, false),
+        fetchRewardHistory(),
+        fetchTxHistory(txFilter),
       ]);
-      setHistoryOffset(0);
     } catch (e) {
       setCollectError(String(e));
       setCollectStatus(null);
@@ -680,82 +653,6 @@ function Wallet() {
             )}
           </div>
 
-          {/* Reward History */}
-          <div className="card overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500">
-                Reward History
-              </p>
-            </div>
-            {historyItems.length === 0 && !loadingHistory ? (
-              <div className="px-5 py-8 text-center text-sm text-slate-400 dark:text-slate-600">
-                No reward events yet. Rewards appear here after you collect.
-              </div>
-            ) : (
-              <table className="w-full text-sm">
-                <thead className="border-b border-slate-200 dark:border-slate-800">
-                  <tr>
-                    {["Content", "Amount", "Status", "Date", "Tx"].map((h) => (
-                      <th key={h} className="px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 text-left">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
-                  {historyItems.map((item, idx) => (
-                    <tr key={`${item.tx_hash ?? ""}-${idx}`} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                      <td className="px-4 py-2.5 text-slate-700 dark:text-slate-300 truncate max-w-[180px]">
-                        {item.content_title}
-                      </td>
-                      <td className="px-4 py-2.5 font-medium text-slate-900 dark:text-slate-100">
-                        {item.amount_eth} ETH
-                      </td>
-                      <td className="px-4 py-2.5">
-                        {item.claimed ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
-                            Claimed
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400">
-                            Claimable
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-2.5 text-slate-500 dark:text-slate-500 text-xs">
-                        {fmtDate(item.distributed_at)}
-                      </td>
-                      <td className="px-4 py-2.5 text-xs">
-                        {item.tx_hash ? (
-                          <a
-                            href={`https://sepolia.etherscan.io/tx/${item.tx_hash}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-ara-500 hover:underline"
-                          >
-                            {item.tx_hash.slice(0, 8)}…
-                          </a>
-                        ) : (
-                          <span className="text-slate-400">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-            {(hasMore || loadingHistory) && (
-              <div className="px-5 py-3 border-t border-slate-200 dark:border-slate-800 text-center">
-                <button
-                  onClick={handleLoadMore}
-                  disabled={loadingHistory}
-                  className="btn-ghost text-xs px-4 py-1.5"
-                >
-                  {loadingHistory ? "Loading…" : "Load More"}
-                </button>
-              </div>
-            )}
-          </div>
         </div>
       )}
 

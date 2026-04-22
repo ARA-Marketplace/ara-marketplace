@@ -9,8 +9,15 @@ use ara_p2p::content::ContentManager;
 use iroh_blobs::net_protocol::DownloadMode;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::Duration;
 use tauri::{Emitter, State};
-use tracing::info;
+use tracing::{info, warn};
+
+/// How long to wait for the P2P download before giving up. If no seeder responds within
+/// this window, we return an error so the UI can show the "File missing / Redownload"
+/// CTA instead of hanging the purchase indefinitely. The buyer's purchase is already
+/// recorded on-chain and in the `purchases` DB table at this point.
+const P2P_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Serialize, Deserialize)]
 pub struct ConfirmPurchaseResult {
@@ -337,23 +344,34 @@ pub async fn confirm_purchase(
 
             let app_handle = state.app_handle.clone();
             let progress_content_id = content_id.clone();
-            content_mgr
-                .download_with_progress(
-                    &content_hash_bytes,
-                    node_addr,
-                    DownloadMode::Queued,
-                    move |received, total| {
-                        let _ = app_handle.emit(
-                            "download-progress",
-                            serde_json::json!({
-                                "content_id": progress_content_id,
-                                "bytes_received": received,
-                                "total_bytes": total,
-                            }),
-                        );
-                    },
-                )
-                .await
+            let download_fut = content_mgr.download_with_progress(
+                &content_hash_bytes,
+                node_addr,
+                DownloadMode::Queued,
+                move |received, total| {
+                    let _ = app_handle.emit(
+                        "download-progress",
+                        serde_json::json!({
+                            "content_id": progress_content_id,
+                            "bytes_received": received,
+                            "total_bytes": total,
+                        }),
+                    );
+                },
+            );
+            match tokio::time::timeout(P2P_DOWNLOAD_TIMEOUT, download_fut).await {
+                Ok(r) => r,
+                Err(_) => {
+                    warn!(
+                        "P2P download timed out after {}s for {} — publisher likely offline",
+                        P2P_DOWNLOAD_TIMEOUT.as_secs(),
+                        content_id
+                    );
+                    Err(anyhow::anyhow!(
+                        "P2P download timed out — no seeders responded"
+                    ))
+                }
+            }
         } else {
             Err(anyhow::anyhow!("Publisher node ID not available"))
         };

@@ -2211,6 +2211,9 @@ pub struct TopCreator {
     /// Realized sales volume from all_purchases. Formatted as decimal ETH.
     pub total_sales_eth: String,
     pub latest_publish_at: i64,
+    /// Used to render an avatar: the creator's most-recent content item.
+    /// Frontend fetches the preview_asset for this content to show as the avatar.
+    pub avatar_content_id: Option<String>,
 }
 
 /// Return the top N creators by realized sales volume (all_purchases), falling back
@@ -2225,53 +2228,140 @@ pub async fn get_top_creators(
     let db = state.db.lock().await;
     let conn = db.conn();
 
+    // Step 1: pull raw per-content rows (creator, price_wei, created_at) and aggregate in
+    // Rust with U256. SQLite's SUM uses an i64 accumulator which silently overflows at
+    // ~9.22 ETH of aggregate wei per group — unacceptable for financial reporting.
+    // U256 summation in application code handles the full wei range correctly.
     let mut stmt = conn
         .prepare(
-            "SELECT LOWER(c.creator) AS creator,
-                    COUNT(DISTINCT c.content_id) AS content_count,
-                    COALESCE(SUM(CAST(c.price_wei AS INTEGER)), 0) AS list_vol,
-                    COALESCE((
-                        SELECT SUM(CAST(ap.price_paid_wei AS INTEGER))
-                        FROM all_purchases ap
-                        JOIN content cc ON cc.content_id = ap.content_id
-                        WHERE LOWER(cc.creator) = LOWER(c.creator)
-                    ), 0) AS sales_vol,
-                    COALESCE(MAX(c.created_at), 0) AS latest_at,
-                    (SELECT name FROM address_names WHERE LOWER(address) = LOWER(c.creator) LIMIT 1) AS display_name
-             FROM content c
-             WHERE c.active = 1
-             GROUP BY LOWER(c.creator)
-             ORDER BY sales_vol DESC, list_vol DESC, latest_at DESC
-             LIMIT ?1",
+            "SELECT LOWER(creator) AS creator_lower, price_wei, created_at
+             FROM content WHERE active = 1",
         )
-        .map_err(|e| format!("DB prepare: {e}"))?;
-
-    let rows = stmt
-        .query_map(rusqlite::params![limit], |row| {
+        .map_err(|e| format!("DB prepare (creators): {e}"))?;
+    let iter = stmt
+        .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, Option<String>>(5)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
             ))
         })
-        .map_err(|e| format!("DB query: {e}"))?;
+        .map_err(|e| format!("DB query (creators): {e}"))?;
+    #[derive(Default)]
+    struct CreatorAgg {
+        content_count: i64,
+        list_vol: alloy::primitives::U256,
+        latest_at: i64,
+    }
+    let mut by_creator: std::collections::HashMap<String, CreatorAgg> =
+        std::collections::HashMap::new();
+    for r in iter {
+        match r {
+            Ok((creator, price_wei_str, created_at)) => {
+                let price: alloy::primitives::U256 =
+                    price_wei_str.parse().unwrap_or(alloy::primitives::U256::ZERO);
+                let agg = by_creator.entry(creator).or_default();
+                agg.content_count += 1;
+                agg.list_vol += price;
+                if created_at > agg.latest_at {
+                    agg.latest_at = created_at;
+                }
+            }
+            Err(e) => warn!("get_top_creators row parse error: {e}"),
+        }
+    }
+    drop(stmt);
 
-    let mut out = Vec::new();
-    for r in rows.flatten() {
-        let list_wei: alloy::primitives::U256 = r.2.parse().unwrap_or(alloy::primitives::U256::ZERO);
-        let sales_wei: alloy::primitives::U256 = r.3.parse().unwrap_or(alloy::primitives::U256::ZERO);
+    info!("get_top_creators: {} unique creators in content table", by_creator.len());
+
+    // Step 2: per creator, look up realized sales (U256-summed) + display name.
+    let mut out: Vec<TopCreator> = Vec::with_capacity(by_creator.len());
+    for (
+        creator_lower,
+        CreatorAgg {
+            content_count,
+            list_vol,
+            latest_at,
+        },
+    ) in by_creator
+    {
+        // Realized sales volume: pull raw price_paid_wei values for this creator's content
+        // and sum with U256. Same overflow concern as the list-volume aggregation above.
+        let sales_wei: alloy::primitives::U256 = {
+            let mut sales_stmt = conn
+                .prepare(
+                    "SELECT ap.price_paid_wei
+                     FROM all_purchases ap
+                     JOIN content cc ON cc.content_id = ap.content_id
+                     WHERE LOWER(cc.creator) = ?1",
+                )
+                .map_err(|e| format!("DB prepare (sales): {e}"))?;
+            let sales_iter = sales_stmt
+                .query_map(rusqlite::params![&creator_lower], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|e| format!("DB query (sales): {e}"))?;
+            let mut total = alloy::primitives::U256::ZERO;
+            for r in sales_iter {
+                if let Ok(wei_str) = r {
+                    total += wei_str
+                        .parse::<alloy::primitives::U256>()
+                        .unwrap_or(alloy::primitives::U256::ZERO);
+                }
+            }
+            total
+        };
+
+        // Display name lookup
+        let display_name: Option<String> = conn
+            .query_row(
+                "SELECT name FROM address_names WHERE LOWER(address) = ?1 LIMIT 1",
+                rusqlite::params![&creator_lower],
+                |row| row.get(0),
+            )
+            .ok();
+
+        // Avatar source: the creator's most recently published content item that
+        // has a main_preview_image in its metadata. Frontend resolves the actual
+        // image via getPreviewAsset + metadata parse.
+        let avatar_content_id: Option<String> = conn
+            .query_row(
+                "SELECT content_id FROM content
+                 WHERE LOWER(creator) = ?1 AND active = 1
+                   AND metadata_uri LIKE '%main_preview_image%'
+                 ORDER BY created_at DESC LIMIT 1",
+                rusqlite::params![&creator_lower],
+                |row| row.get(0),
+            )
+            .ok();
+
         out.push(TopCreator {
-            address: r.0,
-            display_name: r.5,
-            content_count: r.1 as u32,
-            total_list_volume_eth: crate::commands::types::format_wei(list_wei),
+            address: creator_lower,
+            display_name,
+            content_count: content_count as u32,
+            total_list_volume_eth: crate::commands::types::format_wei(list_vol),
             total_sales_eth: crate::commands::types::format_wei(sales_wei),
-            latest_publish_at: r.4,
+            latest_publish_at: latest_at,
+            avatar_content_id,
         });
     }
+
+    // Sort by sales (realized), then list volume, then recency
+    out.sort_by(|a, b| {
+        let sa: f64 = a.total_sales_eth.parse().unwrap_or(0.0);
+        let sb: f64 = b.total_sales_eth.parse().unwrap_or(0.0);
+        if (sa - sb).abs() > f64::EPSILON {
+            return sb.partial_cmp(&sa).unwrap();
+        }
+        let la: f64 = a.total_list_volume_eth.parse().unwrap_or(0.0);
+        let lb: f64 = b.total_list_volume_eth.parse().unwrap_or(0.0);
+        if (la - lb).abs() > f64::EPSILON {
+            return lb.partial_cmp(&la).unwrap();
+        }
+        b.latest_publish_at.cmp(&a.latest_publish_at)
+    });
+    out.truncate(limit as usize);
+    info!("get_top_creators: returning {} creators", out.len());
     Ok(out)
 }
 

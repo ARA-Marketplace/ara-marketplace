@@ -4,15 +4,15 @@
 use alloy::primitives::{address, Address, FixedBytes};
 use ara_chain::{connect_http, ContractAddresses};
 
-/// Sepolia contract addresses (from config.rs defaults)
+/// Sepolia contract addresses (from config.rs defaults — 2026-04-01 deployment)
 fn test_addresses() -> ContractAddresses {
     ContractAddresses {
-        ara_token: address!("53720EcdDF71fE618c7A5aEc99ac2e958ad4dF99"),
-        staking: address!("fD41Ae37cD729b6a70e42641ea14187e213b29e6"),
-        registry: address!("d45ff950bBC1c823F66C4EbdF72De23Eb02e4831"),
-        marketplace: address!("D7992b6A863FBacE3BB58BFE5D31EAe580adF4E0"),
-        collections: address!("59453f1f12D10e4B4210fae8188d666011292997"),
-        name_registry: address!("DA5827A8659271C44174894bbA403FD264198C5d"),
+        ara_token: address!("A4c42cd49774d9B0af9C2D6BB88cf53b49b95b1b"),
+        staking: address!("16e1CA6619FF0555BAFc43dEC9595C39776A2B63"),
+        registry: address!("8C52B0b11cF5759312555ab1C6926e6Ce57297a0"),
+        marketplace: address!("a133F5eb0aE369D627B13F0e283ACDC763Fb48c4"),
+        collections: address!("606658d5935E788CccCDF9188308434130a7C671"),
+        name_registry: address!("5C451d9B613468D4212AE31b5F139E759dD992FA"),
         moderation: Address::ZERO,
     }
 }
@@ -66,6 +66,21 @@ async fn test_read_staking_info() {
         Ok(earned) => println!("Test wallet earned rewards: {} wei", earned),
         Err(e) => println!("earned() reverted (expected if never staked): {e}"),
     }
+}
+
+/// Regression test: both stats surfaced on the Dashboard must return real values
+/// (we previously had them silently failing to zero).
+#[tokio::test]
+#[ignore]
+async fn test_dashboard_chain_stats() {
+    let chain = connect_http(SEPOLIA_RPC, test_addresses()).unwrap();
+    let total_staked = chain.staking.total_staked().await
+        .expect("total_staked must succeed");
+    let total_rewards = chain.marketplace.total_rewards_claimed().await
+        .expect("total_rewards_claimed must succeed");
+    println!("Total staked: {} wei", total_staked);
+    println!("Total rewards claimed: {} wei", total_rewards);
+    assert!(total_staked > alloy::primitives::U256::ZERO, "total_staked should be > 0 with 4+ staker(s)");
 }
 
 #[tokio::test]

@@ -26,13 +26,30 @@ const allChains = [
   },
 ];
 
-// Put the active chain first — Web3Modal uses chains[0] as the default
-// when no explicit defaultChain is set. Passing a top-level `defaultChain`
-// triggers "Cannot set properties of undefined" in @web3modal/ethers 3.5.x.
-const chains = [
-  allChains.find((c) => c.chainId === activeChainId) ?? allChains[0],
-  ...allChains.filter((c) => c.chainId !== activeChainId),
-];
+const activeChain = allChains.find((c) => c.chainId === activeChainId) ?? allChains[0];
+
+// Expose ONLY the active chain to Web3Modal. If we include extra chains
+// (e.g., mainnet alongside Sepolia), WalletConnect can establish the session
+// on the wrong chain and then refuse to switch because the session was pinned
+// to the wrong chain at connect time. Restricting to one chain forces wallets
+// to connect on the right network up front.
+const chains = [activeChain];
+
+// One-time migration: clear stale Web3Modal state from v1.0.5/1.0.6 (which passed a
+// top-level `defaultChain` option). Without the sweep those caches produce
+// "Cannot set properties of undefined (setting 'defaultChain')" on startup. Gated
+// behind a version marker so subsequent sessions don't keep nuking user state —
+// e.g., signed-in wallet metadata that the current SDK version writes and reads.
+const MIGRATION_KEY = "ara.w3m_migrated_v1_0_9";
+if (typeof window !== "undefined" && !localStorage.getItem(MIGRATION_KEY)) {
+  try {
+    const stale = Object.keys(localStorage).filter(
+      (k) => k.startsWith("@w3m") || k.startsWith("wagmi.") || k === "W3M_RECENT_WALLET_DATA",
+    );
+    for (const k of stale) localStorage.removeItem(k);
+    localStorage.setItem(MIGRATION_KEY, "1");
+  } catch { /* ignore — localStorage may be disabled */ }
+}
 
 const metadata = {
   name: "Ara Marketplace",
@@ -42,7 +59,13 @@ const metadata = {
 };
 
 createWeb3Modal({
-  ethersConfig: defaultConfig({ metadata }),
+  // Pass defaultChainId via defaultConfig (the documented v3 API surface);
+  // this drives the Coinbase-wallet provider's initial chain selection.
+  ethersConfig: defaultConfig({
+    metadata,
+    defaultChainId: activeChainId,
+    rpcUrl: activeChain.rpcUrl,
+  }),
   chains,
   projectId,
   enableAnalytics: false,

@@ -24,6 +24,31 @@ function fmtAra(val: string): string {
   return n.toFixed(2);
 }
 
+function fmtUsdPrice(n: number): string {
+  if (n <= 0) return "—";
+  if (n >= 1) return `$${n.toFixed(2)}`;
+  if (n >= 0.01) return `$${n.toFixed(4)}`;
+  // Sub-penny pricing (e.g., ARA at $0.00012316) — show more significant digits
+  return `$${n.toFixed(6)}`;
+}
+
+/**
+ * Render a crypto amount with adaptive precision so tiny values don't round to "0.000".
+ * Examples:
+ *   0.000250 ETH → "0.00025 ETH"  (seeder rewards paid, early testnet)
+ *   0.042    ETH → "0.0420 ETH"
+ *   3.14     ETH → "3.140 ETH"
+ */
+function fmtCrypto(value: string, symbol: string): string {
+  const n = parseFloat(value);
+  if (!Number.isFinite(n) || n === 0) return `0 ${symbol}`;
+  if (n >= 1) return `${n.toFixed(3)} ${symbol}`;
+  if (n >= 0.01) return `${n.toFixed(4)} ${symbol}`;
+  if (n >= 0.0001) return `${n.toFixed(6)} ${symbol}`;
+  // Very small — show up to 8 decimals, stripping trailing zeros
+  return `${n.toFixed(8).replace(/0+$/, "").replace(/\.$/, "")} ${symbol}`;
+}
+
 function Dashboard() {
   const { isConnected } = useWeb3ModalAccount();
   const [stats, setStats] = useState<SeederStats[]>([]);
@@ -80,7 +105,7 @@ function Dashboard() {
               ARA Price
             </p>
             <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
-              {araPriceUsd > 0 ? `$${araPriceUsd.toFixed(4)}` : "—"}
+              {fmtUsdPrice(araPriceUsd)}
             </p>
             <a
               href="https://www.coingecko.com/en/coins/ara"
@@ -104,20 +129,39 @@ function Dashboard() {
               </p>
             )}
           </div>
-          <div className="card p-4">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
-              Total Volume
-            </p>
-            <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
-              {overview ? `${parseFloat(overview.total_volume_eth).toFixed(3)} ETH` : "—"}
-            </p>
-          </div>
+          {/*
+            Volume cards — one per payment currency with non-zero activity. When only ETH
+            has been used we show a single "Total Volume" card; once USDC (or any other
+            supported ERC-20) content is purchased, additional cards appear automatically.
+            The backend returns `volume_by_token` pre-formatted per token's decimals.
+          */}
+          {overview && overview.volume_by_token.length > 0 ? (
+            overview.volume_by_token.map((tv) => (
+              <div className="card p-4" key={tv.symbol + tv.address}>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
+                  Volume ({tv.symbol})
+                </p>
+                <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
+                  {fmtCrypto(tv.amount, tv.symbol)}
+                </p>
+              </div>
+            ))
+          ) : (
+            <div className="card p-4">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
+                Total Volume
+              </p>
+              <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
+                {overview ? fmtCrypto(overview.total_volume_eth, "ETH") : "—"}
+              </p>
+            </div>
+          )}
           <div className="card p-4">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-1">
               Seeder Rewards Paid
             </p>
             <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
-              {overview ? `${parseFloat(overview.total_rewards_paid_eth).toFixed(3)} ETH` : "—"}
+              {overview ? fmtCrypto(overview.total_rewards_paid_eth, "ETH") : "—"}
             </p>
           </div>
           <div className="card p-4">
@@ -131,12 +175,17 @@ function Dashboard() {
         </div>
       </div>
 
+      {/* Personal section header */}
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500 mb-3 mt-8">
+        My Seeding
+      </h2>
+
       {!isConnected && (
         <div className="alert-warning mb-6">Connect your wallet to view your dashboard.</div>
       )}
       {error && <div className="alert-error mb-6">{error}</div>}
 
-      {/* Stats cards */}
+      {/* Personal stats cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
         {[
           { label: "Content Seeding", value: String(activeCount) },

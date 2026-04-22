@@ -275,6 +275,8 @@ export interface TopCreator {
   total_list_volume_eth: string;
   total_sales_eth: string;
   latest_publish_at: number;
+  /** Most recent content_id with a preview image; used as the creator's avatar source. */
+  avatar_content_id: string | null;
 }
 
 export async function getTopCreators(limit?: number): Promise<TopCreator[]> {
@@ -801,8 +803,22 @@ export interface TrendingItem {
   content_type: string;
 }
 
+export interface TokenVolume {
+  /** Display symbol ("ETH", "USDC", etc.). Unknown ERC-20s fall back to a short address. */
+  symbol: string;
+  /** Token contract address (empty for native ETH). */
+  address: string;
+  decimals: number;
+  /** Pre-formatted decimal amount ready to render. */
+  amount: string;
+  /** Raw smallest-unit total as a decimal string. */
+  raw: string;
+}
+
 export interface MarketplaceOverview {
   total_volume_eth: string;
+  /** One entry per payment currency with non-zero volume (includes ETH). */
+  volume_by_token: TokenVolume[];
   total_sales: number;
   total_collections: number;
   total_items: number;
